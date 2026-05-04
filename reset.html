@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reset password — Viralityy</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="shared.css">
+<style>
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem;background:var(--bg);background-image:radial-gradient(ellipse 60% 40% at 50% 0%,rgba(99,102,241,.14) 0%,transparent 70%)}
+.auth-wrap{width:100%;max-width:380px;text-align:center}
+.auth-header{margin-bottom:2rem}
+.auth-header h1{font-family:'DM Serif Display',serif;font-size:1.65rem;font-weight:400;margin:.75rem 0 .4rem;letter-spacing:-.02em}
+.auth-header p{font-size:.82rem;color:var(--text2)}
+.auth-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:2rem;text-align:left}
+</style>
+</head>
+<body>
+<div class="auth-wrap">
+  <div class="auth-header">
+    <a href="index.html" class="logo" style="display:inline-flex"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div>Viralityy</a>
+    <h1>Reset your password</h1>
+    <p>We'll send a reset link to your email address</p>
+  </div>
+  <div class="auth-card">
+    <div id="err" class="error-msg"></div>
+    <div id="success" class="success-msg">Reset link sent! Check your inbox — it may take a minute or two.</div>
+    <div id="form-area">
+      <div class="input-wrap">
+        <label>Email address</label>
+        <input type="email" id="email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <button class="btn btn-primary" onclick="handleReset()">Send reset link →</button>
+    </div>
+  </div>
+  <p style="margin-top:1.25rem;font-size:.79rem;color:var(--text2)"><a href="login.html" style="color:#a5b4fc">← Back to sign in</a></p>
+</div>
+<script>
+function handleReset() {
+  const email = document.getElementById('email').value.trim();
+  const err   = document.getElementById('err');
+  const ok    = document.getElementById('success');
+  err.classList.remove('show'); ok.classList.remove('show');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    err.textContent = 'Please enter a valid email address.'; err.classList.add('show'); return;
+  }
+  document.getElementById('form-area').style.opacity = '0.4';
+  setTimeout(() => {
+    document.getElementById('form-area').style.display = 'none';
+    ok.classList.add('show');
+  }, 800);
+}
+document.addEventListener('keydown', e => { if (e.key === 'Enter') handleReset(); });
+</script>
+</body>
+</html>

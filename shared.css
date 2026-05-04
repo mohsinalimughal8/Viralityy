@@ -1,0 +1,27 @@
+/* Viralityy — shared styles for auth + legal pages */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070d;--bg2:#0e0e18;--bg3:#131320;
+  --border:rgba(255,255,255,.08);--border2:rgba(255,255,255,.13);
+  --text:#e8e8f5;--text2:rgba(255,255,255,.5);--text3:rgba(255,255,255,.22);
+  --purple:#6366f1;--purple2:#4f46e5;--green:#10b981;--pink:#ec4899;--red:#ef4444;
+}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{text-decoration:none;color:inherit}
+.logo{display:inline-flex;align-items:center;gap:8px;font-family:'DM Serif Display',serif;font-size:1.05rem;color:var(--text)}
+.logo-mark{width:26px;height:26px;background:linear-gradient(135deg,var(--purple),var(--pink));border-radius:7px;display:flex;align-items:center;justify-content:center}
+.logo-mark svg{width:13px;height:13px;fill:#fff}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:11px;border-radius:9px;font-size:.85rem;font-weight:600;cursor:pointer;border:none;transition:all .14s;font-family:'DM Sans',sans-serif}
+.btn-primary{background:var(--purple2);color:#fff}.btn-primary:hover{background:#4338ca}
+.btn-google{background:var(--bg3);border:1px solid var(--border2);color:var(--text)}.btn-google:hover{background:rgba(255,255,255,.05)}
+.input-wrap{display:flex;flex-direction:column;gap:5px;margin-bottom:1rem}
+label{font-size:.75rem;font-weight:500;color:var(--text2)}
+input{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:.85rem;padding:10px 13px;outline:none;width:100%;font-family:'DM Sans',sans-serif;transition:border-color .14s}
+input:focus{border-color:rgba(99,102,241,.5)}
+input::placeholder{color:var(--text3)}
+.divider-text{display:flex;align-items:center;gap:10px;font-size:.73rem;color:var(--text3);margin:1rem 0}
+.divider-text::before,.divider-text::after{content:'';flex:1;height:1px;background:var(--border)}
+.error-msg{display:none;font-size:.75rem;color:#fca5a5;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:7px;padding:8px 11px;margin-bottom:.9rem}
+.error-msg.show{display:block}
+.success-msg{display:none;font-size:.75rem;color:#6ee7b7;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:7px;padding:8px 11px;margin-bottom:.9rem}
+.success-msg.show{display:block}

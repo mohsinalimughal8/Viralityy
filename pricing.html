@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pricing — Viralityy</title>
+<meta name="description" content="Simple 3-plan pricing for automated YouTube growth. From $49/month. 7-day free trial.">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070d;--bg2:#0e0e18;--bg3:#131320;
+  --border:rgba(255,255,255,.08);--border2:rgba(255,255,255,.13);
+  --text:#e8e8f5;--text2:rgba(255,255,255,.5);--text3:rgba(255,255,255,.22);
+  --purple:#6366f1;--purple2:#4f46e5;--green:#10b981;--pink:#ec4899;--amber:#f59e0b;
+}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{text-decoration:none;color:inherit}
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;backdrop-filter:blur(16px);background:rgba(7,7,13,.9);border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;height:60px;gap:2rem}
+.nav-logo{display:flex;align-items:center;gap:8px;font-family:'DM Serif Display',serif;font-size:1.08rem}
+.logo-mark{width:26px;height:26px;background:linear-gradient(135deg,var(--purple),var(--pink));border-radius:7px;display:flex;align-items:center;justify-content:center}
+.logo-mark svg{width:13px;height:13px;fill:#fff}
+.nav-links{display:flex;gap:1.75rem;margin-left:1.5rem}
+.nav-links a{font-size:.83rem;color:var(--text2);transition:color .14s}.nav-links a:hover{color:var(--text)}
+.nav-right{margin-left:auto;display:flex;gap:9px}
+.btn-nav{display:inline-flex;align-items:center;padding:7px 17px;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;border:none;font-family:'DM Sans',sans-serif;text-decoration:none;transition:all .14s}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text2)}.btn-ghost:hover{border-color:rgba(255,255,255,.28);color:var(--text)}
+.btn-primary{background:var(--purple2);color:#fff}.btn-primary:hover{background:#4338ca}
+/* HERO */
+.hero{padding:7.5rem 1.5rem 3.5rem;text-align:center}
+.hero h1{font-family:'DM Serif Display',serif;font-size:clamp(1.9rem,4.5vw,2.8rem);font-weight:400;letter-spacing:-.025em;margin-bottom:.75rem;line-height:1.15}
+.hero p{font-size:.93rem;color:var(--text2);max-width:480px;margin:0 auto 1rem;line-height:1.7}
+
+/* TRIAL STRIP */
+.trial-strip{display:flex;align-items:center;justify-content:center;gap:1.5rem;padding:.9rem 2rem;background:rgba(16,185,129,.06);border-top:1px solid rgba(16,185,129,.15);border-bottom:1px solid rgba(16,185,129,.15);flex-wrap:wrap;margin-bottom:0}
+.ts-item{display:flex;align-items:center;gap:7px;font-size:.79rem;color:rgba(110,231,183,.85)}
+.ts-item svg{flex-shrink:0;color:#34d399}
+
+/* BILLING TOGGLE */
+.toggle-wrap{display:flex;align-items:center;justify-content:center;gap:11px;padding:1.5rem 0 0}
+.tl{font-size:.83rem;color:var(--text2)}.tl.on{color:var(--text);font-weight:600}
+.bt{width:46px;height:24px;border-radius:24px;background:rgba(255,255,255,.1);cursor:pointer;position:relative;transition:background .2s}
+.bt.on{background:var(--purple)}
+.bt-k{position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:3px;left:3px;transition:transform .2s}
+.bt.on .bt-k{transform:translateX(22px)}
+.save-tag{font-size:.7rem;font-weight:700;background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.2);padding:2px 9px;border-radius:20px}
+
+/* PLANS */
+.plans-wrap{max-width:1060px;margin:0 auto;padding:2rem 1.5rem 4.5rem}
+.plans-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:2rem}
+.plan{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:1.75rem;position:relative;display:flex;flex-direction:column;transition:all .16s}
+.plan:hover{border-color:rgba(99,102,241,.3);transform:translateY(-2px)}
+.plan.highlight{border-color:var(--purple);background:linear-gradient(160deg,rgba(99,102,241,.08) 0%,var(--bg2) 60%)}
+.plan-pop{position:absolute;top:-12px;left:50%;transform:translateX(-50%);white-space:nowrap;background:var(--purple2);color:#fff;font-size:.62rem;font-weight:700;padding:3px 14px;border-radius:20px;text-transform:uppercase;letter-spacing:.07em}
+.plan-name{font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:.4rem}
+.plan-price{display:flex;align-items:baseline;gap:3px;margin-bottom:4px}
+.price-num{font-family:'DM Serif Display',serif;font-size:2.2rem;color:var(--text);letter-spacing:-.02em;line-height:1}
+.price-per{font-size:.74rem;color:var(--text3);margin-left:2px}
+.price-annual{font-size:.7rem;color:var(--green);min-height:17px;margin-bottom:.5rem}
+.plan-desc{font-size:.78rem;color:var(--text2);line-height:1.6;margin-bottom:1rem;min-height:2.8rem}
+.plan-divider{border:none;border-top:1px solid var(--border);margin:0 0 1rem}
+/* CHANNEL NOTE */
+.ch-note{background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.18);border-radius:8px;padding:8px 11px;margin-bottom:1rem}
+.ch-note p{font-size:.7rem;color:#a5b4fc;line-height:1.55}
+.ch-note strong{color:var(--text)}
+/* FEATURES */
+.feat{list-style:none;flex:1;display:flex;flex-direction:column;gap:7px;margin-bottom:1.25rem}
+.feat li{font-size:.77rem;color:var(--text2);display:flex;align-items:flex-start;gap:7px;line-height:1.4}
+.feat li .i{flex-shrink:0;margin-top:2px;font-size:.78rem;line-height:1}
+.feat li .i.ok{color:var(--green)}.feat li .i.no{color:var(--text3)}
+.feat li.dim{color:var(--text3)}
+.lock-tag{display:inline-block;font-size:.58rem;font-weight:700;text-transform:uppercase;background:rgba(245,158,11,.1);color:#fcd34d;border:1px solid rgba(245,158,11,.2);border-radius:4px;padding:1px 5px;margin-left:4px;vertical-align:middle;letter-spacing:.04em}
+/* BUTTON */
+.plan-btn{display:block;text-align:center;padding:11px;border-radius:9px;font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s;text-decoration:none;margin-top:auto}
+.pb-o{background:transparent;border:1px solid var(--border2);color:var(--text2)}.pb-o:hover{border-color:rgba(255,255,255,.28);color:var(--text)}
+.pb-f{background:var(--purple2);color:#fff}.pb-f:hover{background:#4338ca;transform:translateY(-1px)}
+/* VALUE CALLOUT */
+.value-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:3.5rem}
+.val-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.25rem;text-align:center}
+.val-icon{font-size:1.5rem;margin-bottom:.6rem}
+.val-title{font-size:.84rem;font-weight:600;margin-bottom:.4rem}
+.val-desc{font-size:.74rem;color:var(--text2);line-height:1.6}
+/* COMPARISON */
+.comp-head{text-align:center;margin-bottom:2rem}
+.comp-title{font-family:'DM Serif Display',serif;font-size:1.6rem;font-weight:400;letter-spacing:-.02em;margin-bottom:.5rem}
+.comp-sub{font-size:.84rem;color:var(--text2)}
+.comp-wrap{overflow-x:auto;margin-bottom:3.5rem}
+.comp-tbl{width:100%;border-collapse:collapse;font-size:.77rem;min-width:600px}
+.comp-tbl th{text-align:center;padding:10px;font-size:.64rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);border-bottom:1px solid var(--border)}
+.comp-tbl th:first-child{text-align:left}
+.comp-tbl td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.03);text-align:center;color:var(--text2);vertical-align:middle}
+.comp-tbl td:first-child{text-align:left;color:var(--text);font-weight:500;font-size:.76rem}
+.comp-tbl tr:last-child td{border-bottom:none}
+.comp-tbl .sec td{background:var(--bg3);font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--text3);padding:6px 10px;text-align:left}
+.comp-tbl .hi{background:rgba(99,102,241,.04)}
+.ck{color:var(--green);font-size:.9rem;font-weight:700}
+.cx{color:var(--text3)}
+/* TRUST STRIP */
+.trust-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:3.5rem}
+.trust-card{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:1.1rem;text-align:center}
+.trust-num{font-family:'DM Serif Display',serif;font-size:1.6rem;color:var(--text);margin-bottom:3px}
+.trust-lbl{font-size:.72rem;color:var(--text3)}
+/* FAQ */
+.faq-wrap{max-width:640px;margin:0 auto 3.5rem}
+.faq-title{font-family:'DM Serif Display',serif;font-size:1.5rem;font-weight:400;text-align:center;margin-bottom:1.6rem;letter-spacing:-.02em}
+.faq-item{border-bottom:1px solid var(--border);padding:.95rem 0}
+.faq-q{font-size:.85rem;font-weight:500;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px;user-select:none}
+.faq-q svg{width:14px;height:14px;flex-shrink:0;color:var(--text3);transition:transform .2s}
+.faq-item.open .faq-q svg{transform:rotate(45deg)}
+.faq-a{font-size:.79rem;color:var(--text2);line-height:1.75;max-height:0;overflow:hidden;transition:max-height .32s ease,padding .2s}
+.faq-item.open .faq-a{max-height:240px;padding-top:.65rem}
+/* CTA */
+.cta-section{text-align:center;padding:3.5rem 1.5rem 5rem;background:radial-gradient(ellipse 60% 40% at 50% 0%,rgba(99,102,241,.13) 0%,transparent 70%)}
+.cta-section h2{font-family:'DM Serif Display',serif;font-size:clamp(1.7rem,3.5vw,2.4rem);font-weight:400;letter-spacing:-.02em;margin-bottom:.75rem}
+.cta-section p{font-size:.9rem;color:var(--text2);max-width:420px;margin:0 auto 1.75rem;line-height:1.7}
+.btn-cta{display:inline-flex;align-items:center;gap:7px;padding:13px 30px;background:var(--purple2);color:#fff;border-radius:10px;font-size:.88rem;font-weight:600;cursor:pointer;border:none;font-family:'DM Sans',sans-serif;transition:all .15s;text-decoration:none}
+.btn-cta:hover{background:#4338ca;transform:translateY(-1px)}
+.btn-cta-ghost{display:inline-flex;align-items:center;gap:7px;padding:13px 30px;background:transparent;color:var(--text2);border-radius:10px;font-size:.88rem;font-weight:600;cursor:pointer;border:1px solid var(--border2);font-family:'DM Sans',sans-serif;transition:all .15s;text-decoration:none;margin-left:10px}
+.btn-cta-ghost:hover{border-color:rgba(255,255,255,.25);color:var(--text)}
+/* FOOTER */
+footer{background:var(--bg2);border-top:1px solid var(--border);padding:2rem;text-align:center;font-size:.73rem;color:var(--text3)}
+footer a{color:rgba(165,180,252,.7);margin:0 .65rem;transition:color .14s}
+footer a:hover{color:#a5b4fc}
+@media(max-width:1100px){.plans-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.plans-grid{grid-template-columns:1fr}.value-row,.trust-strip{grid-template-columns:1fr 1fr}.nav-links{display:none}}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="index.html" class="nav-logo"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div>Viralityy</a>
+  <div class="nav-links">
+    <a href="index.html#features">Features</a>
+    <a href="index.html#how-it-works">How it works</a>
+    <a href="index.html#faq">FAQ</a>
+  </div>
+  <div class="nav-right">
+    <a href="login.html" class="btn-nav btn-ghost">Sign in</a>
+    <a href="signup.html" class="btn-nav btn-primary">Start free trial →</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <p style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--purple);margin-bottom:.7rem">Pricing</p>
+  <h1>Four plans.<br>One clear choice.</h1>
+  <p>No complex tiers. No feature matrices to decode. Pick the plan that matches how you want to grow — every plan includes a full 7-day free trial.</p>
+</div>
+
+<!-- TRIAL STRIP -->
+<div class="trial-strip">
+  <div class="ts-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>7-day free trial on every plan</div>
+  <div class="ts-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>No credit card required to start</div>
+  <div class="ts-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Cancel any time — no lock-ins</div>
+  <div class="ts-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Annual plans save up to 30%</div>
+</div>
+
+<div class="toggle-wrap">
+  <span class="tl on" id="lbl-mo">Monthly</span>
+  <div class="bt" id="btoggle" onclick="toggleBilling()"><div class="bt-k"></div></div>
+  <span class="tl" id="lbl-yr">Annual</span>
+  <span class="save-tag">Save up to 30%</span>
+</div>
+
+<!-- PLANS -->
+<div class="plans-wrap">
+  <div class="plans-grid" id="plans-grid">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- WHY 3 PLANS -->
+  <div style="text-align:center;margin-bottom:2.5rem">
+    <p style="font-size:.78rem;color:var(--text3);max-width:520px;margin:0 auto;line-height:1.7">
+      We offer 4 plans because there are 4 real use cases — not because we wanted more options. Shorts Pro is for pure-Shorts creators. Starter is the low-risk entry. Growth adds long-form and cross-posting. Agency scales to 5 channels. Every plan runs the same AI engine.
+    </p>
+  </div>
+
+  <!-- VALUE CALLOUTS -->
+  <div class="value-row">
+    <div class="val-card">
+      <div class="val-icon">🎬</div>
+      <p class="val-title">AI does all the work</p>
+      <p class="val-desc">Scripts, voiceover, footage, editing, subtitles, thumbnails — every video is fully generated. You don't need a camera, microphone, or editing skills.</p>
+    </div>
+    <div class="val-card">
+      <div class="val-icon">🧠</div>
+      <p class="val-title">Gets smarter every week</p>
+      <p class="val-desc">The AI studies your channel performance and automatically improves scripts, titles, and posting times. Month 3 outperforms Month 1 — without any input from you.</p>
+    </div>
+    <div class="val-card">
+      <div class="val-icon">📊</div>
+      <p class="val-title">Volume = results</p>
+      <p class="val-desc">Channels posting 10 Shorts/day consistently outgrow channels posting 1–2/week. More at-bats means the algorithm finds your best content faster.</p>
+    </div>
+  </div>
+
+  <!-- COMPARISON TABLE -->
+  <div class="comp-head">
+    <h2 class="comp-title">Full feature breakdown</h2>
+    <p class="comp-sub">Everything included across every plan</p>
+  </div>
+  <div class="comp-wrap">
+    <table class="comp-tbl">
+      <thead>
+        <tr>
+          <th style="min-width:200px">Feature</th>
+          <th>Starter</th>
+          <th>Shorts Pro</th>
+          <th class="hi">Growth</th>
+          <th>Agency</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="sec"><td colspan="4">Content volume (per channel)</td></tr>
+        <tr><td>Shorts per day / channel</td><td>3</td><td class="hi">10</td><td>10</td></tr>
+        <tr><td>Long-form videos per week / channel</td><td class="cx">—</td><td class="hi">2</td><td>4</td></tr>
+        <tr><td>Auto-extracted clips per long-form video</td><td class="cx">—</td><td class="hi">5</td><td>10</td></tr>
+        <tr><td>YouTube channels</td><td>1</td><td class="hi">3</td><td>5</td></tr>
+        <tr><td>Max Shorts/day across all channels</td><td>3</td><td class="hi">30</td><td>50</td></tr>
+        <tr><td>Max long-form/week across all channels</td><td class="cx">—</td><td class="hi">6</td><td>20</td></tr>
+        <tr class="sec"><td colspan="4">Platforms</td></tr>
+        <tr><td>YouTube (all content)</td><td><span class="ck">✓</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>TikTok (Shorts + clips only)</td><td class="cx">—</td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Instagram Reels (Shorts + clips only)</td><td class="cx">—</td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr class="sec"><td colspan="4">AI & quality</td></tr>
+        <tr><td>AI script writing</td><td><span class="ck">✓</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Content quality layer (6 passes)</td><td><span class="ck">✓</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Weekly AI optimisation</td><td class="cx">—</td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Niche changes (post-setup)</td><td class="cx">Locked</td><td>2 / year</td><td class="hi">3 / year</td><td>3 / year</td></tr>
+        <tr class="sec"><td colspan="4">Control</td></tr>
+        <tr><td>24-hr video preview queue</td><td>— <span class="lock-tag" style="font-size:.58rem;font-weight:700;background:rgba(245,158,11,.1);color:#fcd34d;border:1px solid rgba(245,158,11,.2);border-radius:4px;padding:1px 5px">Growth+</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Per-platform posting toggles</td><td><span class="ck">✓</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Analytics dashboard</td><td><span class="ck">✓</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Affiliate programme (30% commission)</td><td><span class="ck">✓</span></td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Priority support</td><td class="cx">—</td><td class="hi"><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- TRUST STRIP -->
+  <div class="trust-strip">
+    <div class="trust-card"><p class="trust-num">284M+</p><p class="trust-lbl">Views generated for users</p></div>
+    <div class="trust-card"><p class="trust-num">2,400+</p><p class="trust-lbl">Active creators</p></div>
+    <div class="trust-card"><p class="trust-num">94%</p><p class="trust-lbl">Avg content quality score</p></div>
+    <div class="trust-card"><p class="trust-num">7 days</p><p class="trust-lbl">Free — no card needed</p></div>
+  </div>
+
+  <!-- FAQ -->
+  <div class="faq-wrap">
+    <h2 class="faq-title">Questions</h2>
+    <div class="faq-item open">
+      <p class="faq-q">Why 4 plans?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">4 is the proven sweet spot. We have a dedicated Shorts Pro plan because a large segment of creators only want Shorts — they don't need long-form and shouldn't pay for it. Starter is the low-barrier entry. Growth adds long-form and multi-channel. Agency scales it to 5 channels. Every plan is additive, nothing overlaps.</p>
+    </div>
+    <div class="faq-item">
+      <p class="faq-q">Does the video quota apply per channel or in total?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">Per channel. If you're on Growth (3 channels, 10 Shorts/day), each of your 3 channels gets 10 Shorts — that's 30 Shorts daily in total. Agency with 5 channels gets 50 Shorts/day and 20 long-form videos/week in total. Every channel runs independently with its own niche, schedule, and posting settings.</p>
+    </div>
+    <div class="faq-item">
+      <p class="faq-q">What does the 7-day trial include?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">Starter plan features: 3 Shorts per day on 1 YouTube channel, AI scripts, content quality passes, and analytics. Includes full access to the Niche Finder during the 7-day trial so you can pick your channel topic. After setup your niche is locked to the channel — changing it later depends on your plan. No credit card needed to begin. One trial per YouTube channel.</p>
+    </div>
+    <div class="faq-item">
+      <p class="faq-q">Do long-form videos post to TikTok and Instagram?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">Never. Long-form videos (25–30 min) only post to YouTube — platform rules don't support them on TikTok or Instagram anyway. Auto-extracted short clips from those videos can be toggled on for TikTok and Instagram Reels. You control that per channel.</p>
+    </div>
+    <div class="faq-item">
+      <p class="faq-q">How does annual billing work?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">Annual plans are billed as one upfront payment for 12 months and save you 15% compared to monthly billing. For example, Starter at $49/mo becomes $41.65/mo on annual ($499/yr). Subscriptions can be cancelled before renewal — access continues until the end of your paid period.</p>
+    </div>
+    <div class="faq-item">
+      <p class="faq-q">Can I change my channel's niche later?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">You pick your niche once during setup — this is intentional. Switching niches mid-channel confuses the algorithm, resets your audience signals, and almost always reduces views. We designed the system this way to protect your channel's performance. If you genuinely need to pivot: Shorts Pro and Agency plans allow 2–3 niche changes per year. Starter plans cannot change niche after setup.</p>
+    </div>
+    <div class="faq-item">
+      <p class="faq-q">Can I upgrade or downgrade?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p>
+      <p class="faq-a">Yes, any time from your dashboard. Upgrades are immediate and prorated. Downgrades take effect at the next billing cycle. Most users start on Starter and upgrade to Growth after their first month when they see results.</p>
+    </div>
+  </div>
+
+</div><!-- /plans-wrap -->
+
+<!-- CTA -->
+<div class="cta-section">
+  <h2>Start your free trial today</h2>
+  <p>7 days free. No credit card needed. Your first videos post within hours of setup.</p>
+  <a href="signup.html" class="btn-cta">Start free trial →</a>
+  <a href="index.html" class="btn-cta-ghost">See how it works</a>
+</div>
+
+<footer>
+  <p style="margin-bottom:.6rem">© 2025 Viralityy. All rights reserved.</p>
+  <a href="index.html">Home</a><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a><a href="cookies.html">Cookies</a><a href="login.html">Sign in</a>
+</footer>
+
+<script>
+// ── PLAN DATA ──────────────────────────────────────────────────────
+// Pricing rationale:
+//   Starter  $49/mo  → $34/mo annual ($408/yr)  — 31% off, loss-leader, high volume signups
+//   Growth   $99/mo  → $69/mo annual ($828/yr)  — 30% off, target plan, 3x value vs starter
+//   Agency   $249/mo → $179/mo annual ($2148/yr) — 28% off, enterprise value, per-channel math
+//
+// Why these numbers:
+//   • Starter at $49 anchors Growth at $99 as "obvious value" (2× content for 2× price)
+//   • Growth is the profit plan — most users land here. COGS per user is manageable at 3ch.
+//   • Agency repriced from $199 → $249: 5 channels × 10 shorts/day is 50 videos daily.
+//     That's $5/channel/mo on annual — already a steal. Monthly is $49.80/channel.
+//   • Annual discount large enough to feel meaningful (28–31%) but not margin-destroying
+//   • All 3 plans include the full AI engine — differentiation is volume, not features
+
+// ── PRICING RATIONALE ─────────────────────────────────────────────────────
+// Annual = 15% off monthly, billed upfront for 12 months.
+// Exact annuals: Starter $49×0.85=$41.65→$42, ShortsPro $79×0.85=$67.15→$67,
+//                Growth $99×0.85=$84.15→$84, Agency $249×0.85=$211.65→$212
+// Annual totals: $504, $804, $1,008, $2,544
+//
+// Trial: 7 days, Starter features only, one trial per YouTube channel (enforced server-side)
+//
+// Plan logic:
+//   Starter  $49  — entry, 3 Shorts/day, 1 ch, no preview queue (upgrade bait)
+//   ShortsPro $79 — pure Shorts creators, 10/day, cross-posting, preview queue
+//   Growth   $99  — adds long-form, 3 channels, most profitable plan
+//   Agency   $249 — 5 channels × full quota = 50 Shorts/day, 20 LF/wk total
+
+const PLANS = [
+  {
+    id: 'starter',
+    name: 'Starter',
+    monthly: 49,
+    annual: 42,
+    annualTotal: 504,
+    annualSave: Math.round(49*12 - 504),
+    desc: '1 channel, 3 Shorts/day. Try Viralityy with zero risk — same features as your free trial.',
+    highlight: false,
+    badge: null,
+    channelNote: null,
+    features: [
+      { t: '3 Shorts per day',             ok: true },
+      { t: '1 YouTube channel',            ok: true },
+      { t: 'AI scripts + quality passes',  ok: true },
+      { t: 'Analytics dashboard',          ok: true },
+      { t: 'Affiliate programme (30%)',    ok: true },
+      { t: '24-hr preview queue',          ok: false, lock: true },
+      { t: 'Long-form videos',             ok: false },
+      { t: 'TikTok + Instagram',           ok: false },
+      { t: 'Weekly AI optimisation',       ok: false },
+    ],
+  },
+  {
+    id: 'shorts_pro',
+    name: 'Shorts Pro',
+    monthly: 79,
+    annual: 67,
+    annualTotal: 804,
+    annualSave: Math.round(79*12 - 804),
+    desc: '1 channel, 10 Shorts/day. For creators who want maximum Shorts output without long-form.',
+    highlight: false,
+    badge: null,
+    channelNote: null,
+    features: [
+      { t: '10 Shorts per day',            ok: true },
+      { t: '1 YouTube channel',            ok: true },
+      { t: 'TikTok + Instagram Reels',     ok: true },
+      { t: '24-hr preview queue',          ok: true },
+      { t: 'Weekly AI optimisation',       ok: true },
+      { t: 'AI scripts + quality passes',  ok: true },
+      { t: 'Analytics dashboard',          ok: true },
+      { t: 'Long-form videos',             ok: false },
+    ],
+  },
+  {
+    id: 'growth',
+    name: 'Growth',
+    monthly: 99,
+    annual: 84,
+    annualTotal: 1008,
+    annualSave: Math.round(99*12 - 1008),
+    desc: '3 channels, 10 Shorts + 2 long-form/week each. The plan most creators upgrade to after month one.',
+    highlight: true,
+    badge: 'Most popular',
+    channelNote: '10 Shorts/day + 2 long-form/wk applies to <strong>each of your 3 channels</strong> — up to <strong>30 Shorts daily &amp; 6 long-form/wk</strong> in total.',
+    features: [
+      { t: '10 Shorts/day + 2 long-form/wk', ok: true },
+      { t: '5 clips auto-extracted per video',ok: true },
+      { t: '3 YouTube channels',              ok: true },
+      { t: 'TikTok + Instagram Reels',        ok: true },
+      { t: '24-hr preview queue',             ok: true },
+      { t: 'Weekly AI optimisation',          ok: true },
+      { t: 'Niche Finder (unlimited)',        ok: true },
+      { t: 'Priority support',               ok: true },
+    ],
+  },
+  {
+    id: 'agency',
+    name: 'Agency',
+    monthly: 249,
+    annual: 212,
+    annualTotal: 2544,
+    annualSave: Math.round(249*12 - 2544),
+    desc: '5 channels at full capacity. For agencies and creators running multiple brands simultaneously.',
+    highlight: false,
+    badge: null,
+    channelNote: '10 Shorts/day + 4 long-form/wk per channel × 5 channels = <strong>50 Shorts daily &amp; 20 long-form/wk</strong> across your entire portfolio.',
+    features: [
+      { t: '10 Shorts/day + 4 long-form/wk',  ok: true },
+      { t: '10 clips auto-extracted per video',ok: true },
+      { t: '5 YouTube channels',               ok: true },
+      { t: 'TikTok + Instagram Reels',         ok: true },
+      { t: '24-hr preview queue',              ok: true },
+      { t: 'Weekly AI optimisation',           ok: true },
+      { t: '3 niche changes per year',          ok: true },
+      { t: 'Priority support',                 ok: true },
+    ],
+  },
+];
+
+let annual = false;
+
+function toggleBilling() {
+  annual = !annual;
+  document.getElementById('btoggle').classList.toggle('on', annual);
+  document.getElementById('lbl-mo').classList.toggle('on', !annual);
+  document.getElementById('lbl-yr').classList.toggle('on', annual);
+  renderPlans();
+}
+
+function renderPlans() {
+  document.getElementById('plans-grid').innerHTML = PLANS.map(p => {
+    const price  = annual ? p.annual : p.monthly;
+    const period = annual ? '/mo, billed annually' : '/month';
+    const annNote = annual
+      ? `$${p.annualTotal}/yr &nbsp;·&nbsp; <span style="color:#34d399">save $${p.annualSave} vs monthly</span>`
+      : `<span style="color:var(--text3);font-size:.67rem">Annual billing saves 15% — $${p.annualSave}/yr</span>`;
+
+    const badge = p.badge ? `<div class="plan-pop">${p.badge}</div>` : '';
+    const chNote = p.channelNote
+      ? `<div class="ch-note"><p>📊 ${p.channelNote}</p></div>`
+      : '';
+
+    const feats = p.features.map(f => `
+      <li class="${f.ok ? '' : 'dim'}">
+        <span class="i ${f.ok ? 'ok' : 'no'}">${f.ok ? '✓' : '—'}</span>
+        ${f.t}${f.lock ? '<span class="lock-tag">Growth+</span>' : ''}
+      </li>`).join('');
+
+    return `<div class="plan ${p.highlight ? 'highlight' : ''}">
+      ${badge}
+      <p class="plan-name">${p.name}</p>
+      <div class="plan-price">
+        <span class="price-num">$${price}</span>
+        <span class="price-per">${period}</span>
+      </div>
+      <p class="price-annual">${annNote}</p>
+      <p class="plan-desc">${p.desc}</p>
+      <hr class="plan-divider">
+      ${chNote}
+      <ul class="feat">${feats}</ul>
+      <a href="signup.html?plan=${p.id}" class="plan-btn ${p.highlight ? 'pb-f' : 'pb-o'}">
+        Start 7-day free trial →
+      </a>
+    </div>`;
+  }).join('');
+}
+
+// FAQ
+document.querySelectorAll('.faq-q').forEach(q => {
+  q.addEventListener('click', () => {
+    const item = q.closest('.faq-item');
+    const open = item.classList.contains('open');
+    document.querySelectorAll('.faq-item').forEach(i => i.classList.remove('open'));
+    if (!open) item.classList.add('open');
+  });
+});
+
+renderPlans();
+</script>
+</body>
+</html>

@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Viralityy Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&family=DM+Mono&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070d;--bg2:#0e0e18;--bg3:#131320;
+  --border:rgba(255,255,255,.07);--border2:rgba(255,255,255,.13);
+  --text:#e8e8f5;--text2:rgba(255,255,255,.45);--text3:rgba(255,255,255,.22);
+  --purple:#6366f1;--purple2:#4f46e5;
+  --green:#10b981;--amber:#f59e0b;--red:#ef4444;--pink:#ec4899;
+  --sidebar:228px;--radius:12px;
+}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
+
+/* SIDEBAR */
+.sidebar{width:var(--sidebar);background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;height:100vh;overflow-y:auto}
+.sb-logo{padding:1.3rem 1.2rem .9rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px}
+.sb-mark{width:30px;height:30px;background:linear-gradient(135deg,var(--purple),var(--pink));border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sb-mark svg{width:15px;height:15px;fill:#fff}
+.sb-wordmark{font-family:'DM Serif Display',serif;font-size:1.1rem;color:var(--text)}
+.sb-sec{padding:.5rem .75rem}
+.sb-lbl{font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);padding:.7rem .5rem .35rem}
+.nav{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;font-size:.81rem;color:var(--text2);cursor:pointer;transition:all .12s;border:none;background:none;width:100%;text-align:left;position:relative}
+.nav:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.nav.active{background:rgba(99,102,241,.12);color:#a5b4fc}
+.nav.active::before{content:'';position:absolute;left:0;top:20%;bottom:20%;width:2px;background:var(--purple);border-radius:2px}
+.nav svg{width:15px;height:15px;flex-shrink:0;opacity:.7}
+.nav.active svg{opacity:1}
+.nb{margin-left:auto;background:var(--amber);color:#000;font-size:.58rem;font-weight:700;padding:1px 5px;border-radius:10px;display:none}
+.nb.show{display:inline-block}
+.sb-user{margin-top:auto;padding:.7rem;border-top:1px solid var(--border)}
+.user-wrap{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;cursor:pointer}
+.user-wrap:hover{background:rgba(255,255,255,.04)}
+.avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--purple),var(--pink));display:flex;align-items:center;justify-content:center;font-size:.62rem;font-weight:700;color:#fff;flex-shrink:0}
+.uname{font-size:.77rem;color:var(--text);font-weight:500}
+.uplan{font-size:.63rem;color:var(--purple)}
+
+/* MAIN */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:50px;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1.5rem;gap:10px;flex-shrink:0;background:var(--bg2)}
+.tb-title{font-size:.88rem;font-weight:500;color:var(--text)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.pill{font-size:.67rem;font-weight:600;padding:3px 10px;border-radius:20px;background:rgba(99,102,241,.12);color:#a5b4fc;border:1px solid rgba(99,102,241,.2)}
+.pill.g{background:rgba(16,185,129,.09);color:#6ee7b7;border-color:rgba(16,185,129,.2)}
+.content{flex:1;overflow-y:auto;padding:1.6rem}
+
+/* PAGES */
+.page{display:none;animation:fi .18s ease}
+.page.active{display:block}
+@keyframes fi{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+
+/* SHARED */
+.ph{font-family:'DM Serif Display',serif;font-size:1.55rem;font-weight:400;color:var(--text);letter-spacing:-.02em;margin-bottom:4px}
+.ps{font-size:.81rem;color:var(--text2);margin-bottom:1.6rem;line-height:1.55;max-width:640px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem}
+.card+.card{margin-top:12px}
+.ct{font-size:.67rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:.85rem;font-weight:600}
+.sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.4rem}
+.sc{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:.95rem 1.1rem;position:relative;overflow:hidden}
+.sc::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--ac,var(--purple))}
+.sl{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}
+.sv{font-size:1.45rem;font-weight:700;color:var(--text);line-height:1}
+.ss{font-size:.67rem;color:var(--text3);margin-top:3px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1.4rem}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:1.4rem}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:8px;font-size:.78rem;font-weight:600;cursor:pointer;border:none;transition:all .12s;font-family:'DM Sans',sans-serif}
+.btn-p{background:var(--purple2);color:#fff}.btn-p:hover{background:#4338ca}
+.btn-g{background:var(--green);color:#fff}.btn-g:hover{background:#059669}
+.btn-o{background:transparent;border:1px solid var(--border2);color:var(--text2)}.btn-o:hover{border-color:rgba(255,255,255,.25);color:var(--text)}
+.btn-r{background:rgba(239,68,68,.1);color:#fca5a5;border:1px solid rgba(239,68,68,.2)}.btn-r:hover{background:rgba(239,68,68,.18)}
+.btn-sm{padding:5px 11px;font-size:.72rem}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.badge{display:inline-block;font-size:.61rem;font-weight:700;padding:2px 7px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em}
+.b-green{background:rgba(16,185,129,.12);color:#6ee7b7}
+.b-amber{background:rgba(245,158,11,.12);color:#fcd34d}
+.b-red{background:rgba(239,68,68,.12);color:#fca5a5}
+.b-purple{background:rgba(99,102,241,.12);color:#a5b4fc}
+.b-gray{background:rgba(107,114,128,.1);color:#9ca3af}
+.tag{display:inline-block;font-size:.64rem;color:rgba(165,180,252,.7);background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.15);border-radius:4px;padding:2px 6px;margin:2px}
+.divider{border:none;border-top:1px solid var(--border);margin:1.1rem 0}
+.empty{text-align:center;padding:2.5rem 1rem;color:var(--text3);font-size:.81rem;line-height:1.8}
+.spinner{width:22px;height:22px;border:2px solid rgba(99,102,241,.15);border-top-color:var(--purple);border-radius:50%;animation:spin .8s linear infinite;margin:2rem auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tbl{width:100%;border-collapse:collapse;font-size:.78rem}
+.tbl th{text-align:left;font-size:.62rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);padding:7px 11px;border-bottom:1px solid var(--border)}
+.tbl td{padding:8px 11px;color:rgba(220,220,245,.75);border-bottom:1px solid rgba(255,255,255,.03);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(255,255,255,.015)}
+.bar-row{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.bar-lbl{font-size:.67rem;color:var(--text3);width:70px;flex-shrink:0;text-transform:uppercase;letter-spacing:.04em}
+.bar-trk{flex:1;height:4px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden}
+.bar-fill{height:100%;border-radius:2px;transition:width .6s ease}
+.bar-val{font-size:.67rem;color:var(--text3);width:26px;text-align:right}
+.toggle{position:relative;width:34px;height:18px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.tgl-sl{position:absolute;inset:0;background:rgba(255,255,255,.1);border-radius:18px;cursor:pointer;transition:background .2s}
+.tgl-sl::before{content:'';position:absolute;width:12px;height:12px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s}
+.toggle input:checked+.tgl-sl{background:var(--purple)}
+.toggle input:checked+.tgl-sl::before{transform:translateX(16px)}
+.mbar-row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+.mbar-lbl{font-size:.7rem;color:var(--text3);width:52px;flex-shrink:0}
+.mbar-trk{flex:1;height:5px;background:rgba(255,255,255,.05);border-radius:3px;overflow:hidden}
+.mbar-fill{height:100%;border-radius:3px;background:var(--green)}
+.mbar-val{font-size:.7rem;color:var(--text3);width:42px;text-align:right}
+.score-circ{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;font-size:.77rem;font-weight:700;flex-shrink:0}
+.sc-top{background:rgba(16,185,129,.12);color:#34d399;border:1px solid rgba(16,185,129,.25)}
+.sc-mid{background:rgba(99,102,241,.12);color:#a5b4fc;border:1px solid rgba(99,102,241,.25)}
+.sc-low{background:rgba(107,114,128,.1);color:#9ca3af;border:1px solid rgba(107,114,128,.2)}
+.cpm-chip{font-size:.67rem;color:#34d399;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.18);border-radius:5px;padding:2px 7px;font-weight:600;white-space:nowrap}
+/* NICHE CARDS */
+.nc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;cursor:pointer;transition:border-color .14s,transform .12s}
+.nc:hover{border-color:rgba(99,102,241,.3);transform:translateY(-1px)}
+.nc.sel{border-color:var(--purple2);background:rgba(99,102,241,.04)}
+.nc-top{display:flex;align-items:flex-start;gap:9px;margin-bottom:8px}
+.nc-title{font-size:.86rem;font-weight:600;color:var(--text);margin-bottom:3px}
+.nc-cat{font-size:.63rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+.nc-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}
+.np{font-size:.61rem;font-weight:600;padding:2px 7px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
+.np-low{background:rgba(16,185,129,.1);color:#6ee7b7}
+.np-mid{background:rgba(245,158,11,.1);color:#fcd34d}
+.np-high{background:rgba(239,68,68,.1);color:#fca5a5}
+.np-ev{background:rgba(99,102,241,.1);color:#c4b5fd}
+.nc-acts{display:flex;gap:7px;margin-top:9px;padding-top:8px;border-top:1px solid var(--border)}
+.act{padding:5px 11px;border-radius:6px;font-size:.71rem;font-weight:600;cursor:pointer;border:1px solid;transition:all .12s;font-family:'DM Sans',sans-serif}
+.act-ok{background:rgba(16,185,129,.1);color:#6ee7b7;border-color:rgba(16,185,129,.2)}.act-ok:hover{background:rgba(16,185,129,.18)}
+.act-info{background:rgba(99,102,241,.1);color:#a5b4fc;border-color:rgba(99,102,241,.2)}.act-info:hover{background:rgba(99,102,241,.18)}
+.act-skip{background:rgba(107,114,128,.08);color:#9ca3af;border-color:rgba(107,114,128,.15)}.act-skip:hover{background:rgba(107,114,128,.15)}
+/* PREVIEW */
+.pvc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:11px;transition:border-color .14s}
+.pvc.urgent{border-color:rgba(239,68,68,.3)}
+.pvc-inner{display:flex}
+.pv-thumb{width:130px;min-height:100px;background:var(--bg3);flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative}
+.pv-ph{display:flex;flex-direction:column;align-items:center;gap:4px;color:var(--text3)}
+.pv-ph svg{width:26px;height:26px}
+.pv-ph span{font-size:.58rem;text-transform:uppercase;letter-spacing:.06em}
+.pv-plat{position:absolute;top:5px;left:5px;font-size:.57rem;font-weight:700;text-transform:uppercase;padding:2px 5px;border-radius:3px;background:rgba(0,0,0,.65);color:rgba(255,255,255,.65)}
+.pv-body{flex:1;padding:.95rem 1.1rem;min-width:0}
+.pv-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:5px}
+.pv-ttl{font-size:.86rem;font-weight:600;color:var(--text);margin-bottom:2px;line-height:1.3}
+.pv-meta{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+.pv-script{font-size:.74rem;color:var(--text2);line-height:1.55;margin:5px 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pv-acts{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.exp{font-size:.67rem;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.exp-u{background:rgba(239,68,68,.12);color:#fca5a5}
+.exp-w{background:rgba(245,158,11,.12);color:#fcd34d}
+.exp-ok{background:rgba(99,102,241,.08);color:#a5b4fc}
+/* AFF */
+.aff-link{background:var(--bg3);border:1px solid rgba(16,185,129,.18);border-radius:10px;padding:.95rem 1.2rem;display:flex;align-items:center;gap:11px;margin-bottom:1.25rem;flex-wrap:wrap}
+.aff-url{font-family:'DM Mono',monospace;font-size:.79rem;color:#34d399;flex:1;word-break:break-all}
+.copy-btn{padding:6px 13px;border-radius:7px;font-size:.73rem;font-weight:600;cursor:pointer;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);color:#34d399;transition:all .12s;font-family:'DM Sans',sans-serif}
+.copy-btn:hover{background:rgba(16,185,129,.18)}
+.copy-btn.copied{background:rgba(16,185,129,.22);color:#6ee7b7}
+/* CHANNEL ROW */
+.ch-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem;margin-bottom:12px}
+.ch-head{display:flex;align-items:center;gap:11px;margin-bottom:1rem;flex-wrap:wrap}
+.ch-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ch-name{font-size:.88rem;font-weight:600;color:var(--text)}
+.ch-sub{font-size:.68rem;color:var(--text3)}
+.plat-row{display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid var(--border)}
+.plat-row:last-child{border-bottom:none}
+.plat-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.plat-name{font-size:.8rem;font-weight:500;color:var(--text);flex:1}
+.plat-note{font-size:.67rem;color:var(--text3)}
+.locked-toggle{width:34px;height:18px;border-radius:18px;background:var(--green);position:relative;opacity:.45;cursor:not-allowed;flex-shrink:0}
+.locked-toggle::after{content:'';position:absolute;right:3px;top:3px;width:12px;height:12px;border-radius:50%;background:#fff}
+.info-bar{display:flex;align-items:flex-start;gap:8px;margin-top:11px;padding:9px 11px;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.15);border-radius:8px}
+.info-bar svg{flex-shrink:0;margin-top:1px}
+.info-bar p{font-size:.71rem;color:rgba(252,211,77,.8);line-height:1.5}
+/* MODAL */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:999;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#12121e;border:1px solid var(--border2);border-radius:16px;padding:1.8rem;width:100%;max-width:440px;margin:1rem}
+.modal h3{font-size:.98rem;font-weight:600;color:var(--text);margin-bottom:.6rem}
+.modal p{font-size:.78rem;color:var(--text2);margin-bottom:1rem;line-height:1.55}
+.modal textarea,.modal select,.modal input{width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:.81rem;padding:9px 11px;margin-bottom:9px;box-sizing:border-box;outline:none;font-family:'DM Sans',sans-serif}
+.modal textarea{min-height:85px;resize:vertical}
+.modal-acts{display:flex;gap:9px;margin-top:.9rem}
+.modal-acts button{flex:1;padding:8px;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif}
+/* TOAST */
+.toast{position:fixed;bottom:22px;right:22px;padding:10px 17px;border-radius:9px;font-size:.79rem;color:#fff;z-index:9999;max-width:300px;line-height:1.4;animation:ti .18s ease;pointer-events:none}
+@keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+/* NICHE GATE */
+.gate{display:flex;align-items:flex-start;gap:12px;padding:.95rem 1.15rem;border-radius:11px;margin-bottom:1.15rem}
+.gate-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+/* QUALITY PASS */
+.qp{display:flex;align-items:flex-start;gap:11px;padding:10px 0;border-bottom:1px solid var(--border)}
+.qp:last-child{border-bottom:none}
+.qp-icon{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.qp-name{font-size:.8rem;font-weight:500;color:var(--text);margin-bottom:2px}
+.qp-desc{font-size:.71rem;color:var(--text2);line-height:1.45}
+.qp-res{font-size:.69rem;color:#6ee7b7;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.12);border-radius:5px;padding:2px 7px;margin-top:4px;display:inline-block}
+/* SCROLL */
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.07);border-radius:3px}
+/* PBAR */
+.pbar-row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+.pbar-lbl{font-size:.71rem;color:var(--text2);width:56px;flex-shrink:0}
+.pbar-trk{flex:1;height:5px;background:rgba(255,255,255,.05);border-radius:3px;overflow:hidden}
+.pbar-fill{height:100%;border-radius:3px}
+.pbar-cnt{font-size:.69rem;color:var(--text3);width:22px;text-align:right}
+</style>
+</head>
+<body>
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div>
+    <span class="sb-wordmark">Viralityy</span>
+  </div>
+  <div class="sb-sec">
+    <p class="sb-lbl">Overview</p>
+    <button class="nav active" onclick="nav('overview',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard
+    </button>
+    <p class="sb-lbl">Channels</p>
+    <button class="nav" onclick="nav('channels',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>My Channels
+    </button>
+    <button class="nav" onclick="nav('niches',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>Niche Finder
+    </button>
+    <p class="sb-lbl">Insights</p>
+    <button class="nav" onclick="nav('analytics',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Analytics
+    </button>
+    <button class="nav" onclick="nav('learning',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>AI Optimisation
+    </button>
+    <button class="nav" onclick="nav('quality',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>Content Quality
+    </button>
+    <p class="sb-lbl">Queue</p>
+    <button class="nav" onclick="nav('preview',this)" id="nav-preview">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Preview Queue
+      <span class="nb show" id="preview-badge">3</span>
+    </button>
+    <p class="sb-lbl">Monetise</p>
+    <button class="nav" onclick="nav('affiliate',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Affiliate
+    </button>
+  </div>
+  <div class="sb-user">
+    <div class="user-wrap" onclick="showToast('Account settings coming soon','info')">
+      <div class="avatar">AK</div>
+      <div><p class="uname">Ahmed Khan</p><p class="uplan">Combo Agency</p></div>
+    </div>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<div class="main">
+  <div class="topbar">
+    <span class="tb-title" id="tb-title">Dashboard</span>
+    <div class="tb-right">
+      <span class="pill g" id="sys-status">All systems operational</span>
+      <span class="pill">Combo Agency</span>
+    </div>
+  </div>
+  <div class="content">
+
+  <!-- ═══ DASHBOARD ═══ -->
+  <div class="page active" id="page-overview">
+    <p class="ph">Good morning, Ahmed 👋</p>
+    <p class="ps">Your channels are running. Here's everything at a glance.</p>
+    <div class="sg">
+      <div class="sc" style="--ac:#6366f1"><p class="sl">Videos posted</p><p class="sv">47</p><p class="ss">last 30 days</p></div>
+      <div class="sc" style="--ac:#10b981"><p class="sl">Total views</p><p class="sv">284K</p><p class="ss">across all channels</p></div>
+      <div class="sc" style="--ac:#f59e0b"><p class="sl">Est. revenue</p><p class="sv">$1,240</p><p class="ss">this month</p></div>
+      <div class="sc" style="--ac:#ec4899"><p class="sl">Affiliate earned</p><p class="sv">$184</p><p class="ss">pending payout</p></div>
+      <div class="sc" style="--ac:#14b8a6" style="cursor:pointer" onclick="nav('preview',document.querySelector('.nav:nth-child(6)'))"><p class="sl">Preview queue</p><p class="sv" id="dash-queue">3</p><p class="ss">awaiting review</p></div>
+      <div class="sc" style="--ac:#a78bfa"><p class="sl">AI improvements</p><p class="sv">12</p><p class="ss">this month</p></div>
+    </div>
+    <div class="g2">
+      <div class="card">
+        <p class="ct">Active channels</p>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div style="display:flex;align-items:center;gap:9px;padding:7px 9px;background:var(--bg3);border-radius:8px;cursor:pointer" onclick="nav('channels',document.querySelectorAll('.nav')[2])">
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0"></div>
+            <span style="font-size:.79rem;color:var(--text);flex:1">Psychology Facts Daily</span>
+            <span class="badge b-green">10 shorts/day</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;padding:7px 9px;background:var(--bg3);border-radius:8px;cursor:pointer" onclick="nav('channels',document.querySelectorAll('.nav')[2])">
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0"></div>
+            <span style="font-size:.79rem;color:var(--text);flex:1">Side Hustle Academy</span>
+            <span class="badge b-purple">4 videos/week</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;padding:7px 9px;background:var(--bg3);border-radius:8px;cursor:pointer" onclick="nav('channels',document.querySelectorAll('.nav')[2])">
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--amber);flex-shrink:0"></div>
+            <span style="font-size:.79rem;color:var(--text);flex:1">Stoic Mindset</span>
+            <span class="badge b-amber">paused</span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <p class="ct">Today's activity</p>
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-size:.77rem;color:var(--text2)">Videos created</span><span style="font-size:.8rem;font-weight:600">10</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-size:.77rem;color:var(--text2)">Posted to YouTube</span><span style="font-size:.8rem;font-weight:600">7</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-size:.77rem;color:var(--text2)">Pending your review</span><span style="font-size:.8rem;font-weight:600;color:#fcd34d;cursor:pointer" onclick="nav('preview',null)">3 →</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0"><span style="font-size:.77rem;color:var(--text2)">Views gained today</span><span style="font-size:.8rem;font-weight:600;color:var(--green)">+6,840</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <p class="ct">Top performing video this week</p>
+      <div style="display:flex;align-items:center;gap:13px;flex-wrap:wrap">
+        <div style="width:76px;height:52px;background:var(--bg3);border-radius:7px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </div>
+        <div style="flex:1;min-width:0">
+          <p style="font-size:.86rem;font-weight:600;margin-bottom:3px">"3 psychology tricks that make people instantly like you"</p>
+          <p style="font-size:.71rem;color:var(--text2)">Psychology Facts Daily · posted 3 days ago</p>
+        </div>
+        <div style="display:flex;gap:14px;flex-shrink:0">
+          <div style="text-align:center"><p style="font-size:.63rem;color:var(--text3)">Views</p><p style="font-size:.97rem;font-weight:700">12.4K</p></div>
+          <div style="text-align:center"><p style="font-size:.63rem;color:var(--text3)">Likes</p><p style="font-size:.97rem;font-weight:700">680</p></div>
+          <div style="text-align:center"><p style="font-size:.63rem;color:var(--text3)">Like ratio</p><p style="font-size:.97rem;font-weight:700;color:#34d399">5.5%</p></div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-p" onclick="nav('preview',null)">Review queue (3) →</button>
+      <button class="btn btn-o" onclick="nav('analytics',null)">View analytics</button>
+      <button class="btn btn-o" onclick="nav('niches',null)">View my niche</button>
+    </div>
+  </div>
+
+  <!-- ═══ CHANNELS ═══ -->
+  <div class="page" id="page-channels">
+    <p class="ph">My channels</p>
+    <p class="ps">Control where your content gets posted. YouTube is always active. Toggle TikTok and Instagram per channel. Long-form videos only post to YouTube — shorts and auto-extracted clips can go to all platforms.</p>
+
+    <!-- Channel 1 — Shorts -->
+    <div class="ch-card">
+      <div class="ch-head">
+        <div class="ch-icon" style="background:rgba(16,185,129,.12)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+        <div style="flex:1"><p class="ch-name">Psychology Facts Daily</p><p class="ch-sub">Shorts · 10 videos/day · Education niche</p></div>
+        <span class="badge b-green">Active</span>
+        <button class="btn btn-o btn-sm" onclick="toggleChannelPause('ch1',this)">Pause channel</button>
+      </div>
+      <p style="font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:9px">Posting destinations</p>
+      <div class="plat-row">
+        <div class="plat-icon" style="background:rgba(239,68,68,.1)"><svg width="12" height="12" viewBox="0 0 24 24" fill="#f87171"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 0 0 1.46 6.42 29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02" fill="white"/></svg></div>
+        <div style="flex:1"><p class="plat-name">YouTube</p><p class="plat-note">All shorts — always active</p></div>
+        <div class="locked-toggle" title="YouTube is required"></div>
+      </div>
+      <div class="plat-row">
+        <div class="plat-icon" style="background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.08)"><svg width="12" height="12" viewBox="0 0 24 24" fill="rgba(255,255,255,.65)"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.34 6.34 0 0 0-6.13 6.29 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.18 8.18 0 0 0 4.78 1.52V6.75a4.85 4.85 0 0 1-1.01-.06z"/></svg></div>
+        <div style="flex:1"><p class="plat-name">TikTok</p><p class="plat-note">Shorts only — long-form never posted here</p></div>
+        <label class="toggle"><input type="checkbox" checked id="ch1-tiktok" onchange="savePlatToggle('Psychology Facts Daily','TikTok',this.checked)"><span class="tgl-sl"></span></label>
+      </div>
+      <div class="plat-row" style="border-bottom:none">
+        <div class="plat-icon" style="background:rgba(225,48,108,.1)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="#f472b6" stroke="none"/></svg></div>
+        <div style="flex:1"><p class="plat-name">Instagram Reels</p><p class="plat-note">Shorts only — long-form never posted here</p></div>
+        <label class="toggle"><input type="checkbox" checked id="ch1-ig" onchange="savePlatToggle('Psychology Facts Daily','Instagram',this.checked)"><span class="tgl-sl"></span></label>
+      </div>
+    </div>
+
+    <!-- Channel 2 — Longform -->
+    <div class="ch-card">
+      <div class="ch-head">
+        <div class="ch-icon" style="background:rgba(99,102,241,.12)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+        <div style="flex:1"><p class="ch-name">Side Hustle Academy</p><p class="ch-sub">Long-form + clips · 4 videos/week · Finance niche</p></div>
+        <span class="badge b-green">Active</span>
+        <button class="btn btn-o btn-sm" onclick="toggleChannelPause('ch2',this)">Pause channel</button>
+      </div>
+      <p style="font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:9px">Posting destinations</p>
+      <div class="plat-row">
+        <div class="plat-icon" style="background:rgba(239,68,68,.1)"><svg width="12" height="12" viewBox="0 0 24 24" fill="#f87171"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 0 0 1.46 6.42 29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02" fill="white"/></svg></div>
+        <div style="flex:1"><p class="plat-name">YouTube</p><p class="plat-note">Long-form + auto-extracted clips — always active</p></div>
+        <div class="locked-toggle"></div>
+      </div>
+      <div class="plat-row">
+        <div class="plat-icon" style="background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.08)"><svg width="12" height="12" viewBox="0 0 24 24" fill="rgba(255,255,255,.65)"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.34 6.34 0 0 0-6.13 6.29 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.18 8.18 0 0 0 4.78 1.52V6.75a4.85 4.85 0 0 1-1.01-.06z"/></svg></div>
+        <div style="flex:1"><p class="plat-name">TikTok <span style="font-size:.63rem;color:var(--text3)">(extracted clips only)</span></p><p class="plat-note">Auto-clipped shorts from long-form — full videos never posted</p></div>
+        <label class="toggle"><input type="checkbox" id="ch2-tiktok" onchange="savePlatToggle('Side Hustle Academy','TikTok',this.checked)"><span class="tgl-sl"></span></label>
+      </div>
+      <div class="plat-row" style="border-bottom:none">
+        <div class="plat-icon" style="background:rgba(225,48,108,.1)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="#f472b6" stroke="none"/></svg></div>
+        <div style="flex:1"><p class="plat-name">Instagram Reels <span style="font-size:.63rem;color:var(--text3)">(extracted clips only)</span></p><p class="plat-note">Auto-clipped shorts from long-form — full videos never posted</p></div>
+        <label class="toggle"><input type="checkbox" id="ch2-ig" onchange="savePlatToggle('Side Hustle Academy','Instagram',this.checked)"><span class="tgl-sl"></span></label>
+      </div>
+      <div class="info-bar">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fcd34d" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <p>Long-form videos (25–30 min) post to <strong style="color:#fcd34d">YouTube only</strong>. The auto-extracted short clips from each video can go to TikTok and Instagram using the toggles above.</p>
+      </div>
+    </div>
+
+    <!-- Channel 3 — Paused -->
+    <div class="ch-card" style="opacity:.5">
+      <div class="ch-head">
+        <div class="ch-icon" style="background:rgba(107,114,128,.1)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+        <div style="flex:1"><p class="ch-name">Stoic Mindset</p><p class="ch-sub">Shorts · paused · Self Improvement niche</p></div>
+        <span class="badge b-amber">Paused</span>
+        <button class="btn btn-g btn-sm" onclick="toggleChannelPause('ch3',this)">Resume</button>
+      </div>
+    </div>
+
+    <div style="margin-top:4px">
+      <button class="btn btn-p" onclick="showModal('add-channel-modal')">+ Add new channel</button>
+    </div>
+  </div>
+
+  <!-- ═══ NICHES ═══ -->
+  <div class="page" id="page-niches">
+    <p class="ph">Niche finder</p>
+    <p class="ps">Niches scored by CPM, trend momentum, competition and view potential. Your niche is locked to your channel after setup — use your annual changes carefully. Switching too often hurts algorithm momentum.</p>
+
+    <!-- NICHE ACCESS GATE — state driven by plan -->
+    <div id="niche-gate-bar" style="display:flex;align-items:flex-start;gap:11px;padding:.9rem 1.1rem;border-radius:11px;margin-bottom:1.15rem;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.18)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" style="flex-shrink:0;margin-top:2px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <div style="flex:1">
+        <p style="font-size:.82rem;font-weight:600;color:#6ee7b7;margin-bottom:3px" id="gate-title">Niche locked — Psychology &amp; Human Behaviour</p>
+        <p style="font-size:.73rem;color:var(--text2);line-height:1.55" id="gate-desc">Your niche was set during account setup. Viralityy keeps your niche stable to protect algorithm momentum — switching mid-channel resets your audience signals and reduces views. You have <strong style="color:var(--text)" id="gate-changes-left">2 changes remaining</strong> this year.</p>
+      </div>
+      <div style="flex-shrink:0;display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+        <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn btn-o btn-sm" style="font-size:.67rem" onclick="setNicheGate('starter')">Starter view</button>
+          <button class="btn btn-o btn-sm" style="font-size:.67rem" onclick="setNicheGate('shorts_pro')">Shorts Pro</button>
+          <button class="btn btn-o btn-sm" style="font-size:.67rem" onclick="setNicheGate('growth')">Growth</button>
+        </div>
+        <p style="font-size:.59rem;color:var(--text3)">simulate plan ↑</p>
+      </div>
+    </div>
+
+    <!-- LOCKED STATE — shown for starter plan post-setup -->
+    <div id="niche-locked" style="display:none;text-align:center;padding:2.5rem 1.5rem;background:var(--bg2);border:1px solid rgba(239,68,68,.18);border-radius:13px;margin-bottom:1.25rem">
+      <div style="width:44px;height:44px;border-radius:11px;background:rgba(239,68,68,.08);display:flex;align-items:center;justify-content:center;margin:0 auto 12px">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <p style="font-size:.97rem;font-weight:600;margin-bottom:6px">Niche is locked on your plan</p>
+      <p style="font-size:.78rem;color:var(--text2);max-width:380px;margin:0 auto 8px;line-height:1.6">Your niche was set once at account setup: <strong style="color:var(--text)">Psychology &amp; Human Behaviour</strong>. The Starter plan does not allow niche changes — this protects your channel from performance drops caused by algorithm resets.</p>
+      <p style="font-size:.74rem;color:rgba(252,165,165,.75);max-width:380px;margin:0 auto 16px;line-height:1.55">Upgrade to <strong style="color:#fca5a5">Shorts Pro</strong> (2 changes/yr) or <strong style="color:#fca5a5">Growth / Agency</strong> (3 changes/yr) if you genuinely need to pivot your niche.</p>
+      <button class="btn btn-p" onclick="showToast('Redirecting to upgrade page…','info')">Upgrade to unlock niche changes →</button>
+    </div>
+
+    <!-- CHANGE LIMIT WARNING — shown when changes are used up -->
+    <div id="niche-limit-hit" style="display:none;text-align:center;padding:2rem 1.5rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.2);border-radius:13px;margin-bottom:1.25rem">
+      <p style="font-size:.9rem;font-weight:600;color:#fcd34d;margin-bottom:6px">You've used all your niche changes for this year</p>
+      <p style="font-size:.76rem;color:var(--text2);max-width:380px;margin:0 auto 14px;line-height:1.6">Your allowance resets on your account anniversary. Your current niche continues running — this is usually the right outcome anyway. Algorithm momentum builds over months, not weeks.</p>
+      <button class="btn btn-o btn-sm" onclick="document.getElementById('niche-limit-hit').style.display='none';document.getElementById('niche-content').style.display='block';renderNiches()">Browse niches anyway (view only)</button>
+    </div>
+
+    <div id="niche-content">
+      <div style="display:flex;gap:9px;margin-bottom:1.1rem;flex-wrap:wrap;align-items:center">
+        <select id="niche-cat" onchange="renderNiches()" style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:.79rem;padding:6px 11px;outline:none;cursor:pointer">
+          <option value="">All categories</option>
+          <option>Education</option><option>Finance & Business</option>
+          <option>Health & Wellness</option><option>Self Improvement</option>
+          <option>Technology</option><option>Lifestyle</option>
+        </select>
+        <select id="niche-sort" onchange="renderNiches()" style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:.79rem;padding:6px 11px;outline:none;cursor:pointer">
+          <option value="score">Best overall</option><option value="cpm">Highest CPM</option>
+          <option value="trend">Trending now</option><option value="views">Most views</option>
+          <option value="easy">Easiest to start</option>
+        </select>
+      </div>
+      <div id="niche-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:11px"></div>
+    </div>
+  </div>
+
+  <!-- ═══ ANALYTICS ═══ -->
+  <div class="page" id="page-analytics">
+    <p class="ph">Performance analytics</p>
+    <p class="ps">Views, engagement and performance flags across all your posted videos. Collected daily by the analytics engine.</p>
+    <div class="sg">
+      <div class="sc" style="--ac:#6366f1"><p class="sl">Total videos</p><p class="sv">47</p><p class="ss">tracked</p></div>
+      <div class="sc" style="--ac:#10b981"><p class="sl">Total views</p><p class="sv">284K</p><p class="ss">all time</p></div>
+      <div class="sc" style="--ac:#f59e0b"><p class="sl">Total likes</p><p class="sv">14.2K</p><p class="ss">all time</p></div>
+      <div class="sc" style="--ac:#ec4899"><p class="sl">Avg like ratio</p><p class="sv">4.4%</p><p class="ss">likes ÷ views</p></div>
+      <div class="sc" style="--ac:#34d399"><p class="sl">Good performers</p><p class="sv">18</p><p class="ss">above threshold</p></div>
+      <div class="sc" style="--ac:#f87171"><p class="sl">Need attention</p><p class="sv">7</p><p class="ss">below threshold</p></div>
+    </div>
+    <div class="g2">
+      <div class="card">
+        <p class="ct">Performance breakdown</p>
+        <div class="pbar-row"><span class="pbar-lbl">Good</span><div class="pbar-trk"><div class="pbar-fill" style="width:38%;background:#34d399"></div></div><span class="pbar-cnt">18</span></div>
+        <div class="pbar-row"><span class="pbar-lbl">Average</span><div class="pbar-trk"><div class="pbar-fill" style="width:47%;background:#a5b4fc"></div></div><span class="pbar-cnt">22</span></div>
+        <div class="pbar-row"><span class="pbar-lbl">Poor</span><div class="pbar-trk"><div class="pbar-fill" style="width:15%;background:#f87171"></div></div><span class="pbar-cnt">7</span></div>
+        <div class="divider"></div>
+        <p class="ct">Traffic sources</p>
+        <div class="pbar-row"><span class="pbar-lbl">Suggested</span><div class="pbar-trk"><div class="pbar-fill" style="width:62%;background:#6366f1"></div></div><span class="pbar-cnt">62%</span></div>
+        <div class="pbar-row"><span class="pbar-lbl">Search</span><div class="pbar-trk"><div class="pbar-fill" style="width:21%;background:#a5b4fc"></div></div><span class="pbar-cnt">21%</span></div>
+        <div class="pbar-row"><span class="pbar-lbl">Browse</span><div class="pbar-trk"><div class="pbar-fill" style="width:17%;background:#c4b5fd"></div></div><span class="pbar-cnt">17%</span></div>
+      </div>
+      <div class="card">
+        <p class="ct">Top 5 by views</p>
+        <div id="analytics-top"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:9px;margin-bottom:1rem;flex-wrap:wrap">
+        <p class="ct" style="margin:0;flex:1">All tracked videos</p>
+        <select id="an-sort" onchange="renderTable()" style="background:var(--bg3);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-size:.73rem;padding:4px 9px;outline:none">
+          <option value="views">Views</option><option value="likes">Likes</option>
+        </select>
+        <select id="an-flag" onchange="renderTable()" style="background:var(--bg3);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-size:.73rem;padding:4px 9px;outline:none">
+          <option value="">All</option><option value="good">Good</option><option value="average">Average</option><option value="poor">Poor</option>
+        </select>
+        <button class="btn btn-o btn-sm" onclick="showToast('Analytics refresh triggered — collecting from YouTube API','info')">Refresh data</button>
+      </div>
+      <div id="analytics-table"></div>
+    </div>
+  </div>
+
+  <!-- ═══ AI OPTIMISATION ═══ -->
+  <div class="page" id="page-learning">
+    <p class="ph">AI optimisation</p>
+    <p class="ps">Viralityy studies what's working on your channels and automatically improves future videos. No setup needed.</p>
+    <div class="sg" style="margin-bottom:1.4rem">
+      <div class="sc" style="--ac:#6366f1"><p class="sl">Improvements made</p><p class="sv">12</p><p class="ss">this month</p></div>
+      <div class="sc" style="--ac:#10b981"><p class="sl">Avg view increase</p><p class="sv">+31%</p><p class="ss">after optimisation</p></div>
+      <div class="sc" style="--ac:#f59e0b"><p class="sl">Top topic</p><p class="sv" style="font-size:1rem">Psychology</p><p class="ss">highest engagement</p></div>
+      <div class="sc" style="--ac:#34d399"><p class="sl">Best post day</p><p class="sv" style="font-size:1rem">Tuesday</p><p class="ss">for your audience</p></div>
+    </div>
+    <div class="g2">
+      <div class="card">
+        <p class="ct">What the AI has learnt</p>
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">
+            <div style="width:30px;height:30px;border-radius:7px;background:rgba(16,185,129,.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+            <div><p style="font-size:.79rem;font-weight:500;margin-bottom:2px">Storytelling hooks perform best</p><p style="font-size:.7rem;color:var(--text2)">Videos that open with a story get 40% more watch time</p></div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">
+            <div style="width:30px;height:30px;border-radius:7px;background:rgba(99,102,241,.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div>
+            <div><p style="font-size:.79rem;font-weight:500;margin-bottom:2px">Numbered titles drive more clicks</p><p style="font-size:.7rem;color:var(--text2)">"3 things…" titles get 28% higher click-through</p></div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">
+            <div style="width:30px;height:30px;border-radius:7px;background:rgba(245,158,11,.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fcd34d" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+            <div><p style="font-size:.79rem;font-weight:500;margin-bottom:2px">60–90 second videos retain best</p><p style="font-size:.7rem;color:var(--text2)">Audience drops off after 90s — AI keeps videos in sweet spot</p></div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0">
+            <div style="width:30px;height:30px;border-radius:7px;background:rgba(236,72,153,.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f9a8d4" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
+            <div><p style="font-size:.79rem;font-weight:500;margin-bottom:2px">Tuesday 3 PM gets most views</p><p style="font-size:.7rem;color:var(--text2)">Audience most active mid-week afternoons — auto-timed</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <p class="ct">Topics your audience loves</p>
+        <p style="font-size:.73rem;color:var(--text2);margin-bottom:10px">From your best-performing videos in the last 30 days.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:1.1rem">
+          <span class="tag">psychology</span><span class="tag">brain science</span><span class="tag">habits</span><span class="tag">mindset</span><span class="tag">social skills</span><span class="tag">stoicism</span><span class="tag">morning routine</span><span class="tag">discipline</span>
+        </div>
+        <div class="divider"></div>
+        <p class="ct">Recent improvements</p>
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:.73rem;color:var(--text2)">Switched to storytelling openings</span><span style="font-size:.68rem;color:var(--green)">+18% views</span></div>
+          <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:.73rem;color:var(--text2)">Shifted to numbered title format</span><span style="font-size:.68rem;color:var(--green)">+28% CTR</span></div>
+          <div style="display:flex;justify-content:space-between;padding:5px 0"><span style="font-size:.73rem;color:var(--text2)">Focused on psychology sub-topics</span><span style="font-size:.68rem;color:var(--green)">+22% likes</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="border-color:rgba(16,185,129,.15);background:rgba(16,185,129,.03)">
+      <div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap">
+        <div style="width:38px;height:38px;border-radius:9px;background:rgba(16,185,129,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+        <div style="flex:1"><p style="font-size:.83rem;font-weight:600;margin-bottom:2px">AI optimisation runs automatically every week</p><p style="font-size:.73rem;color:var(--text2)">Analyses your last 30 days of performance and quietly improves every new video. Nothing to configure.</p></div>
+        <button class="btn btn-g btn-sm" onclick="runOptimisation(this)">Run now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ CONTENT QUALITY ═══ -->
+  <div class="page" id="page-quality">
+    <p class="ph">Content quality</p>
+    <p class="ps">Every video Viralityy creates goes through a quality process — 6 automated passes — to make sure it looks, sounds and feels authentic.</p>
+    <div class="sg" style="margin-bottom:1.4rem">
+      <div class="sc" style="--ac:#6366f1"><p class="sl">Videos refined</p><p class="sv">47</p><p class="ss">total</p></div>
+      <div class="sc" style="--ac:#10b981"><p class="sl">Unique clips used</p><p class="sv">235</p><p class="ss">no repeats</p></div>
+      <div class="sc" style="--ac:#f59e0b"><p class="sl">Avg quality score</p><p class="sv">94%</p><p class="ss">vs AI detection</p></div>
+      <div class="sc" style="--ac:#ec4899"><p class="sl">Voice variations</p><p class="sv">376</p><p class="ss">applied this month</p></div>
+    </div>
+    <div class="g2">
+      <div class="card">
+        <p class="ct">Quality passes on every video</p>
+        <div class="qp"><div class="qp-icon" style="background:rgba(99,102,241,.1)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div><div><p class="qp-name">Script sounds natural</p><p class="qp-desc">Natural pauses, emphasis and phrasing — sounds like a real person, not a robot.</p><span class="qp-res">3 natural touches added to last video</span></div></div>
+        <div class="qp"><div class="qp-icon" style="background:rgba(16,185,129,.1)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div><div><p class="qp-name">Voice varies naturally</p><p class="qp-desc">Speed and tone shift per sentence — no two lines sound identical.</p><span class="qp-res">8 sentences tuned · avg speed 1.015×</span></div></div>
+        <div class="qp"><div class="qp-icon" style="background:rgba(245,158,11,.1)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fcd34d" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg></div><div><p class="qp-name">Fresh footage every time</p><p class="qp-desc">Background clips are tracked across all videos — no clip ever reused.</p><span class="qp-res">5 clips selected · 0 repeats from 47 videos</span></div></div>
+        <div class="qp"><div class="qp-icon" style="background:rgba(236,72,153,.1)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f9a8d4" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></div><div><p class="qp-name">Cuts feel cinematic</p><p class="qp-desc">8 transition types, never repeated back-to-back.</p><span class="qp-res">Last sequence: l_cut → j_cut → cut → cross_fade</span></div></div>
+        <div class="qp"><div class="qp-icon" style="background:rgba(20,184,166,.1)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg></div><div><p class="qp-name">Colour looks unique each time</p><p class="qp-desc">One of 6 colour grade presets with micro-random offsets per video.</p><span class="qp-res">Grade: warm_natural · 5802K · sat 1.031</span></div></div>
+        <div class="qp"><div class="qp-icon" style="background:rgba(167,139,250,.1)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><div><p class="qp-name">Subtitles look hand-timed</p><p class="qp-desc">±3.5% duration variation per subtitle card — mechanical uniformity eliminated.</p><span class="qp-res">12 cards varied · avg ±2.1% from base</span></div></div>
+      </div>
+      <div class="card">
+        <p class="ct">Last video processed</p>
+        <p style="font-size:.83rem;font-weight:500;margin-bottom:3px">"3 psychology tricks that make people like you"</p>
+        <p style="font-size:.7rem;color:var(--text2);margin-bottom:11px">Psychology Facts Daily · 2 hours ago</p>
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="display:flex;justify-content:space-between;font-size:.73rem;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text2)">Natural speech touches</span><span style="color:var(--green)">3</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.73rem;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text2)">Voice variations applied</span><span style="color:var(--green)">8</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.73rem;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text2)">Unique footage clips</span><span style="color:var(--green)">5</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.73rem;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text2)">Cut style</span><span style="color:var(--text)">Cinematic mix</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:.73rem;padding:4px 0"><span style="color:var(--text2)">Colour tone</span><span style="color:var(--text)">Warm natural</span></div>
+        </div>
+        <div class="divider"></div>
+        <p class="ct">Why this matters</p>
+        <p style="font-size:.76rem;color:var(--text2);line-height:1.6">YouTube rewards watch time and engagement. Videos that feel authentic keep viewers watching longer — more watch time means more recommendations, more views, more revenue. All of this runs automatically on every video Viralityy creates.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PREVIEW QUEUE ═══ -->
+  <div class="page" id="page-preview">
+    <p class="ph">Preview queue</p>
+    <p class="ps">Review videos before they post. Approve to post immediately, skip to drop, or request an edit. Auto-posts after 24 hours if untouched.</p>
+    <div style="display:flex;align-items:center;gap:10px;padding:.85rem 1.1rem;background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin-bottom:1.1rem;flex-wrap:wrap">
+      <span style="font-size:.77rem;color:var(--text2);flex:1">Auto-post videos not reviewed within 24 hours</span>
+      <div style="display:flex;align-items:center;gap:7px">
+        <span style="font-size:.76rem;color:var(--text2)" id="auto-lbl">Auto-post: On</span>
+        <label class="toggle"><input type="checkbox" checked onchange="document.getElementById('auto-lbl').textContent=this.checked?'Auto-post: On':'Auto-post: Off';showToast('Auto-post '+(this.checked?'enabled':'disabled'),'info')"><span class="tgl-sl"></span></label>
+      </div>
+    </div>
+    <div style="display:flex;gap:7px;margin-bottom:1.1rem;flex-wrap:wrap" id="pv-chips"></div>
+    <div id="preview-list"></div>
+  </div>
+
+  <!-- ═══ AFFILIATE ═══ -->
+  <div class="page" id="page-affiliate">
+    <p class="ph">Affiliate programme</p>
+    <p class="ps">Earn 30% recurring commission on every referred user's payment, for the lifetime of their subscription. Minimum $50 to withdraw.</p>
+    <div class="aff-link">
+      <div style="flex:1"><p style="font-size:.63rem;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px">Your referral link</p><p class="aff-url" id="aff-url">https://viralityy.com/?ref=A3F8C21B</p></div>
+      <button class="copy-btn" id="copy-btn" onclick="copyAff()">Copy link</button>
+    </div>
+    <div class="sg">
+      <div class="sc" style="--ac:#6366f1"><p class="sl">Total clicks</p><p class="sv">142</p><p class="ss">link visits</p></div>
+      <div class="sc" style="--ac:#a78bfa"><p class="sl">Signups</p><p class="sv">18</p><p class="ss">registered</p></div>
+      <div class="sc" style="--ac:#10b981"><p class="sl">Conversions</p><p class="sv">7</p><p class="ss">38.9% rate</p></div>
+      <div class="sc" style="--ac:#f59e0b"><p class="sl">Total earned</p><p class="sv">$184</p><p class="ss">all time</p></div>
+      <div class="sc" style="--ac:#34d399"><p class="sl">Paid out</p><p class="sv">$117</p><p class="ss">received</p></div>
+    </div>
+    <div class="card" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:11px;margin-bottom:12px">
+      <div><p style="font-size:.63rem;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px">Pending payout</p><p style="font-size:1.9rem;font-weight:700;color:#34d399">$67.20</p><p style="font-size:.73rem;color:var(--green);margin-top:2px">Ready to withdraw!</p></div>
+      <button class="btn btn-g" onclick="showModal('payout-modal')">Request payout →</button>
+    </div>
+    <div class="g2">
+      <div class="card">
+        <p class="ct">Monthly earnings</p>
+        <div class="mbar-row"><span class="mbar-lbl">Apr 2025</span><div class="mbar-trk"><div class="mbar-fill" style="width:80%"></div></div><span class="mbar-val">$47.40</span></div>
+        <div class="mbar-row"><span class="mbar-lbl">Mar 2025</span><div class="mbar-trk"><div class="mbar-fill" style="width:60%"></div></div><span class="mbar-val">$35.40</span></div>
+        <div class="mbar-row"><span class="mbar-lbl">Feb 2025</span><div class="mbar-trk"><div class="mbar-fill" style="width:100%"></div></div><span class="mbar-val">$58.80</span></div>
+        <div class="mbar-row"><span class="mbar-lbl">Jan 2025</span><div class="mbar-trk"><div class="mbar-fill" style="width:50%"></div></div><span class="mbar-val">$29.70</span></div>
+      </div>
+      <div class="card">
+        <p class="ct">Commission per plan (30%)</p>
+        <table class="tbl">
+          <thead><tr><th>Plan</th><th>Price</th><th>Your 30%</th></tr></thead>
+          <tbody>
+            <tr><td>Combo Agency</td><td>$199</td><td style="color:#34d399;font-weight:600">$59.70</td></tr>
+            <tr><td>Combo Pro</td><td>$99</td><td style="color:#34d399;font-weight:600">$29.70</td></tr>
+            <tr><td>Longform Pro</td><td>$89</td><td style="color:#34d399;font-weight:600">$26.70</td></tr>
+            <tr><td>Shorts Pro</td><td>$59</td><td style="color:#34d399;font-weight:600">$17.70</td></tr>
+            <tr><td>Longform Starter</td><td>$49</td><td style="color:#34d399;font-weight:600">$14.70</td></tr>
+            <tr><td>Shorts Starter</td><td>$29</td><td style="color:#34d399;font-weight:600">$8.70</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <p class="ct">Recent commissions</p>
+      <table class="tbl">
+        <thead><tr><th>Plan</th><th>Payment</th><th>Commission</th><th>Status</th><th>Date</th></tr></thead>
+        <tbody>
+          <tr><td>Combo Pro</td><td>$99</td><td style="color:#34d399">$29.70</td><td><span class="badge b-amber">pending</span></td><td>Apr 28</td></tr>
+          <tr><td>Shorts Pro</td><td>$59</td><td style="color:#34d399">$17.70</td><td><span class="badge b-amber">pending</span></td><td>Apr 21</td></tr>
+          <tr><td>Longform Pro</td><td>$89</td><td style="color:#34d399">$26.70</td><td><span class="badge b-gray">paid</span></td><td>Mar 15</td></tr>
+          <tr><td>Shorts Starter</td><td>$29</td><td style="color:#34d399">$8.70</td><td><span class="badge b-gray">paid</span></td><td>Mar 1</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<!-- MODALS -->
+<div class="modal-bg" id="payout-modal">
+  <div class="modal">
+    <h3>Request payout</h3>
+    <p>Choose your payout method. Processed within 7 business days.</p>
+    <select id="payout-method"><option value="">Select method</option><option>Payoneer</option><option>Stripe (bank transfer)</option><option>Bank transfer</option></select>
+    <input type="text" placeholder="Account email / IBAN / Payoneer ID">
+    <div class="modal-acts">
+      <button style="background:transparent;border:1px solid var(--border2);color:var(--text2)" onclick="closeModal('payout-modal')">Cancel</button>
+      <button style="background:var(--green);border:none;color:#fff" onclick="submitPayout()">Submit request</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="edit-modal">
+  <div class="modal">
+    <h3>Request an edit</h3>
+    <p>Describe what you'd like changed. AI will regenerate the video with your instructions.</p>
+    <textarea id="edit-text" placeholder="e.g. Make the hook more surprising. Change title to a question. Cut to 60 seconds."></textarea>
+    <div class="modal-acts">
+      <button style="background:transparent;border:1px solid var(--border2);color:var(--text2)" onclick="closeModal('edit-modal')">Cancel</button>
+      <button style="background:var(--purple2);border:none;color:#fff" onclick="submitEdit()">Submit edit</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="add-channel-modal">
+  <div class="modal">
+    <h3>Add a new channel</h3>
+    <p>Connect your YouTube channel and choose a content type to get started.</p>
+    <input type="text" placeholder="YouTube channel URL or handle (@yourchannel)">
+    <select><option value="">Content type</option><option>Shorts (up to 10/day)</option><option>Long-form (up to 4/week)</option><option>Combo (shorts + long-form)</option></select>
+    <input type="text" placeholder="Niche (or use Niche Finder to pick one)">
+    <div class="modal-acts">
+      <button style="background:transparent;border:1px solid var(--border2);color:var(--text2)" onclick="closeModal('add-channel-modal')">Cancel</button>
+      <button style="background:var(--purple2);border:none;color:#fff" onclick="addChannel()">Connect channel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="niche-detail-modal">
+  <div class="modal" style="max-width:500px">
+    <h3 id="nd-title">Niche detail</h3>
+    <div id="nd-body"></div>
+    <div class="modal-acts">
+      <button style="background:transparent;border:1px solid var(--border2);color:var(--text2)" onclick="closeModal('niche-detail-modal')">Close</button>
+      <button style="background:var(--green);border:none;color:#fff" id="nd-select-btn">Use this niche →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════
+// DATA — mirrors backend engines
+// ════════════════════════════════════════════
+const NICHES = [
+  {id:'psychology_facts',label:'Psychology & Human Behaviour',category:'Education',score:77.4,cpm:'$5–$18',competition:'low',difficulty:2,trend:9,views:50000,evergreen:true,tags:['psychology','mind tricks','human behaviour'],bars:[{l:'CPM',v:6.3,m:30,c:'#34d399'},{l:'Trend',v:22.5,m:25,c:'#a5b4fc'},{l:'Opportunity',v:23.6,m:25,c:'#fbbf24'},{l:'Views',v:20,m:20,c:'#f472b6'}],topics:['3 psychology tricks that make people instantly like you','Why your brain lies to you every single day','The psychology of procrastination (and how to beat it)','Why smart people make terrible decisions','5 social skills nobody teaches you but everyone needs'],revenue:{low:'$890',mid:'$1,780',high:'$3,560'}},
+  {id:'history_facts',label:'History & Surprising Facts',category:'Education',score:71.0,cpm:'$4–$12',competition:'low',difficulty:2,trend:8,views:45000,evergreen:true,tags:['history','did you know','facts'],bars:[{l:'CPM',v:4.4,m:30,c:'#34d399'},{l:'Trend',v:20,m:25,c:'#a5b4fc'},{l:'Opportunity',v:23.6,m:25,c:'#fbbf24'},{l:'Views',v:18,m:20,c:'#f472b6'}],topics:['The real reason Rome fell — not what you were taught','5 historical facts that sound fake but are true','The most dangerous job in history (nobody talks about it)','What life was actually like 1000 years ago','The event that changed everything — and nobody remembers it'],revenue:{low:'$720',mid:'$1,440',high:'$2,880'}},
+  {id:'ai_tools',label:'AI Tools & Productivity',category:'Technology',score:63.9,cpm:'$10–$38',competition:'medium',difficulty:4,trend:10,views:25000,evergreen:false,tags:['ChatGPT','AI apps','productivity'],bars:[{l:'CPM',v:13.1,m:30,c:'#34d399'},{l:'Trend',v:25,m:25,c:'#a5b4fc'},{l:'Opportunity',v:15.8,m:25,c:'#fbbf24'},{l:'Views',v:10,m:20,c:'#f472b6'}],topics:['10 AI tools that replaced my $500/month software stack','I automated my entire business with AI — here\'s how','Stop using Google — use these AI tools instead','The AI tool most people don\'t know about (but should)','How I save 3 hours every day with ChatGPT'],revenue:{low:'$600',mid:'$1,200',high:'$2,400'}},
+  {id:'book_summaries',label:'Book Summaries & Key Ideas',category:'Self Improvement',score:63.3,cpm:'$5–$16',competition:'medium',difficulty:2,trend:8,views:35000,evergreen:true,tags:['book review','non-fiction','key lessons'],bars:[{l:'CPM',v:5.5,m:30,c:'#34d399'},{l:'Trend',v:20,m:25,c:'#a5b4fc'},{l:'Opportunity',v:19.4,m:25,c:'#fbbf24'},{l:'Views',v:14,m:20,c:'#f472b6'}],topics:['Atomic Habits in 3 minutes — the one idea that changes everything','The Psychology of Money — key lessons in 5 minutes','Why "The Subtle Art" is more important than ever','5 books that will change how you see money','Thinking Fast and Slow — the concept that explained everything'],revenue:{low:'$560',mid:'$1,120',high:'$2,240'}},
+  {id:'side_hustles',label:'Side Hustles & Online Income',category:'Finance & Business',score:59.7,cpm:'$8–$30',competition:'medium',difficulty:4,trend:9,views:15000,evergreen:true,tags:['make money online','freelance','passive income'],bars:[{l:'CPM',v:10.4,m:30,c:'#34d399'},{l:'Trend',v:22.5,m:25,c:'#a5b4fc'},{l:'Opportunity',v:19.4,m:25,c:'#fbbf24'},{l:'Views',v:6,m:20,c:'#f472b6'}],topics:['The side hustle nobody talks about in 2025','I made $3,000 last month with zero experience — here\'s how','5 ways to make money online that actually work','The easiest online income stream most people overlook','How to start a side hustle with $0'],revenue:{low:'$480',mid:'$960',high:'$1,920'}},
+  {id:'stoicism',label:'Stoicism & Philosophy',category:'Self Improvement',score:63.6,cpm:'$5–$18',competition:'low',difficulty:2,trend:7,views:28000,evergreen:true,tags:['stoic','Marcus Aurelius','mindset'],bars:[{l:'CPM',v:6.3,m:30,c:'#34d399'},{l:'Trend',v:17.5,m:25,c:'#a5b4fc'},{l:'Opportunity',v:23.6,m:25,c:'#fbbf24'},{l:'Views',v:11.2,m:20,c:'#f472b6'}],topics:['Marcus Aurelius\' best advice for hard times','3 stoic habits that will transform your mornings','The stoic way to deal with toxic people','What Epictetus said about anxiety (still relevant today)','Stop worrying about things you can\'t control — stoicism explained'],revenue:{low:'$420',mid:'$840',high:'$1,680'}},
+  {id:'sleep',label:'Sleep & Recovery',category:'Health & Wellness',score:65.3,cpm:'$7–$25',competition:'low',difficulty:2,trend:8,views:20000,evergreen:true,tags:['better sleep','insomnia','recovery'],bars:[{l:'CPM',v:8.7,m:30,c:'#34d399'},{l:'Trend',v:20,m:25,c:'#a5b4fc'},{l:'Opportunity',v:23.6,m:25,c:'#fbbf24'},{l:'Views',v:8,m:20,c:'#f472b6'}],topics:['Sleep science — why 7 hours is wrong for you','The one thing you do before bed that kills your sleep','Why you\'re always tired (it\'s not what you think)','The 20-minute trick that fixed my sleep permanently','5 things ruining your sleep that you do every day'],revenue:{low:'$512',mid:'$1,024',high:'$2,048'}},
+  {id:'personal_finance',label:'Personal Finance',category:'Finance & Business',score:58.1,cpm:'$12–$45',competition:'high',difficulty:7,trend:8,views:8500,evergreen:true,tags:['budgeting','saving','investing'],bars:[{l:'CPM',v:17,m:30,c:'#34d399'},{l:'Trend',v:20,m:25,c:'#a5b4fc'},{l:'Opportunity',v:9.7,m:25,c:'#fbbf24'},{l:'Views',v:3.4,m:20,c:'#f472b6'}],topics:['5 money mistakes to stop making in your 20s','How I saved $10,000 in 6 months on a low income','The 50/30/20 rule explained in 60 seconds','Why your savings account is losing you money','How to build an emergency fund from $0'],revenue:{low:'$408',mid:'$816',high:'$1,632'}},
+  {id:'mental_health',label:'Mental Health & Mindfulness',category:'Health & Wellness',score:59.6,cpm:'$6–$22',competition:'medium',difficulty:3,trend:9,views:18000,evergreen:true,tags:['anxiety','meditation','self care'],bars:[{l:'CPM',v:7.5,m:30,c:'#34d399'},{l:'Trend',v:22.5,m:25,c:'#a5b4fc'},{l:'Opportunity',v:19.4,m:25,c:'#fbbf24'},{l:'Views',v:7.2,m:20,c:'#f472b6'}],topics:['3 signs you\'re more anxious than you realise','The breathing technique that stops anxiety in 90 seconds','Why therapy isn\'t working for you (and what to do instead)','The one mindfulness habit that actually works','How to stop overthinking — scientifically proven'],revenue:{low:'$468',mid:'$936',high:'$1,872'}},
+  {id:'freelancing',label:'Freelancing & Remote Work',category:'Finance & Business',score:56.2,cpm:'$7–$25',competition:'medium',difficulty:3,trend:8,views:12000,evergreen:true,tags:['freelance','Upwork','work from home'],bars:[{l:'CPM',v:8.7,m:30,c:'#34d399'},{l:'Trend',v:20,m:25,c:'#a5b4fc'},{l:'Opportunity',v:19.4,m:25,c:'#fbbf24'},{l:'Views',v:4.8,m:20,c:'#f472b6'}],topics:['How to get your first freelance client with no experience','The freelance skill that pays the most in 2025','I quit my job to freelance — here\'s what happened after 1 year','5 freelancing mistakes that cost me $10,000','How to charge more as a freelancer (without losing clients)'],revenue:{low:'$384',mid:'$768',high:'$1,536'}},
+  {id:'smartphone',label:'Smartphone Tips & Tricks',category:'Technology',score:55.8,cpm:'$4–$14',competition:'medium',difficulty:2,trend:7,views:30000,evergreen:true,tags:['iPhone tips','Android tricks','hidden features'],bars:[{l:'CPM',v:4.9,m:30,c:'#34d399'},{l:'Trend',v:17.5,m:25,c:'#a5b4fc'},{l:'Opportunity',v:21.5,m:25,c:'#fbbf24'},{l:'Views',v:12,m:20,c:'#f472b6'}],topics:['10 iPhone features you didn\'t know existed','The hidden Android setting that changes everything','Stop doing this on your phone — it\'s draining your battery','5 apps you should delete right now','The phone setting that protects your privacy (most people miss it)'],revenue:{low:'$360',mid:'$720',high:'$1,440'}},
+  {id:'minimalism',label:'Minimalism & Simple Living',category:'Lifestyle',score:53.4,cpm:'$4–$14',competition:'low',difficulty:2,trend:7,views:20000,evergreen:true,tags:['minimalist','declutter','simple life'],bars:[{l:'CPM',v:4.9,m:30,c:'#34d399'},{l:'Trend',v:17.5,m:25,c:'#a5b4fc'},{l:'Opportunity',v:23.6,m:25,c:'#fbbf24'},{l:'Views',v:8,m:20,c:'#f472b6'}],topics:['I got rid of 80% of my stuff — here\'s what changed','The minimalism habit that saved me $400/month','Why owning less actually makes you happier (the science)','30-day declutter challenge that changed my life','5 things you own that are making you unhappy'],revenue:{low:'$288',mid:'$576',high:'$1,152'}},
+];
+
+const ANALYTICS_VIDEOS = [
+  {title:'3 psychology tricks that make people instantly like you',views:12400,likes:680,comments:98,likeRatio:0.055,flag:'good'},
+  {title:'Why your brain lies to you every single day',views:9800,likes:510,comments:74,likeRatio:0.052,flag:'good'},
+  {title:'How to save your first $10,000 on a low income',views:8200,likes:290,comments:62,likeRatio:0.035,flag:'average'},
+  {title:'3 stoic habits for your morning routine',views:7600,likes:380,comments:55,likeRatio:0.050,flag:'good'},
+  {title:'The psychology of procrastination (and how to beat it)',views:6900,likes:240,comments:41,likeRatio:0.035,flag:'average'},
+  {title:'Sleep science: why 7 hours is wrong for you',views:5100,likes:120,comments:22,likeRatio:0.024,flag:'poor'},
+  {title:'5 AI tools that replaced my $400/month software stack',views:4800,likes:210,comments:38,likeRatio:0.044,flag:'average'},
+  {title:'Book summary: Atomic Habits in 3 minutes',views:4200,likes:190,comments:29,likeRatio:0.045,flag:'average'},
+  {title:'The side hustle nobody talks about in 2025',views:3100,likes:80,comments:14,likeRatio:0.026,flag:'poor'},
+  {title:'Why smart people procrastinate more than others',views:2800,likes:70,comments:11,likeRatio:0.025,flag:'poor'},
+];
+
+let PREVIEW_QUEUE = [
+  {id:'p1',title:'3 psychology tricks that make people instantly like you',niche:'Psychology',type:'short',platform:'youtube',hoursLeft:3.2,urgent:true,script:'Most people spend their entire lives trying to be liked without understanding the science behind it. The first trick is mirroring — subtly matching body language increases rapport by up to 40%. The second is using someone\'s name three times. The third will surprise you.'},
+  {id:'p2',title:'Why your brain lies to you every single day',niche:'Psychology',type:'short',platform:'tiktok',hoursLeft:11.5,urgent:false,script:'Your brain is running on autopilot 95% of the time. The stories it tells you feel completely real, but they\'re just patterns from your past being played on repeat. Here\'s how to break the cycle and take back control of your mind.'},
+  {id:'p3',title:'How to save your first $10,000 on a low income',niche:'Finance',type:'short',platform:'youtube',hoursLeft:20.1,urgent:false,script:'Nobody tells you this but the gap between earning and saving has nothing to do with your income. It\'s about three invisible expenses silently draining your account every single month. I found them and eliminated them — here\'s exactly how.'},
+];
+
+let selectedNiche = null;
+let editTargetId  = null;
+let nicheDetailId = null;
+
+// ════════════════════════════════════════════
+// NAVIGATION
+// ════════════════════════════════════════════
+const PAGE_TITLES = {
+  overview:'Dashboard',channels:'My Channels',niches:'Niche Finder',
+  analytics:'Analytics',learning:'AI Optimisation',quality:'Content Quality',
+  preview:'Preview Queue',affiliate:'Affiliate Programme'
+};
+function nav(id, btn) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));
+  const page = document.getElementById('page-'+id);
+  if(!page) return;
+  page.classList.add('active');
+  const navBtn = btn || document.querySelector(`.nav[onclick*="'${id}'"]`);
+  if(navBtn) navBtn.classList.add('active');
+  document.getElementById('tb-title').textContent = PAGE_TITLES[id]||id;
+  if(id==='niches')    { renderNiches(); }
+  if(id==='analytics') { renderAnalyticsTop(); renderTable(); }
+  if(id==='preview')   { renderPreview(); }
+  window.scrollTo(0,0);
+}
+
+// ════════════════════════════════════════════
+// CHANNELS
+// ════════════════════════════════════════════
+function savePlatToggle(channel, platform, on) {
+  showToast(`${platform} posting ${on?'enabled':'disabled'} for ${channel}`, on?'success':'info');
+}
+function toggleChannelPause(id, btn) {
+  const isPaused = btn.textContent.trim()==='Resume';
+  if(isPaused) {
+    btn.textContent='Pause channel'; btn.className='btn btn-o btn-sm';
+    showToast('Channel resumed — videos will start posting','success');
+  } else {
+    btn.textContent='Resume'; btn.className='btn btn-g btn-sm';
+    showToast('Channel paused — no new videos will post','info');
+  }
+}
+function addChannel() {
+  closeModal('add-channel-modal');
+  showToast('Channel connected! Viralityy will start generating content shortly.','success');
+}
+
+// ════════════════════════════════════════════
+// NICHES
+// ════════════════════════════════════════════
+// ── NICHE GATE — quota enforcement ────────────────────────────────
+// starter   : 0 changes post-setup (locked)
+// shorts_pro: 2 changes per year
+// growth    : 3 changes per year
+// agency    : 3 changes per year
+const NICHE_QUOTAS = { starter:0, shorts_pro:2, growth:3, agency:3 };
+let nicheState = { plan:'growth', changesUsed:0, currentNiche:'Psychology & Human Behaviour' };
+
+function setNicheGate(planKey) {
+  nicheState.plan = planKey;
+  nicheState.changesUsed = 0; // reset for demo
+
+  const bar      = document.getElementById('niche-gate-bar');
+  const locked   = document.getElementById('niche-locked');
+  const limitHit = document.getElementById('niche-limit-hit');
+  const content  = document.getElementById('niche-content');
+  const title    = document.getElementById('gate-title');
+  const desc     = document.getElementById('gate-desc');
+  const cLeft    = document.getElementById('gate-changes-left');
+  const quota    = NICHE_QUOTAS[planKey] || 0;
+  const remaining = quota - nicheState.changesUsed;
+  const niche    = nicheState.currentNiche;
+
+  // Hide all panels first
+  [locked, limitHit].forEach(el => { if(el) el.style.display='none'; });
+  if(bar)     bar.style.display    = 'flex';
+  if(content) content.style.display = 'block';
+
+  if (planKey === 'starter') {
+    if(bar)     bar.style.display    = 'none';
+    if(locked)  locked.style.display = 'block';
+    if(content) content.style.display= 'none';
+    return;
+  }
+
+  // Has changes remaining
+  const changeWord = remaining === 1 ? '1 change remaining this year' : remaining + ' changes remaining this year';
+  if(cLeft) { cLeft.textContent = changeWord; cLeft.style.color = remaining === 1 ? '#fcd34d' : 'var(--text)'; }
+  const planColors = { shorts_pro:['rgba(99,102,241,.07)','rgba(99,102,241,.2)','#a5b4fc'], growth:['rgba(16,185,129,.06)','rgba(16,185,129,.18)','#6ee7b7'], agency:['rgba(16,185,129,.06)','rgba(16,185,129,.18)','#6ee7b7'] };
+  const [bg, border, tc] = planColors[planKey] || planColors.growth;
+  if(bar) { bar.style.background = bg; bar.style.borderColor = border; }
+  if(title) { title.style.color = tc; title.textContent = 'Niche locked — ' + niche; }
+  if(desc) desc.innerHTML = 'Your channel is focused on <strong style="color:var(--text)">' + niche + '</strong>. Viralityy keeps your niche stable to protect algorithm momentum — switching mid-channel resets audience signals and reduces views. You have <strong style="color:var(--text)" id="gate-changes-left">' + changeWord + '</strong>.';
+  if(content) renderNiches();
+}
+function selectNiche(id, label) {
+  const quota = NICHE_QUOTAS[nicheState.plan] || 0;
+  if (quota === 0) { showToast('Niche changes are locked on your plan — upgrade to Shorts Pro or above.','error'); return; }
+  if (nicheState.changesUsed >= quota) { showToast('You have used all ' + quota + ' niche changes for this year.','error'); return; }
+  const remaining = quota - nicheState.changesUsed;
+  if (!confirm('Change niche to "' + label + '"? This uses 1 of your ' + remaining + ' remaining change' + (remaining>1?'s':'') + ' this year. Your current videos keep posting until the new niche takes effect.')) return;
+  nicheState.changesUsed++;
+  nicheState.currentNiche = label;
+  selectedNiche = id;
+  document.querySelectorAll('.nc').forEach(c => c.classList.remove('sel'));
+  const el = document.getElementById('nc-'+id);
+  if (el) el.classList.add('sel');
+  const left = quota - nicheState.changesUsed;
+  showToast('"' + label.slice(0,32) + '" set as your niche. ' + left + ' change' + (left!==1?'s':'') + ' remaining this year.', 'success');
+  setNicheGate(nicheState.plan);
+}
+
+function renderNiches() {
+  const cat  = document.getElementById('niche-cat').value;
+  const sort = document.getElementById('niche-sort').value;
+  let list   = [...NICHES];
+  if(cat) list=list.filter(n=>n.category===cat);
+  if(sort==='cpm')   list.sort((a,b)=>parseInt(b.cpm)-parseInt(a.cpm));
+  if(sort==='trend') list.sort((a,b)=>b.trend-a.trend);
+  if(sort==='views') list.sort((a,b)=>b.views-a.views);
+  if(sort==='easy')  list.sort((a,b)=>a.difficulty-b.difficulty);
+  const scClass = s => s>=65?'sc-top':s>=50?'sc-mid':'sc-low';
+  const compCls = c => c==='low'?'np-low':c==='medium'?'np-mid':'np-high';
+  document.getElementById('niche-grid').innerHTML = list.map(n=>`
+    <div class="nc${selectedNiche===n.id?' sel':''}" id="nc-${n.id}">
+      <div class="nc-top">
+        <div class="score-circ ${scClass(n.score)}">${n.score}</div>
+        <div style="flex:1;min-width:0"><p class="nc-title">${n.label}</p><p class="nc-cat">${n.category}</p></div>
+        <span class="cpm-chip">${n.cpm}</span>
+      </div>
+      ${n.bars.map(b=>`<div class="bar-row"><span class="bar-lbl">${b.l}</span><div class="bar-trk"><div class="bar-fill" style="width:${Math.round((b.v/b.m)*100)}%;background:${b.c}"></div></div><span class="bar-val">${b.v}</span></div>`).join('')}
+      <div class="nc-pills">
+        <span class="np ${compCls(n.competition)}">${n.competition} comp</span>
+        <span class="np" style="background:rgba(255,255,255,.04);color:var(--text3)">diff ${n.difficulty}/10</span>
+        ${n.evergreen?'<span class="np np-ev">evergreen</span>':''}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:6px">${(n.tags||[]).slice(0,3).map(t=>`<span class="tag">${t}</span>`).join('')}</div>
+      <div class="nc-acts">
+        <button class="act act-info" onclick="openNicheDetail('${n.id}')">Details + topics</button>
+        <button class="act act-ok" onclick="selectNiche('${n.id}','${n.label}')">Use this niche →</button>
+      </div>
+    </div>`).join('');
+}
+
+function selectNiche(id, label) {
+  selectedNiche=id;
+  document.querySelectorAll('.nc').forEach(c=>c.classList.remove('sel'));
+  const el=document.getElementById('nc-'+id);
+  if(el) el.classList.add('sel');
+  showToast(`"${label.slice(0,35)}" set as channel niche ✓`,'success');
+}
+
+function openNicheDetail(id) {
+  const n=NICHES.find(x=>x.id===id);
+  if(!n) return;
+  nicheDetailId=id;
+  document.getElementById('nd-title').textContent=n.label;
+  document.getElementById('nd-select-btn').onclick=()=>{closeModal('niche-detail-modal');selectNiche(id,n.label)};
+  const rev=n.revenue||{};
+  document.getElementById('nd-body').innerHTML=`
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+      <div style="background:var(--bg3);border-radius:8px;padding:.75rem;text-align:center"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">CPM range</p><p style="font-size:.9rem;font-weight:700;color:#34d399">${n.cpm}</p></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:.75rem;text-align:center"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">Avg views</p><p style="font-size:.9rem;font-weight:700">${fmtN(n.views)}</p></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:.75rem;text-align:center"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">Difficulty</p><p style="font-size:.9rem;font-weight:700">${n.difficulty}/10</p></div>
+    </div>
+    <p style="font-size:.67rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:7px">Example video ideas</p>
+    <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:11px">
+      ${(n.topics||[]).map(t=>`<div style="padding:7px 10px;border-left:2px solid rgba(99,102,241,.3);background:rgba(99,102,241,.04);border-radius:0 6px 6px 0;font-size:.76rem;color:rgba(220,220,245,.8);line-height:1.4">${t}</div>`).join('')}
+    </div>
+    ${rev.mid?`<div style="display:flex;align-items:center;gap:9px;padding:9px 11px;background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.15);border-radius:8px"><span style="font-size:1.1rem">💰</span><div><p style="font-size:.87rem;font-weight:700;color:#34d399">${rev.low} – ${rev.high}/month</p><p style="font-size:.7rem;color:var(--text2)">Estimate for a 100-video catalogue, 40% monetised views</p></div></div>`:''}`;
+  showModal('niche-detail-modal');
+}
+
+// ════════════════════════════════════════════
+// ANALYTICS
+// ════════════════════════════════════════════
+function renderAnalyticsTop() {
+  const top=[...ANALYTICS_VIDEOS].sort((a,b)=>b.views-a.views).slice(0,5);
+  document.getElementById('analytics-top').innerHTML=top.map((v,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);${i===4?'border:none':''}">
+      <span style="font-size:.67rem;color:var(--text3);width:14px;text-align:center">${i+1}</span>
+      <div style="flex:1;min-width:0"><p style="font-size:.75rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${v.title}</p><p style="font-size:.66rem;color:var(--text3)">${fmtN(v.views)} views · ${(v.likeRatio*100).toFixed(1)}% like ratio</p></div>
+      <span class="badge b-${v.flag==='good'?'green':v.flag==='poor'?'red':'purple'}">${v.flag}</span>
+    </div>`).join('');
+}
+function renderTable() {
+  const sort=document.getElementById('an-sort').value;
+  const flag=document.getElementById('an-flag').value;
+  let list=[...ANALYTICS_VIDEOS];
+  if(flag) list=list.filter(v=>v.flag===flag);
+  list.sort((a,b)=>sort==='likes'?b.likes-a.likes:b.views-a.views);
+  document.getElementById('analytics-table').innerHTML=`
+    <table class="tbl"><thead><tr><th>#</th><th>Video</th><th>Views</th><th>Likes</th><th>Like ratio</th><th>Performance</th></tr></thead>
+    <tbody>${list.map((v,i)=>`<tr>
+      <td style="color:var(--text3)">${i+1}</td>
+      <td style="max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)">${v.title}</td>
+      <td>${fmtN(v.views)}</td><td>${fmtN(v.likes)}</td>
+      <td>${(v.likeRatio*100).toFixed(2)}%</td>
+      <td><span class="badge b-${v.flag==='good'?'green':v.flag==='poor'?'red':'purple'}">${v.flag}</span></td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+// ════════════════════════════════════════════
+// AI OPTIMISATION
+// ════════════════════════════════════════════
+function runOptimisation(btn) {
+  btn.disabled=true; btn.textContent='Running…';
+  setTimeout(()=>{
+    btn.disabled=false; btn.textContent='Run now';
+    showToast('Optimisation complete — 3 improvements applied to upcoming videos','success');
+  },2200);
+}
+
+// ════════════════════════════════════════════
+// PREVIEW QUEUE
+// ════════════════════════════════════════════
+function renderPreview() {
+  // Update chips
+  document.getElementById('pv-chips').innerHTML=`
+    <div style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:7px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.18);font-size:.73rem;color:#fcd34d"><span style="font-weight:700;font-size:.83rem">${PREVIEW_QUEUE.length}</span>Pending</div>
+    <div style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:7px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.15);font-size:.73rem;color:#6ee7b7"><span style="font-weight:700;font-size:.83rem">12</span>Approved</div>
+    <div style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:7px;background:rgba(107,114,128,.07);border:1px solid rgba(107,114,128,.15);font-size:.73rem;color:#9ca3af"><span style="font-weight:700;font-size:.83rem">4</span>Skipped</div>
+    <div style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:7px;background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.15);font-size:.73rem;color:#a5b4fc"><span style="font-weight:700;font-size:.83rem">31</span>Posted</div>`;
+
+  if(!PREVIEW_QUEUE.length) {
+    document.getElementById('preview-list').innerHTML=`<div class="empty">No videos pending review.<br>Viralityy will queue videos here before posting.</div>`;
+    return;
+  }
+  document.getElementById('preview-list').innerHTML=PREVIEW_QUEUE.map(v=>{
+    const exCls=v.hoursLeft<4?'exp-u':v.hoursLeft<8?'exp-w':'exp-ok';
+    const exLbl=v.hoursLeft<1?`${Math.round(v.hoursLeft*60)}m left`:`${v.hoursLeft}h left`;
+    return `<div class="pvc${v.urgent?' urgent':''}" id="pvc-${v.id}">
+      <div class="pvc-inner">
+        <div class="pv-thumb">
+          <div class="pv-ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="4"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg><span>preview</span></div>
+          <span class="pv-plat">${v.platform}</span>
+        </div>
+        <div class="pv-body">
+          <div class="pv-top">
+            <div><p class="pv-ttl">${v.title}</p><p class="pv-meta">${v.niche} · ${v.type}</p></div>
+            <span class="exp ${exCls}">${exLbl}</span>
+          </div>
+          <p class="pv-script">${v.script}</p>
+          <div class="pv-acts">
+            <button class="act act-ok" onclick="previewAction('${v.id}','approve')">✓ Approve</button>
+            <button class="act act-info" onclick="openEdit('${v.id}')">✎ Edit</button>
+            <button class="act act-skip" onclick="previewAction('${v.id}','skip')">✕ Skip</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function previewAction(id, action) {
+  const card=document.getElementById('pvc-'+id);
+  if(card){card.style.transition='opacity .3s,transform .3s';card.style.opacity='0';card.style.transform='translateX(16px)';setTimeout(()=>card.remove(),300);}
+  const idx=PREVIEW_QUEUE.findIndex(v=>v.id===id);
+  if(idx>-1) PREVIEW_QUEUE.splice(idx,1);
+  const badge=document.getElementById('preview-badge');
+  if(badge){badge.textContent=PREVIEW_QUEUE.length;if(!PREVIEW_QUEUE.length)badge.classList.remove('show');}
+  document.getElementById('dash-queue').textContent=PREVIEW_QUEUE.length;
+  const msgs={approve:'Video approved — will be posted shortly ✓',skip:'Video removed from queue',edit:'Edit request sent — video will be regenerated'};
+  showToast(msgs[action]||'Done','success');
+  setTimeout(()=>{
+    const chips=document.getElementById('pv-chips');
+    if(chips){const pending=chips.querySelector('span[style*="font-weight:700"]');if(pending)pending.textContent=PREVIEW_QUEUE.length;}
+  },400);
+}
+
+function openEdit(id){editTargetId=id;document.getElementById('edit-text').value='';showModal('edit-modal');}
+
+function submitEdit(){
+  const txt=document.getElementById('edit-text').value.trim();
+  if(!txt){showToast('Please describe the edit you want','error');return;}
+  closeModal('edit-modal');
+  previewAction(editTargetId,'edit');
+  editTargetId=null;
+}
+
+// ════════════════════════════════════════════
+// AFFILIATE
+// ════════════════════════════════════════════
+function copyAff(){
+  navigator.clipboard.writeText('https://viralityy.com/?ref=A3F8C21B').catch(()=>{});
+  const btn=document.getElementById('copy-btn');
+  btn.textContent='Copied ✓';btn.classList.add('copied');
+  setTimeout(()=>{btn.textContent='Copy link';btn.classList.remove('copied');},2000);
+}
+function submitPayout(){
+  const method=document.getElementById('payout-method').value;
+  if(!method){showToast('Please select a payout method','error');return;}
+  closeModal('payout-modal');
+  showToast('Payout request submitted! Processing within 7 business days.','success');
+}
+
+// ════════════════════════════════════════════
+// MODALS
+// ════════════════════════════════════════════
+function showModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+
+// ════════════════════════════════════════════
+// TOAST
+// ════════════════════════════════════════════
+function showToast(msg,type='success'){
+  const C={success:'#065f46',info:'#1e1b4b',error:'#7f1d1d'};
+  const B={success:'rgba(16,185,129,.3)',info:'rgba(99,102,241,.3)',error:'rgba(239,68,68,.3)'};
+  const t=document.createElement('div');
+  t.className='toast';t.style.background=C[type]||C.info;t.style.border=`1px solid ${B[type]||B.info}`;
+  t.textContent=msg;document.body.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .3s';setTimeout(()=>t.remove(),300);},3500);
+}
+
+// ════════════════════════════════════════════
+// UTILS
+// ════════════════════════════════════════════
+function fmtN(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return n.toLocaleString();}
+
+// INIT
+renderNiches();
+renderAnalyticsTop();
+renderTable();
+renderPreview();
+</script>
+</body>
+</html>
