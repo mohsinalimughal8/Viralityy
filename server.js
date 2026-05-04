@@ -239,9 +239,38 @@ function runPython(scriptPath, args, timeoutMs = 60000) {
 // =============================================================================
 // AUTH ROUTES
 // =============================================================================
-app.get('/auth/google', passport.authenticate('google'));
+app.get('/auth/google', passport.authenticate('google', {
+  scope: [
+    'profile',
+    'email',
+    'https://www.googleapis.com/auth/youtube',
+    'https://www.googleapis.com/auth/youtube.upload',
+  ],
+  accessType: 'offline',
+  prompt: 'consent',
+}));
 
-app.get('/auth/google/callback', passport.authenticate('google', { failureRedirect: '/auth/failed' }), (req, res) => {
+app.get('/auth/google/callback',
+  (req, res, next) => {
+    passport.authenticate('google', { failureRedirect: '/auth/failed' }, (err, user, info) => {
+      if (err) {
+        console.error('[OAuth] Strategy error:', err);
+        return res.status(500).send(`Auth error: ${err.message}<br><br>Check Railway logs for details.`);
+      }
+      if (!user) {
+        console.error('[OAuth] No user returned:', info);
+        return res.redirect('/auth/failed');
+      }
+      req.logIn(user, (loginErr) => {
+        if (loginErr) {
+          console.error('[OAuth] Login error:', loginErr);
+          return res.status(500).send(`Login error: ${loginErr.message}`);
+        }
+        next();
+      });
+    })(req, res, next);
+  },
+  (req, res) => {
   try {
     const token = jwt.sign({ userId: req.user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
     // If a frontend URL is set separately, redirect there — otherwise show success page
