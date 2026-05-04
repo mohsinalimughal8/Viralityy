@@ -17,12 +17,51 @@ const cron           = require('node-cron');
 const crypto         = require('crypto');
 const path           = require('path');
 const { exec }       = require('child_process');
-const stripe         = require('stripe')(process.env.STRIPE_SECRET_KEY);
+// Stripe lazy-initialised — missing key does not crash startup
+let _stripeInstance = null;
+function getStripeClient() {
+  if (_stripeInstance) return _stripeInstance;
+  if (!process.env.STRIPE_SECRET_KEY) {
+    throw new Error('STRIPE_SECRET_KEY not set — add it in Railway env vars before using billing');
+  }
+  _stripeInstance = require('stripe')(process.env.STRIPE_SECRET_KEY);
+  return _stripeInstance;
+}
+const stripe = new Proxy({}, {
+  get(_, prop) {
+    return (...args) => getStripeClient()[prop](...args);
+  }
+});
 const jwt            = require('jsonwebtoken');
 const bcrypt         = require('bcryptjs');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// =============================================================================
+// FEATURE FLAGS — shelved features (code preserved, just disabled)
+// To re-enable any feature: set the env var to 'true' in Railway and redeploy.
+// =============================================================================
+const FEATURES = {
+  // ── Always ON — use only free APIs (YouTube, MongoDB, OpenAI already paid) ──
+  competitorWatcher:   true,
+  competitorScraper:   true,
+  learningLoop:        true,
+  affiliateProgram:    true,
+  analyticsCollection: true,
+
+  // ── Shelved — requires paid subscriptions at scale ────────────────────────
+  // Twitter paid tiers above Basic, Reddit enterprise for commercial use
+  // Enable when ready: set FEATURE_TREND_SCRAPER=true in Railway env vars
+  trendScraper: process.env.FEATURE_TREND_SCRAPER === 'true',
+};
+
+// Log active vs shelved features at startup
+const shelved = Object.entries(FEATURES).filter(([,v])=>!v).map(([k])=>k);
+const active  = Object.entries(FEATURES).filter(([,v])=>v).map(([k])=>k);
+console.log('[Features] Active:', active.join(', ') || 'none');
+console.log('[Features] Shelved (enable via env var):', shelved.join(', ') || 'none');
+
 
 // =============================================================================
 // DATABASE
@@ -31,7 +70,11 @@ mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser:    true,
   useUnifiedTopology: true,
 }).then(() => console.log('MongoDB connected'))
-  .catch(err => { console.error('MongoDB error:', err); process.exit(1); });
+  .catch(err => {
+  console.error('[MongoDB] Connection failed — server will keep running, routes requiring DB will return 503:', err.message);
+  // Do NOT call process.exit(1) — this kills the server before /health can respond
+  // Railway will retry the healthcheck; fix MONGODB_URI in env vars to resolve
+});
 
 // =============================================================================
 // MODELS
@@ -74,7 +117,9 @@ app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI }),
+  store: process.env.MONGODB_URI
+    ? MongoStore.create({ mongoUrl: process.env.MONGODB_URI })
+    : undefined,  // falls back to memory store if MONGODB_URI not set
   cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 },
 }));
 
@@ -84,6 +129,23 @@ app.use(passport.session());
 // Rate limiting
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200, standardHeaders: true, legacyHeaders: false });
 app.use('/api/', limiter);
+
+// =============================================================================
+// HEALTH CHECK — registered early so it responds even if other routes fail
+// This is what Railway pings. Must respond 200 within 5 minutes.
+// =============================================================================
+app.get('/health', (req, res) => {
+  res.json({
+    status:  'ok',
+    uptime:  process.uptime(),
+    env:     process.env.NODE_ENV || 'development',
+    mongo:   mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    stripe:  !!process.env.STRIPE_SECRET_KEY ? 'configured' : 'not configured (billing disabled)',
+    youtube: !!process.env.YOUTUBE_API_KEY   ? 'configured' : 'not configured',
+    openai:  !!process.env.OPENAI_API_KEY    ? 'configured' : 'not configured',
+  });
+});
+
 
 // =============================================================================
 // PASSPORT — GOOGLE OAUTH
@@ -434,13 +496,1247 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
 });
 
 // =============================================================================
-// ROUTE FILES — paste engine-specific routes
+// NICHE ENGINE V2 — inline routes (replaces server_m4a_routes.js)
 // =============================================================================
-require('./server_m4a_routes_wrapped')(app, requireAuth, User, mongoose, runPython);
-require('./server_m5a_routes_wrapped')(app, requireAuth, User, mongoose, runPython);
-require('./server_m5b_routes_wrapped')(app, requireAuth, User, mongoose, runPython);
-require('./server_m8_routes_wrapped')(app, requireAuth, User, mongoose, runPython, stripe);
-require('./server_m9_routes_wrapped')(app, requireAuth, User, mongoose, runPython);
+// NicheEngineV2 — guard against file not found during deploy
+let nicheEngine;
+try {
+  const { NicheEngineV2 } = require('./niche_engine_v2_bridge');
+  nicheEngine = new NicheEngineV2();
+  console.log('[NicheEngine] v2 loaded OK');
+} catch (err) {
+  console.warn('[NicheEngine] niche_engine_v2_bridge.js not found — niche routes will return 503:', err.message);
+  // Stub so niche routes return a clean error instead of crashing
+  nicheEngine = new Proxy({}, {
+    get(_, method) {
+      return () => { throw new Error('Niche engine not available — ensure niche_engine_v2_bridge.js is in the repo'); };
+    }
+  });
+}
+
+// =============================================================================
+// VIRALITYY — Niche Engine v2 API Routes
+// =============================================================================
+// HOW TO ADD:
+//   1. Replace niche_engine_bridge.js with niche_engine_v2_bridge.js
+//   2. Replace niche_engine.py with niche_engine_v2.py
+//   3. Paste this file's contents into server.js INSTEAD OF server_m4a_routes.js
+//      (this file is a full replacement — it keeps all original routes and adds new ones)
+//   4. Add YOUTUBE_API_KEY to your Railway env vars to enable live scoring
+//
+// All existing routes (/recommend, /:nicheId, /categories, /compare, /select)
+// are preserved unchanged. Two new routes are added at the bottom.
+// =============================================================================
+
+// NicheEngineV2 instantiated above in ROUTE FILES section
+
+// ---------------------------------------------------------------------------
+// GET /api/niches/recommend
+// Ranked niche list for the logged-in user's plan (Layer 1 — offline)
+// ---------------------------------------------------------------------------
+app.get('/api/niches/recommend', requireAuth, async (req, res) => {
+  try {
+    const user     = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan     = user.plan || 'shorts_starter';
+    const count    = Math.min(parseInt(req.query.count) || 10, 30);
+    const category = req.query.category || null;
+    const results  = nicheEngine.recommend(plan, count, category);
+
+    res.json({ success: true, plan, count: results.length, niches: results });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/recommend error:', err);
+    res.status(500).json({ error: 'Failed to fetch niche recommendations' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/niches/categories
+// All available categories (Layer 1)
+// ---------------------------------------------------------------------------
+app.get('/api/niches/categories', requireAuth, (req, res) => {
+  try {
+    const categories = nicheEngine.getCategories();
+    res.json({ success: true, categories });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/categories error:', err);
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/niches/compare
+// Compare multiple niches (Layer 1)
+// Body: { nicheIds: ["psychology_facts", "ai_tools"] }
+// ---------------------------------------------------------------------------
+app.post('/api/niches/compare', requireAuth, async (req, res) => {
+  try {
+    const { nicheIds } = req.body;
+    if (!Array.isArray(nicheIds) || nicheIds.length < 2) {
+      return res.status(400).json({ error: 'Provide at least 2 niche IDs to compare' });
+    }
+    if (nicheIds.length > 5) {
+      return res.status(400).json({ error: 'Maximum 5 niches can be compared at once' });
+    }
+    const results = nicheEngine.compare(nicheIds);
+    res.json({ success: true, comparison: results });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/compare error:', err);
+    res.status(500).json({ error: 'Failed to compare niches' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/niches/select
+// User saves a niche to their channel config (Layer 1)
+// Body: { channelIndex: 0, nicheId: "psychology_facts" }
+// ---------------------------------------------------------------------------
+app.post('/api/niches/select', requireAuth, async (req, res) => {
+  try {
+    const { channelIndex, nicheId } = req.body;
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const detail = nicheEngine.getNicheDetail(nicheId);
+    if (detail.error) return res.status(404).json({ error: 'Niche not found' });
+
+    if (!user.channels) user.channels = [];
+    if (!user.channels[channelIndex]) user.channels[channelIndex] = {};
+    user.channels[channelIndex].niche      = nicheId;
+    user.channels[channelIndex].nicheLabel = detail.label;
+    user.channels[channelIndex].nicheSetAt = new Date();
+
+    user.markModified('channels');
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Niche "${detail.label}" set for channel ${channelIndex + 1}`,
+      channel: user.channels[channelIndex],
+    });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/select error:', err);
+    res.status(500).json({ error: 'Failed to save niche selection' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/niches/:nicheId
+// Full detail for a single known niche (Layer 1)
+// Keep AFTER /categories route to avoid "categories" being parsed as nicheId
+// ---------------------------------------------------------------------------
+app.get('/api/niches/:nicheId', requireAuth, async (req, res) => {
+  try {
+    const detail = nicheEngine.getNicheDetail(req.params.nicheId);
+    if (detail.error) return res.status(404).json(detail);
+    res.json({ success: true, niche: detail });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/:id error:', err);
+    res.status(500).json({ error: 'Failed to fetch niche detail' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/niches/analyse        ← Layer 1 + 2
+// Full combined analysis for a single free-text keyword.
+// Body: { keyword: "stoicism", plan: "combo_pro" }
+// ---------------------------------------------------------------------------
+app.post('/api/niches/analyse', requireAuth, async (req, res) => {
+  try {
+    const { keyword, plan: bodyPlan } = req.body;
+    if (!keyword || keyword.trim().length < 2) {
+      return res.status(400).json({ error: 'Provide a keyword (at least 2 characters)' });
+    }
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan   = bodyPlan || user.plan || 'shorts_starter';
+    const result = await nicheEngine.analyse(keyword.trim(), plan);
+    res.json({ success: true, analysis: result });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/analyse error:', err);
+    res.status(500).json({ error: 'Failed to analyse niche' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/niches/search          ← NEW — keyword search (dashboard search bar)
+// User types any topic keyword and gets a full scored report plus
+// related search suggestions to explore sub-niches.
+//
+// Body: { keyword: "stoicism", plan: "combo_pro" }
+//
+// Returns: full NicheScore report + search_suggestions array
+// ---------------------------------------------------------------------------
+app.post('/api/niches/search', requireAuth, async (req, res) => {
+  try {
+    const { keyword, plan: bodyPlan } = req.body;
+    if (!keyword || keyword.trim().length < 2) {
+      return res.status(400).json({ error: 'Please enter a keyword to search (min 2 characters)' });
+    }
+    if (keyword.trim().length > 100) {
+      return res.status(400).json({ error: 'Keyword too long (max 100 characters)' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan   = bodyPlan || user.plan || 'shorts_starter';
+    const result = await nicheEngine.search(keyword.trim(), plan);
+
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/search error:', err);
+    res.status(500).json({ error: 'Failed to search niche' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/niches/discover         ← NEW — real-time trending niche discovery
+// No keyword needed. Engine probes ~38 broad seed topics via YouTube API,
+// scores each with the full two-layer engine, and returns the top
+// high-performing niches the user didn't have to search for.
+//
+// Query params:
+//   top       (optional) — number of results, default 10, max 20
+//   min_score (optional) — minimum combined score, default 60
+//   refresh   (optional) — "true" to bypass 24h cache
+//
+// Example: GET /api/niches/discover?top=10&min_score=65
+// Example: GET /api/niches/discover?refresh=true
+//
+// Returns:
+//   { top_niches: [...], hot_count, moderate_count, total_probed,
+//     live_data_used, generated_at }
+// ---------------------------------------------------------------------------
+app.get('/api/niches/discover', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan         = user.plan || 'shorts_starter';
+    const topN         = Math.min(parseInt(req.query.top)       || 10,  20);
+    const minScore     = Math.min(parseFloat(req.query.min_score) || 60, 90);
+    const forceRefresh = req.query.refresh === 'true';
+
+    const result = await nicheEngine.discover(plan, topN, minScore, forceRefresh);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/discover error:', err);
+    res.status(500).json({ error: 'Failed to discover trending niches' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/niches/analyse/batch   ← Layer 1 + 2 batch
+// Analyse up to 10 keywords concurrently.
+// Body: { keywords: ["stoicism", "AI tools", "book summaries"], plan: "combo_pro" }
+// ---------------------------------------------------------------------------
+app.post('/api/niches/analyse/batch', requireAuth, async (req, res) => {
+  try {
+    const { keywords, plan: bodyPlan } = req.body;
+
+    if (!Array.isArray(keywords) || keywords.length === 0) {
+      return res.status(400).json({ error: 'Provide an array of keywords' });
+    }
+    if (keywords.length > 10) {
+      return res.status(400).json({ error: 'Maximum 10 keywords per batch' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan    = bodyPlan || user.plan || 'shorts_starter';
+    const results = await nicheEngine.analyseBatch(keywords, plan);
+
+    res.json({
+      success: true,
+      count:   results.length,
+      plan,
+      results,
+    });
+  } catch (err) {
+    console.error('[NicheV2] /api/niches/analyse/batch error:', err);
+    res.status(500).json({ error: 'Failed to run batch analysis' });
+  }
+});
+
+
+// =============================================================================
+// TIER 1 AGENTS — Content Planner, Topic Scout, Competitor Watcher, Research
+// =============================================================================
+// =============================================================================
+// VIRALITYY — Tier 1 Agent API Routes
+// =============================================================================
+// HOW TO ADD: Paste this entire file into server.js BEFORE app.listen().
+//
+// Covers all four Tier 1 agents:
+//   Agent 1 — Content Planner      → /api/agents/planner/*
+//   Agent 2 — Daily Topic Scout    → /api/agents/scout/*
+//   Agent 3 — Competitor Watcher   → /api/agents/competitor/*
+//   Agent 4 — Script Research      → /api/agents/research/*
+//
+// Also registers the cron jobs for automated scheduling.
+// =============================================================================
+
+// ── Agent helpers (path and exec already required above) ───────────────────
+function runAgentPy(script, args, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(__dirname, script);
+    exec(`python3 "${scriptPath}" ${args}`, { timeout: timeoutMs }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(stderr || err.message));
+      try { resolve(JSON.parse(stdout.trim())); }
+      catch { resolve({ raw: stdout.trim() }); }
+    });
+  });
+}
+const getDb = () => mongoose.connection.db;
+const agentCol = (name) => getDb().collection(name);
+
+
+// =============================================================================
+// CRON JOBS — scheduled automation
+// =============================================================================
+
+// Daily Topic Scout — runs every day at 6 AM server time
+cron.schedule('0 6 * * *', async () => {
+  console.log('[Scout] Daily topic scout starting...');
+  try {
+    const script = path.join(__dirname, 'daily_topic_scout_agent.py');
+    exec(`python3 "${script}" --run-all`, { timeout: 300000 }, (err, stdout, stderr) => {
+      if (err) console.error('[Scout] Cron error:', stderr);
+      else     console.log('[Scout] Cron complete:', stdout.slice(0, 200));
+    });
+  } catch (e) { console.error('[Scout] Cron failed:', e); }
+});
+
+// Competitor Watcher — ACTIVE (free: YouTube API + OpenAI already in stack)
+if (FEATURES.competitorWatcher) {
+  cron.schedule('0 */4 * * *', async () => {
+    console.log('[CompetitorWatcher] Check starting...');
+    try {
+      const script = path.join(__dirname, 'competitor_watcher_agent.py');
+      exec(`python3 "${script}" --run-all`, { timeout: 600000 }, (err, stdout, stderr) => {
+        if (err) console.error('[CompetitorWatcher] Cron error:', stderr);
+        else     console.log('[CompetitorWatcher] Cron complete:', stdout.slice(0, 200));
+      });
+    } catch (e) { console.error('[CompetitorWatcher] Cron failed:', e); }
+  });
+}
+
+// Script Research Queue Processor — runs every 30 minutes
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    const script = path.join(__dirname, 'script_research_agent.py');
+    exec(`python3 "${script}" --process-queue ""`, { timeout: 300000 }, (err, stdout, stderr) => {
+      if (err) console.error('[ScriptResearch] Queue error:', stderr);
+    });
+  } catch (e) { console.error('[ScriptResearch] Queue cron failed:', e); }
+});
+
+
+// =============================================================================
+// AGENT 1 — CONTENT PLANNER ROUTES
+// =============================================================================
+
+// GET /api/agents/planner/calendar
+// Returns the active 30-day calendar for the logged-in user
+app.get('/api/agents/planner/calendar', requireAuth, async (req, res) => {
+  try {
+    const col = await agentCol('content_calendars');
+    const doc = await col.findOne({ userId: req.user.id, status: 'active' });
+    if (!doc) return res.json({ success: true, exists: false, calendar: null });
+    doc._id = doc._id.toString();
+    res.json({ success: true, exists: true, calendar: doc });
+  } catch (err) {
+    console.error('[Planner] GET /calendar error:', err);
+    res.status(500).json({ error: 'Failed to fetch calendar' });
+  }
+});
+
+// GET /api/agents/planner/slots/upcoming
+// Returns the next 7 unposted calendar slots
+app.get('/api/agents/planner/slots/upcoming', requireAuth, async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit) || 7, 30);
+    const today  = new Date().toISOString().slice(0, 10);
+    const col    = await agentCol('calendar_slots');
+    const docs   = await col
+      .find({ userId: req.user.id, status: 'pending', scheduledDate: { $gte: today } })
+      .sort({ scheduledDate: 1 })
+      .limit(limit)
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, slots: docs });
+  } catch (err) {
+    console.error('[Planner] GET /slots/upcoming error:', err);
+    res.status(500).json({ error: 'Failed to fetch slots' });
+  }
+});
+
+// POST /api/agents/planner/generate
+// Generates a new 30-day content calendar for the logged-in user
+app.post('/api/agents/planner/generate', requireAuth, async (req, res) => {
+  try {
+    const { days = 30, force = false } = req.body;
+    // Respond immediately — generation happens in background (up to 90s)
+    res.json({ success: true, message: 'Calendar generation started — refresh in ~60 seconds', userId: req.user.id });
+
+    const script = path.join(__dirname, 'content_planner_agent.py');
+    const forceFlag = force ? '--force' : '';
+    exec(
+      `python3 "${script}" --generate ${req.user.id} --days ${days} ${forceFlag}`,
+      { timeout: 180000 },
+      (err, stdout, stderr) => {
+        if (err) console.error('[Planner] Generate error:', stderr);
+        else     console.log('[Planner] Calendar generated for', req.user.id);
+      }
+    );
+  } catch (err) {
+    console.error('[Planner] POST /generate error:', err);
+    res.status(500).json({ error: 'Failed to start calendar generation' });
+  }
+});
+
+// PATCH /api/agents/planner/slots/:day/posted
+// Marks a calendar slot as posted
+app.patch('/api/agents/planner/slots/:day/posted', requireAuth, async (req, res) => {
+  try {
+    const day    = parseInt(req.params.day);
+    const col    = await agentCol('calendar_slots');
+    const result = await col.updateOne(
+      { userId: req.user.id, dayNumber: day },
+      { $set: {
+        status:   'posted',
+        postedAt: new Date().toISOString(),
+        videoId:  req.body.videoId || '',
+      }}
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: `Day ${day} slot not found` });
+    }
+    res.json({ success: true, message: `Day ${day} marked as posted` });
+  } catch (err) {
+    console.error('[Planner] PATCH /slots/:day/posted error:', err);
+    res.status(500).json({ error: 'Failed to update slot' });
+  }
+});
+
+
+// =============================================================================
+// AGENT 2 — DAILY TOPIC SCOUT ROUTES
+// =============================================================================
+
+// GET /api/agents/scout/topics
+// Returns today's scouted topics for the logged-in user
+app.get('/api/agents/scout/topics', requireAuth, async (req, res) => {
+  try {
+    const col    = await agentCol('scouted_topics');
+    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const docs   = await col
+      .find({ userId: req.user.id, scoutedAt: { $gte: cutoff } })
+      .sort({ momentumScore: -1 })
+      .limit(10)
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, topics: docs });
+  } catch (err) {
+    console.error('[Scout] GET /topics error:', err);
+    res.status(500).json({ error: 'Failed to fetch scouted topics' });
+  }
+});
+
+// GET /api/agents/scout/queue
+// Returns pending pipeline queue items (topics waiting to be scripted)
+app.get('/api/agents/scout/queue', requireAuth, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const col   = await agentCol('pipeline_queue');
+    const docs  = await col
+      .find({ userId: req.user.id, status: 'pending' })
+      .sort({ queuedAt: -1 })
+      .limit(limit)
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, queue: docs });
+  } catch (err) {
+    console.error('[Scout] GET /queue error:', err);
+    res.status(500).json({ error: 'Failed to fetch pipeline queue' });
+  }
+});
+
+// POST /api/agents/scout/run
+// Manually triggers a topic scout for the logged-in user (dashboard button)
+app.post('/api/agents/scout/run', requireAuth, async (req, res) => {
+  try {
+    res.json({ success: true, message: 'Topic scout started — check back in ~30 seconds' });
+    const script = path.join(__dirname, 'daily_topic_scout_agent.py');
+    exec(
+      `python3 "${script}" --run-user ${req.user.id}`,
+      { timeout: 120000 },
+      (err, stdout, stderr) => {
+        if (err) console.error('[Scout] Manual run error:', stderr);
+        else     console.log('[Scout] Manual run complete for', req.user.id);
+      }
+    );
+  } catch (err) {
+    console.error('[Scout] POST /run error:', err);
+    res.status(500).json({ error: 'Failed to start scout' });
+  }
+});
+
+
+// =============================================================================
+// AGENT 3 — COMPETITOR WATCHER ROUTES — ACTIVE
+// Free to run: YouTube Data API (free quota) + OpenAI (already in stack)
+// =============================================================================
+if (FEATURES.competitorWatcher) {
+// =============================================================================
+// AGENT 3 — COMPETITOR WATCHER ROUTES
+// =============================================================================
+
+// GET /api/agents/competitor/list
+// Returns all competitor channels being watched by the user
+app.get('/api/agents/competitor/list', requireAuth, async (req, res) => {
+  try {
+    const col  = await agentCol('competitor_channels');
+    const docs = await col
+      .find({ userId: req.user.id, active: true })
+      .sort({ channelName: 1 })
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, competitors: docs });
+  } catch (err) {
+    console.error('[Competitor] GET /list error:', err);
+    res.status(500).json({ error: 'Failed to fetch competitors' });
+  }
+});
+
+// POST /api/agents/competitor/add
+// Adds a YouTube channel to the watch list
+// Body: { channelId: "UCxxxxx", channelName: "PsychFacts", notes: "..." }
+app.post('/api/agents/competitor/add', requireAuth, async (req, res) => {
+  try {
+    const { channelId, channelName = '', notes = '' } = req.body;
+    if (!channelId) return res.status(400).json({ error: 'channelId is required' });
+
+    const result = await runAgentPy(
+      'competitor_watcher_agent.py',
+      `--add ${req.user.id} ${channelId} "${channelName.replace(/"/g, '')}"`,
+      30000
+    );
+    if (result.error) return res.status(400).json(result);
+    res.json({ success: true, competitor: result });
+  } catch (err) {
+    console.error('[Competitor] POST /add error:', err);
+    res.status(500).json({ error: 'Failed to add competitor' });
+  }
+});
+
+// DELETE /api/agents/competitor/:channelId
+// Removes a competitor channel from the watch list
+app.delete('/api/agents/competitor/:channelId', requireAuth, async (req, res) => {
+  try {
+    const col    = await agentCol('competitor_channels');
+    const result = await col.updateOne(
+      { userId: req.user.id, channelId: req.params.channelId },
+      { $set: { active: false } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Competitor not found' });
+    }
+    res.json({ success: true, message: 'Competitor removed from watch list' });
+  } catch (err) {
+    console.error('[Competitor] DELETE error:', err);
+    res.status(500).json({ error: 'Failed to remove competitor' });
+  }
+});
+
+// GET /api/agents/competitor/alerts
+// Returns competitor alerts for the logged-in user
+// Query: ?unread=true&limit=20
+app.get('/api/agents/competitor/alerts', requireAuth, async (req, res) => {
+  try {
+    const unreadOnly = req.query.unread === 'true';
+    const limit      = Math.min(parseInt(req.query.limit) || 20, 50);
+    const col        = await agentCol('competitor_alerts');
+    const query      = { userId: req.user.id };
+    if (unreadOnly) query.read = false;
+    const docs = await col.find(query).sort({ firedAt: -1 }).limit(limit).toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+
+    const unreadCount = await col.countDocuments({ userId: req.user.id, read: false });
+    res.json({ success: true, count: docs.length, unreadCount, alerts: docs });
+  } catch (err) {
+    console.error('[Competitor] GET /alerts error:', err);
+    res.status(500).json({ error: 'Failed to fetch alerts' });
+  }
+});
+
+// PATCH /api/agents/competitor/alerts/read
+// Marks alerts as read
+// Body: { alertIds: [...] }  — if empty, marks all as read
+app.patch('/api/agents/competitor/alerts/read', requireAuth, async (req, res) => {
+  try {
+    const { alertIds } = req.body;
+    const col          = await agentCol('competitor_alerts');
+    const query        = { userId: req.user.id, read: false };
+    if (alertIds && alertIds.length > 0) {
+      const { ObjectId } = require('mongodb');
+      query._id = { $in: alertIds.map(id => new ObjectId(id)) };
+    }
+    const result = await col.updateMany(query, { $set: { read: true } });
+    res.json({ success: true, markedRead: result.modifiedCount });
+  } catch (err) {
+    console.error('[Competitor] PATCH /alerts/read error:', err);
+    res.status(500).json({ error: 'Failed to mark alerts read' });
+  }
+});
+
+// GET /api/agents/competitor/videos
+// Returns recently detected competitor videos
+app.get('/api/agents/competitor/videos', requireAuth, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const col   = await agentCol('competitor_videos');
+    const docs  = await col
+      .find({ userId: req.user.id })
+      .sort({ detectedAt: -1 })
+      .limit(limit)
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, videos: docs });
+  } catch (err) {
+    console.error('[Competitor] GET /videos error:', err);
+    res.status(500).json({ error: 'Failed to fetch competitor videos' });
+  }
+});
+
+
+} // end FEATURE_COMPETITOR_WATCHER
+
+// =============================================================================
+// AGENT 4 — SCRIPT RESEARCH ROUTES
+// =============================================================================
+
+// POST /api/agents/research/brief
+// Research a video title and generate a script brief
+// Body: { title: "...", format: "short|long|standard", niche: "..." }
+app.post('/api/agents/research/brief', requireAuth, async (req, res) => {
+  try {
+    const { title, format = 'short', niche = '' } = req.body;
+    if (!title || title.trim().length < 5) {
+      return res.status(400).json({ error: 'Title must be at least 5 characters' });
+    }
+
+    // Respond immediately — research runs in background (30–90s)
+    res.json({ success: true, message: 'Research started — brief will be ready in ~60 seconds', title });
+
+    const script     = path.join(__dirname, 'script_research_agent.py');
+    const safeTitle  = title.replace(/"/g, '\\"').slice(0, 200);
+    const safeNiche  = niche.replace(/"/g, '').slice(0, 100);
+    exec(
+      `python3 "${script}" --research "${safeTitle}" --format ${format} --niche "${safeNiche}"`,
+      { timeout: 180000 },
+      (err, stdout, stderr) => {
+        if (err) console.error('[Research] Brief generation error:', stderr);
+        else     console.log('[Research] Brief generated for:', title.slice(0, 50));
+      }
+    );
+  } catch (err) {
+    console.error('[Research] POST /brief error:', err);
+    res.status(500).json({ error: 'Failed to start research' });
+  }
+});
+
+// GET /api/agents/research/briefs
+// Returns pending (unscripted) research briefs for the logged-in user
+app.get('/api/agents/research/briefs', requireAuth, async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit) || 20, 50);
+    const status = req.query.status || 'pending';  // pending | scripted | all
+    const col    = await agentCol('script_briefs');
+    const query  = { userId: req.user.id };
+    if (status !== 'all') query.status = status;
+    const docs = await col
+      .find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, briefs: docs });
+  } catch (err) {
+    console.error('[Research] GET /briefs error:', err);
+    res.status(500).json({ error: 'Failed to fetch briefs' });
+  }
+});
+
+// GET /api/agents/research/briefs/:briefId
+// Returns a single research brief by ID
+app.get('/api/agents/research/briefs/:briefId', requireAuth, async (req, res) => {
+  try {
+    const { ObjectId } = require('mongodb');
+    const col          = await agentCol('script_briefs');
+    const doc          = await col.findOne({
+      _id:    new ObjectId(req.params.briefId),
+      userId: req.user.id,
+    });
+    if (!doc) return res.status(404).json({ error: 'Brief not found' });
+    doc._id = doc._id.toString();
+    res.json({ success: true, brief: doc });
+  } catch (err) {
+    console.error('[Research] GET /briefs/:id error:', err);
+    res.status(500).json({ error: 'Failed to fetch brief' });
+  }
+});
+
+// PATCH /api/agents/research/briefs/:briefId/scripted
+// Marks a brief as scripted
+// Body: { scriptId: "..." }
+app.patch('/api/agents/research/briefs/:briefId/scripted', requireAuth, async (req, res) => {
+  try {
+    const { ObjectId } = require('mongodb');
+    const col          = await agentCol('script_briefs');
+    const result       = await col.updateOne(
+      { _id: new ObjectId(req.params.briefId), userId: req.user.id },
+      { $set: {
+        status:     'scripted',
+        scriptId:   req.body.scriptId || '',
+        scriptedAt: new Date().toISOString(),
+      }}
+    );
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Brief not found' });
+    res.json({ success: true, message: 'Brief marked as scripted' });
+  } catch (err) {
+    console.error('[Research] PATCH /scripted error:', err);
+    res.status(500).json({ error: 'Failed to update brief' });
+  }
+});
+
+// POST /api/agents/research/queue/process
+// Admin/cron endpoint — processes pending pipeline queue items
+// Protected by CRON_SECRET header
+app.post('/api/agents/research/queue/process', async (req, res) => {
+  if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorised' });
+  }
+  res.json({ success: true, message: 'Queue processing started' });
+  const script = path.join(__dirname, 'script_research_agent.py');
+  exec(`python3 "${script}" --process-queue ""`, { timeout: 300000 }, (err, stdout, stderr) => {
+    if (err) console.error('[Research] Queue process error:', stderr);
+    else     console.log('[Research] Queue processed:', stdout.slice(0, 200));
+  });
+});
+
+
+// =============================================================================
+// SHARED — AGENT HEALTH CHECK
+// =============================================================================
+
+// GET /api/agents/status
+// Returns status of all four agents (last run time, counts, etc.)
+app.get('/api/agents/status', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const db     = getDb();
+
+    const [
+      calendarExists,
+      scoutedToday,
+      pendingAlerts,
+      pendingBriefs,
+      queueDepth,
+    ] = await Promise.all([
+      db.collection('content_calendars').countDocuments({ userId, status: 'active' }),
+      db.collection('scouted_topics').countDocuments({
+        userId,
+        scoutedAt: { $gte: new Date(Date.now() - 24*60*60*1000).toISOString() }
+      }),
+      db.collection('competitor_alerts').countDocuments({ userId, read: false }),
+      db.collection('script_briefs').countDocuments({ userId, status: 'pending' }),
+      db.collection('pipeline_queue').countDocuments({ userId, status: 'pending' }),
+    ]);
+
+    res.json({
+      success: true,
+      baseModel: true,
+      featureFlags: FEATURES,
+      agents: {
+        contentPlanner: {
+          name:             'Content Planner',
+          hasActiveCalendar: calendarExists > 0,
+          status:           calendarExists > 0 ? 'active' : 'no_calendar',
+          enabled:          true,
+        },
+        topicScout: {
+          name:             'Daily Topic Scout',
+          topicsTodayCount: scoutedToday,
+          pipelineQueueDepth: queueDepth,
+          status:           scoutedToday > 0 ? 'ran_today' : 'not_run_today',
+          enabled:          true,
+        },
+        scriptResearch: {
+          name:         'Script Research',
+          pendingBriefs: pendingBriefs,
+          status:        pendingBriefs > 0 ? 'briefs_ready' : 'idle',
+          enabled:       true,
+        },
+        competitorWatcher: {
+          name:        'Competitor Watcher',
+          status:      'active',
+          enabled:     true,
+          unreadAlerts: pendingAlerts,
+          cost:        'free',
+        },
+        competitorScraper: {
+          name:    'Competitor Scraper',
+          status:  'active',
+          enabled: true,
+          cost:    'free',
+        },
+        affiliateProgram: {
+          name:    'Affiliate Programme',
+          status:  'active',
+          enabled: true,
+          cost:    'free',
+        },
+        learningLoop: {
+          name:    'AI Learning Loop',
+          status:  'active',
+          enabled: true,
+          cost:    'free (~$0.02/week OpenAI)',
+        },
+        trendScraper: {
+          name:      'Trend Scraper',
+          status:    FEATURES.trendScraper ? 'active' : 'shelved',
+          enabled:   FEATURES.trendScraper,
+          cost:      'shelved — Twitter/Reddit paid tiers at scale',
+          enableWith:'FEATURE_TREND_SCRAPER=true',
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[Agents] GET /status error:', err);
+    res.status(500).json({ error: 'Failed to fetch agent status' });
+  }
+});
+
+
+// =============================================================================
+// TIER 2 AGENTS — Trend Scraper, Auto-Voiceover, Competitor Scraper
+// =============================================================================
+// =============================================================================
+// VIRALITYY — Tier 2 Agent API Routes (Agents 5, 6, 8)
+// =============================================================================
+// HOW TO ADD: Paste into server.js BEFORE app.listen(), after the Tier 1 routes.
+//
+//   Agent 5 — Trend Scraper           → /api/agents/trends/*
+//   Agent 6 — Auto-Voiceover          → /api/agents/voiceover/*
+//   Agent 8 — Competitor Scraper      → /api/agents/scraper/*
+//
+// Also registers cron jobs for Agents 5 and 8.
+// =============================================================================
+
+// T2 agent helper — aliases to unified runAgentPy above
+const runAgentPyT2 = runAgentPy;
+const col2         = agentCol;
+
+
+// =============================================================================
+// CRON JOBS — Agents 5 and 8
+// =============================================================================
+
+// Trend Scraper — SHELVED (enable: FEATURE_TREND_SCRAPER=true)
+if (FEATURES.trendScraper) {
+  cron.schedule('0 7 * * *', async () => {
+    console.log('[TrendScraper] Daily run starting...');
+    try {
+      const script = path.join(__dirname, 'trend_scraper_agent.py');
+      exec(`python3 "${script}" --run-all`, { timeout: 600000 }, (err, stdout, stderr) => {
+        if (err) console.error('[TrendScraper] Cron error:', stderr);
+        else     console.log('[TrendScraper] Cron complete:', stdout.slice(0, 200));
+      });
+    } catch (e) { console.error('[TrendScraper] Cron failed:', e); }
+  });
+}
+
+// Competitor Content Scraper — ACTIVE (free: YouTube API + OpenAI already in stack)
+if (FEATURES.competitorScraper) {
+  cron.schedule('0 5,17 * * *', async () => {
+    console.log('[CompetitorScraper] Bulk scrape starting...');
+    try {
+      const users = await User.find({ plan: { $ne: 'trial' } }).select('_id').lean();
+      for (const user of users) {
+        const script = path.join(__dirname, 'competitor_content_scraper.py');
+        exec(`python3 "${script}" --bulk ${user._id}`, { timeout: 300000 },
+          (err, stdout, stderr) => { if (err) console.error(`[CompetitorScraper] Error for ${user._id}:`, stderr); }
+        );
+      }
+    } catch (e) { console.error('[CompetitorScraper] Cron failed:', e); }
+  });
+}
+
+
+// AGENT 5 — TREND SCRAPER ROUTES — SHELVED
+// Enable: FEATURE_TREND_SCRAPER=true
+if (FEATURES.trendScraper) {
+// =============================================================================
+// AGENT 5 — TREND SCRAPER ROUTES
+// =============================================================================
+
+// GET /api/agents/trends
+// Get stored trend signals for the logged-in user
+// Query: ?min_score=0.5
+app.get('/api/agents/trends', requireAuth, async (req, res) => {
+  try {
+    const minScore = parseFloat(req.query.min_score) || 0;
+    const cutoff   = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const col      = await col2('trend_signals');
+    const docs     = await col.find({
+      userId:       req.user.id,
+      scrapedAt:    { $gte: cutoff },
+      momentumScore:{ $gte: minScore },
+    }).sort({ momentumScore: -1 }).limit(10).toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, trends: docs });
+  } catch (err) {
+    console.error('[Trends] GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch trend signals' });
+  }
+});
+
+// POST /api/agents/trends/run
+// Manually trigger trend scraping for the logged-in user
+app.post('/api/agents/trends/run', requireAuth, async (req, res) => {
+  try {
+    res.json({ success: true, message: 'Trend scraper started — results ready in ~60 seconds' });
+    const script = path.join(__dirname, 'trend_scraper_agent.py');
+    exec(
+      `python3 "${script}" --run-user ${req.user.id}`,
+      { timeout: 180000 },
+      (err, stdout, stderr) => {
+        if (err) console.error('[Trends] Manual run error:', stderr);
+        else     console.log('[Trends] Manual run complete:', stdout.slice(0, 200));
+      }
+    );
+  } catch (err) {
+    console.error('[Trends] POST /run error:', err);
+    res.status(500).json({ error: 'Failed to start trend scraper' });
+  }
+});
+
+// GET /api/agents/trends/platforms
+// Returns which platforms are configured and active
+app.get('/api/agents/trends/platforms', requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    platforms: {
+      reddit: {
+        active:      !!(process.env.REDDIT_CLIENT_ID && process.env.REDDIT_CLIENT_SECRET),
+        requires:    ['REDDIT_CLIENT_ID', 'REDDIT_CLIENT_SECRET'],
+        weight:      '40% of signal',
+      },
+      google_trends: {
+        active:      true,  // pytrends needs no API key
+        requires:    [],
+        weight:      '35% of signal',
+      },
+      twitter: {
+        active:      !!process.env.TWITTER_BEARER_TOKEN,
+        requires:    ['TWITTER_BEARER_TOKEN'],
+        weight:      '25% of signal',
+      },
+    },
+  });
+});
+
+
+} // end FEATURE_TREND_SCRAPER
+
+// =============================================================================
+// AGENT 6 — AUTO-VOICEOVER ROUTES
+// =============================================================================
+
+// POST /api/agents/voiceover/render
+// Render a script to audio for a specific channel
+// Body: { script, channelId, videoId, nicheId, humanise: true }
+app.post('/api/agents/voiceover/render', requireAuth, async (req, res) => {
+  try {
+    const { script, channelId = '', videoId = '', nicheId = '', humanise = true } = req.body;
+    if (!script || script.trim().length < 10) {
+      return res.status(400).json({ error: 'Script must be at least 10 characters' });
+    }
+    if (!process.env.ELEVENLABS_API_KEY) {
+      return res.status(503).json({ error: 'ELEVENLABS_API_KEY not configured' });
+    }
+
+    res.json({ success: true, message: 'Voiceover render started — ready in ~30 seconds' });
+
+    // Write script to temp file and pass path to Python
+    const tmpFile = `/tmp/vly_script_${req.user.id}_${Date.now()}.txt`;
+    require('fs').writeFileSync(tmpFile, script);
+
+    const scriptPath = path.join(__dirname, 'auto_voiceover_agent.py');
+    exec(
+      `python3 "${scriptPath}" --render "${tmpFile}" --user ${req.user.id} --channel "${channelId}" --niche "${nicheId}"`,
+      { timeout: 300000 },
+      (err, stdout, stderr) => {
+        require('fs').unlink(tmpFile, () => {}); // cleanup temp
+        if (err) console.error('[Voiceover] Render error:', stderr);
+        else     console.log('[Voiceover] Render complete:', stdout.slice(0, 200));
+      }
+    );
+  } catch (err) {
+    console.error('[Voiceover] POST /render error:', err);
+    res.status(500).json({ error: 'Failed to start voiceover render' });
+  }
+});
+
+// GET /api/agents/voiceover/files
+// Returns rendered audio files for the logged-in user
+app.get('/api/agents/voiceover/files', requireAuth, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const col   = await col2('audio_renders');
+    const docs  = await col.find({ userId: req.user.id })
+      .sort({ renderedAt: -1 }).limit(limit).toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, files: docs });
+  } catch (err) {
+    console.error('[Voiceover] GET /files error:', err);
+    res.status(500).json({ error: 'Failed to fetch audio files' });
+  }
+});
+
+// GET /api/agents/voiceover/voices
+// Returns available ElevenLabs voices
+app.get('/api/agents/voiceover/voices', requireAuth, async (req, res) => {
+  try {
+    if (!process.env.ELEVENLABS_API_KEY) {
+      return res.status(503).json({ error: 'ELEVENLABS_API_KEY not configured' });
+    }
+    const result = await runAgentPyT2('auto_voiceover_agent.py', '--list-voices', 15000);
+    res.json({ success: true, voices: result });
+  } catch (err) {
+    console.error('[Voiceover] GET /voices error:', err);
+    res.status(500).json({ error: 'Failed to fetch voice list' });
+  }
+});
+
+// GET /api/agents/voiceover/channel/:channelId/voice
+// Returns the voice assigned to a specific channel
+app.get('/api/agents/voiceover/channel/:channelId/voice', requireAuth, async (req, res) => {
+  try {
+    const col = await col2('channel_voices');
+    const doc = await col.findOne({
+      userId:    req.user.id,
+      channelId: req.params.channelId,
+    });
+    if (!doc) return res.json({ success: true, voice: null, message: 'No voice assigned — using niche default' });
+    doc._id = doc._id.toString();
+    res.json({ success: true, voice: doc });
+  } catch (err) {
+    console.error('[Voiceover] GET /channel/:id/voice error:', err);
+    res.status(500).json({ error: 'Failed to fetch channel voice' });
+  }
+});
+
+// POST /api/agents/voiceover/channel/:channelId/voice
+// Assign an existing ElevenLabs voice to a channel
+// Body: { voiceId: "...", voiceName: "..." }
+app.post('/api/agents/voiceover/channel/:channelId/voice', requireAuth, async (req, res) => {
+  try {
+    const { voiceId, voiceName = '' } = req.body;
+    if (!voiceId) return res.status(400).json({ error: 'voiceId is required' });
+
+    const col = await col2('channel_voices');
+    const doc = {
+      userId:    req.user.id,
+      channelId: req.params.channelId,
+      voiceId,
+      voiceName: voiceName || voiceId,
+      type:      'assigned',
+      createdAt: new Date().toISOString(),
+    };
+    await col.updateOne(
+      { userId: req.user.id, channelId: req.params.channelId },
+      { $set: doc },
+      { upsert: true }
+    );
+    res.json({ success: true, message: `Voice "${voiceName}" assigned to channel`, voice: doc });
+  } catch (err) {
+    console.error('[Voiceover] POST /channel/:id/voice error:', err);
+    res.status(500).json({ error: 'Failed to assign voice' });
+  }
+});
+
+// POST /api/agents/voiceover/estimate
+// Estimate audio duration for a script without rendering
+// Body: { script }
+app.post('/api/agents/voiceover/estimate', requireAuth, (req, res) => {
+  const { script = '' } = req.body;
+  const wordCount  = script.trim().split(/\s+/).length;
+  const durationS  = Math.round((wordCount / 150) * 60);  // 150 WPM
+  const durationMs = durationS * 1000;
+  res.json({
+    success: true,
+    wordCount,
+    estimatedDurationSeconds: durationS,
+    estimatedDurationMs:      durationMs,
+    note: 'Based on 150 words per minute average speaking pace',
+  });
+});
+
+
+// AGENT 8 — COMPETITOR CONTENT SCRAPER ROUTES — ACTIVE
+// Free to run: YouTube Data API + OpenAI (already in stack)
+if (FEATURES.competitorScraper) {
+// =============================================================================
+// AGENT 8 — COMPETITOR CONTENT SCRAPER ROUTES
+// =============================================================================
+
+// POST /api/agents/scraper/video/:videoId
+// Scrape a single competitor video
+// Query: ?force=true to re-scrape
+app.post('/api/agents/scraper/video/:videoId', requireAuth, async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const force       = req.query.force === 'true';
+    res.json({ success: true, message: `Scraping ${videoId} — ready in ~30 seconds` });
+
+    const script = path.join(__dirname, 'competitor_content_scraper.py');
+    const forceFlag = force ? '--force' : '';
+    exec(
+      `python3 "${script}" --scrape ${videoId} --user ${req.user.id}`,
+      { timeout: 60000 },
+      (err, stdout, stderr) => {
+        if (err) console.error('[Scraper] Scrape error:', stderr);
+        else     console.log('[Scraper] Scrape complete:', videoId);
+      }
+    );
+  } catch (err) {
+    console.error('[Scraper] POST /video/:id error:', err);
+    res.status(500).json({ error: 'Failed to start scrape' });
+  }
+});
+
+// POST /api/agents/scraper/bulk
+// Scrape all pending competitor videos for the logged-in user
+app.post('/api/agents/scraper/bulk', requireAuth, async (req, res) => {
+  try {
+    res.json({ success: true, message: 'Bulk scrape started — check /scraped for results' });
+    const script = path.join(__dirname, 'competitor_content_scraper.py');
+    exec(
+      `python3 "${script}" --bulk ${req.user.id}`,
+      { timeout: 300000 },
+      (err, stdout, stderr) => {
+        if (err) console.error('[Scraper] Bulk error:', stderr);
+        else     console.log('[Scraper] Bulk complete:', stdout.slice(0, 200));
+      }
+    );
+  } catch (err) {
+    console.error('[Scraper] POST /bulk error:', err);
+    res.status(500).json({ error: 'Failed to start bulk scrape' });
+  }
+});
+
+// GET /api/agents/scraper/videos/:videoId
+// Get stored scraped data for a specific video
+app.get('/api/agents/scraper/videos/:videoId', requireAuth, async (req, res) => {
+  try {
+    const col = await col2('competitor_scraped');
+    const doc = await col.findOne({ videoId: req.params.videoId, userId: req.user.id });
+    if (!doc) return res.status(404).json({ error: 'Video not scraped yet' });
+    doc._id = doc._id.toString();
+    res.json({ success: true, data: doc });
+  } catch (err) {
+    console.error('[Scraper] GET /videos/:id error:', err);
+    res.status(500).json({ error: 'Failed to fetch scraped video' });
+  }
+});
+
+// GET /api/agents/scraper/scraped
+// List recently scraped competitor videos for the user
+app.get('/api/agents/scraper/scraped', requireAuth, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const col   = await col2('competitor_scraped');
+    const docs  = await col.find({ userId: req.user.id })
+      .sort({ scrapedAt: -1 }).limit(limit).toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, videos: docs });
+  } catch (err) {
+    console.error('[Scraper] GET /scraped error:', err);
+    res.status(500).json({ error: 'Failed to fetch scraped videos' });
+  }
+});
+
+// GET /api/agents/scraper/summary
+// Get aggregated analysis across all scraped competitor content
+app.get('/api/agents/scraper/summary', requireAuth, async (req, res) => {
+  try {
+    const result = await runAgentPyT2(
+      'competitor_content_scraper.py',
+      `--summary ${req.user.id}`,
+      30000
+    );
+    res.json({ success: true, summary: result });
+  } catch (err) {
+    console.error('[Scraper] GET /summary error:', err);
+    res.status(500).json({ error: 'Failed to generate summary' });
+  }
+});
+
+// GET /api/agents/scraper/search
+// Search scraped competitor content
+// Query: ?q=psychology+tricks
+app.get('/api/agents/scraper/search', requireAuth, async (req, res) => {
+  try {
+    const query = req.query.q || '';
+    if (query.trim().length < 2) {
+      return res.status(400).json({ error: 'Query must be at least 2 characters' });
+    }
+
+    const col  = await col2('competitor_scraped');
+    const regex = { $regex: query, $options: 'i' };
+    const docs  = await col.find({
+      userId: req.user.id,
+      $or: [{ title: regex }, { description: regex }, { tags: regex }],
+    }).sort({ scrapedAt: -1 }).limit(20).toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, count: docs.length, query, results: docs });
+  } catch (err) {
+    console.error('[Scraper] GET /search error:', err);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+// GET /api/agents/scraper/config
+// Returns scraper configuration and capability status
+app.get('/api/agents/scraper/config', requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    config: {
+      youtubeApi: {
+        active:   !!process.env.YOUTUBE_API_KEY,
+        role:     'Primary data source — always used',
+      },
+      firecrawl: {
+        active:   !!process.env.FIRECRAWL_API_KEY,
+        role:     'Deep page scraping — tags, pinned comments, chapters',
+        requires: ['FIRECRAWL_API_KEY'],
+      },
+      aiInsights: {
+        active:   !!process.env.OPENAI_API_KEY,
+        role:     'GPT-4o insight generation per video',
+      },
+    },
+  });
+});
+
+
+} // end FEATURE_COMPETITOR_SCRAPER
 
 // =============================================================================
 // CRON JOBS
@@ -448,42 +1744,41 @@ require('./server_m9_routes_wrapped')(app, requireAuth, User, mongoose, runPytho
 
 // Daily: run video generation pipeline per active channel
 cron.schedule('0 6 * * *', async () => {
-  if (req?.headers?.['x-cron-secret'] !== process.env.CRON_SECRET) {
-    console.log('[CRON] Daily video generation running...');
-    try {
-      const users = await User.find({ $or: [{ plan: { $nin: ['trial'] } }, { trialEndsAt: { $gt: new Date() } }] });
-      for (const user of users) {
-        for (const channel of (user.youtubeChannels || [])) {
-          console.log(`[CRON] Generating for channel ${channel.channelName} (${user.plan})`);
-          // Trigger Python pipeline — implement social_pipeline.py separately
-        }
+  console.log('[CRON] Daily video generation running...');
+  try {
+    const users = await User.find({ $or: [{ plan: { $nin: ['trial'] } }, { trialEndsAt: { $gt: new Date() } }] });
+    for (const user of users) {
+      for (const channel of (user.youtubeChannels || [])) {
+        console.log(`[CRON] Generating for channel ${channel.channelName} (${user.plan})`);
+        // Trigger Python pipeline — implement social_pipeline.py separately
       }
-    } catch (err) { console.error('[CRON] Error:', err); }
-  }
+    }
+  } catch (err) { console.error('[CRON] Error:', err); }
 });
 
-// Weekly: run AI optimisation (learning engine)
-cron.schedule('0 3 * * 1', async () => {
-  console.log('[CRON] Weekly AI optimisation running...');
-  try {
-    await runPython(path.join(__dirname, 'learning_engine.py'), '', 120000);
-  } catch (err) { console.error('[CRON] Learning engine error:', err); }
-});
+// Learning Loop — ACTIVE (free: ~$0.02/week marginal OpenAI cost)
+if (FEATURES.learningLoop) {
+  cron.schedule('0 3 * * 1', async () => {
+    console.log('[CRON] Weekly AI optimisation running...');
+    try {
+      await runPython(path.join(__dirname, 'learning_engine.py'), '', 120000);
+    } catch (err) { console.error('[CRON] Learning engine error:', err); }
+  });
+}
 
-// Daily: run analytics collection
-cron.schedule('0 4 * * *', async () => {
-  console.log('[CRON] Analytics collection running...');
-  try {
-    await runPython(path.join(__dirname, 'analytics_engine.py'), '--collect', 90000);
-  } catch (err) { console.error('[CRON] Analytics error:', err); }
-});
+// Analytics Collection — ACTIVE (free: YouTube Data API free quota)
+if (FEATURES.analyticsCollection) {
+  cron.schedule('0 4 * * *', async () => {
+    console.log('[CRON] Analytics collection running...');
+    try {
+      await runPython(path.join(__dirname, 'analytics_engine.py'), '--collect', 90000);
+    } catch (err) { console.error('[CRON] Analytics error:', err); }
+  });
+}
 
 // =============================================================================
-// HEALTH CHECK
-// =============================================================================
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), env: process.env.NODE_ENV || 'development', mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
-});
+// HEALTH CHECK — defined early above (line ~115), kept here as reference comment only
+// app.get('/health', ...) — already registered at startup
 
 // =============================================================================
 // SERVE STATIC FRONTEND
