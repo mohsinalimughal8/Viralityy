@@ -1478,8 +1478,8 @@ app.post('/api/agents/voiceover/render', requireAuth, async (req, res) => {
     if (!script || script.trim().length < 10) {
       return res.status(400).json({ error: 'Script must be at least 10 characters' });
     }
-    if (!process.env.ELEVENLABS_API_KEY) {
-      return res.status(503).json({ error: 'ELEVENLABS_API_KEY not configured' });
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY not configured — add it in Railway env vars' });
     }
 
     res.json({ success: true, message: 'Voiceover render started — ready in ~30 seconds' });
@@ -1524,8 +1524,8 @@ app.get('/api/agents/voiceover/files', requireAuth, async (req, res) => {
 // Returns available ElevenLabs voices
 app.get('/api/agents/voiceover/voices', requireAuth, async (req, res) => {
   try {
-    if (!process.env.ELEVENLABS_API_KEY) {
-      return res.status(503).json({ error: 'ELEVENLABS_API_KEY not configured' });
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY not configured — add it in Railway env vars' });
     }
     const result = await runAgentPyT2('auto_voiceover_agent.py', '--list-voices', 15000);
     res.json({ success: true, voices: result });
