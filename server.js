@@ -66,15 +66,26 @@ console.log('[Features] Shelved (enable via env var):', shelved.join(', ') || 'n
 // =============================================================================
 // DATABASE
 // =============================================================================
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser:    true,
-  useUnifiedTopology: true,
-}).then(() => console.log('MongoDB connected'))
-  .catch(err => {
-  console.error('[MongoDB] Connection failed — server will keep running, routes requiring DB will return 503:', err.message);
-  // Do NOT call process.exit(1) — this kills the server before /health can respond
-  // Railway will retry the healthcheck; fix MONGODB_URI in env vars to resolve
+// Global handler — catches MongoServerError unhandled rejections that crash Node
+process.on('unhandledRejection', (err) => {
+  console.error('[UnhandledRejection] Caught — server stays alive:', err.message);
+  // Do NOT exit — let Railway healthcheck keep passing
 });
+
+if (process.env.MONGODB_URI) {
+  mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser:    true,
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 5000,  // fail fast so server startup isn't blocked
+  })
+  .then(() => console.log('[MongoDB] Connected successfully'))
+  .catch(err => {
+    console.error('[MongoDB] Connection failed — check MONGODB_URI credentials in Railway Variables:', err.message);
+    // Server keeps running — /health still responds, DB-dependent routes return 503
+  });
+} else {
+  console.warn('[MongoDB] MONGODB_URI not set — database features disabled');
+}
 
 // =============================================================================
 // MODELS
