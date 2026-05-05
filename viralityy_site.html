@@ -425,10 +425,10 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <nav class="mkt-nav">
   <div class="logo" onclick="nav('home')"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div>
   <div class="nav-links">
-    <a href="#features" onclick="scrollTo('#feat-section')">Features</a>
+    <a href="#features" onclick="scrollToEl('#feat-section')">Features</a>
     <a href="#" onclick="nav('home')">How it works</a>
     <a href="#" onclick="nav('pricing')">Pricing</a>
-    <a href="#faq-section" onclick="scrollTo('#faq-section')">FAQ</a>
+    <a href="#faq-section" onclick="scrollToEl('#faq-section')">FAQ</a>
   </div>
   <div class="nav-right">
     <a class="btn btn-ghost btn-sm" onclick="nav('login')">Sign in</a>
@@ -579,7 +579,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="site-page" id="page-pricing">
 <nav class="mkt-nav">
   <div class="logo" onclick="nav('home')"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div>
-  <div class="nav-links"><a onclick="nav('home')">Home</a><a onclick="scrollSel('#feat-pricing')">Plans</a><a onclick="scrollSel('#compare-table')">Compare</a></div>
+  <div class="nav-links"><a onclick="nav('home')">Home</a><a onclick="scrollToEl('#feat-pricing')">Plans</a><a onclick="scrollToEl('#compare-table')">Compare</a></div>
   <div class="nav-right"><a class="btn btn-ghost btn-sm" onclick="nav('login')">Sign in</a><a class="btn btn-primary btn-sm" onclick="nav('signup')">Start free →</a></div>
 </nav>
 <div class="pricing-page-hero">
@@ -1160,6 +1160,11 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <script>
 // ════════════════════════════════════════════
+// API BASE URL
+// ════════════════════════════════════════════
+const API_BASE = 'https://viralityy-production.up.railway.app';
+
+// ════════════════════════════════════════════
 // ROUTER
 // ════════════════════════════════════════════
 const DASH_PAGES_IDS = ['page-dashboard'];
@@ -1207,7 +1212,7 @@ function toggleFaq(el) {
   if (!isOpen) item.classList.add('open');
 }
 
-function scrollTo(sel) {
+function scrollToEl(sel) {
   const el = document.querySelector(sel);
   if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
 }
