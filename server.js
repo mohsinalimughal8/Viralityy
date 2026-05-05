@@ -119,7 +119,25 @@ const TriedChannel = mongoose.model('TriedChannel', triedChannelSchema);
 // MIDDLEWARE
 // =============================================================================
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.APP_URL || '*', credentials: true }));
+// Allow requests from both the Railway backend URL and the Netlify frontend
+const ALLOWED_ORIGINS = [
+  process.env.APP_URL,
+  process.env.FRONTEND_URL,
+  'https://viralityyyai.netlify.app',
+  'http://localhost:3000',
+  'http://localhost:5500',
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    console.warn('[CORS] Blocked origin:', origin);
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
 app.use(morgan('combined'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -273,22 +291,14 @@ app.get('/auth/google/callback',
   (req, res) => {
   try {
     const token = jwt.sign({ userId: req.user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    // If a frontend URL is set separately, redirect there — otherwise show success page
-    const frontendUrl = process.env.FRONTEND_URL || process.env.APP_URL;
-    // Show inline success page with the token so you can test without a frontend
-    res.send(`<!DOCTYPE html><html><head><title>Viralityy — Connected</title>
-<style>body{font-family:sans-serif;background:#07070d;color:#e8e8f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-.box{background:#0d0d19;border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:2rem;max-width:480px;width:100%;text-align:center}
-h1{color:#10b981;font-size:1.4rem;margin-bottom:.5rem}p{color:rgba(232,232,245,.6);font-size:.85rem;line-height:1.6}
-.token{background:#131320;border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:10px;font-family:monospace;font-size:.7rem;word-break:break-all;color:#a5b4fc;margin:1rem 0;text-align:left}
-.note{font-size:.75rem;color:rgba(232,232,245,.35);margin-top:1rem}</style></head>
-<body><div class="box">
-<h1>✓ Google OAuth working</h1>
-<p>Signed in as <strong>${req.user.email || req.user.name}</strong><br>Your JWT token (save this for API testing):</p>
-<div class="token">${token}</div>
-<p>MongoDB connected · OAuth working · YouTube scopes granted</p>
-<p class="note">Deploy your frontend to see the full dashboard. This page confirms the backend auth pipeline is fully operational.</p>
-</div></body></html>`);
+    const frontendUrl = process.env.FRONTEND_URL || 'https://viralityyyai.netlify.app';
+    // Redirect to Netlify frontend with token in URL — frontend stores it and shows dashboard
+    res.redirect(`${frontendUrl}?token=${token}&user=${encodeURIComponent(JSON.stringify({
+      id:    req.user.id,
+      email: req.user.email || '',
+      name:  req.user.name  || '',
+      plan:  req.user.plan  || 'trial',
+    }))}`);
   } catch (err) {
     console.error('[OAuth callback error]', err);
     res.status(500).send('Auth callback error: ' + err.message);
