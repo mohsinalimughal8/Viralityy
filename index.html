@@ -447,7 +447,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     <a href="#faq-section" onclick="scrollToEl('#faq-section')">FAQ</a>
   </div>
   <div class="nav-right">
-    <a class="btn btn-ghost btn-sm" onclick="nav('login')">Sign in</a>
+    <a class="btn btn-ghost btn-sm" onclick="isLoggedIn()?nav('dashboard'):nav('login')">Sign in</a>
     <a class="btn btn-primary btn-sm" onclick="nav('signup')">Start free →</a>
   </div>
 </nav>
@@ -461,7 +461,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     <p class="hero-sub">Viralityy creates, posts and optimises Shorts and long-form videos for you — every single day. Connect your channel, pick a niche, and we handle everything else.</p>
     <div class="hero-ctas">
       <a class="btn btn-primary btn-lg" onclick="nav('signup')">Start free — no credit card →</a>
-      <a class="btn btn-ghost btn-lg" onclick="nav('dashboard')">See the dashboard</a>
+      <a class="btn btn-ghost btn-lg" onclick="nav('signup')">See how it works →</a>
     </div>
     <p class="hero-social-proof">Join <strong>2,400+</strong> creators already growing with Viralityy</p>
     <div class="hero-demo-preview">
@@ -578,7 +578,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="footer-inner">
     <div class="footer-grid">
       <div><div class="logo" onclick="nav('home')" style="margin-bottom:.5rem"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div><p class="footer-brand-desc">Automated YouTube channel growth. AI creates, posts and optimises your content every day.</p></div>
-      <div class="footer-col"><h4>Product</h4><a onclick="nav('home')">Features</a><a onclick="nav('pricing')">Pricing</a><a onclick="nav('dashboard')">Dashboard demo</a></div>
+      <div class="footer-col"><h4>Product</h4><a onclick="nav('home')">Features</a><a onclick="nav('pricing')">Pricing</a><a onclick="nav('signup')">Get started free</a></div>
       <div class="footer-col"><h4>Account</h4><a onclick="nav('signup')">Sign up</a><a onclick="nav('login')">Sign in</a><a onclick="nav('reset')">Forgot password</a></div>
       <div class="footer-col"><h4>Legal</h4><a onclick="nav('privacy')">Privacy policy</a><a onclick="nav('terms')">Terms of service</a><a onclick="nav('cookies')">Cookie policy</a></div>
     </div>
@@ -596,7 +596,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <nav class="mkt-nav">
   <div class="logo" onclick="nav('home')"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div>
   <div class="nav-links"><a onclick="nav('home')">Home</a><a onclick="scrollToEl('#feat-pricing')">Plans</a><a onclick="scrollToEl('#compare-table')">Compare</a></div>
-  <div class="nav-right"><a class="btn btn-ghost btn-sm" onclick="nav('login')">Sign in</a><a class="btn btn-primary btn-sm" onclick="nav('signup')">Start free →</a></div>
+  <div class="nav-right"><a class="btn btn-ghost btn-sm" onclick="isLoggedIn()?nav('dashboard'):nav('login')">Sign in</a><a class="btn btn-primary btn-sm" onclick="nav('signup')">Start free →</a></div>
 </nav>
 <div class="pricing-page-hero">
   <h1>Simple, transparent pricing</h1>
@@ -835,7 +835,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <div><p class="user-name">Mohsin Ali</p><p class="user-plan">Growth plan · Trial</p></div>
     </div>
     <div style="margin-top:8px;padding:0 .5rem">
-      <div class="sidebar-item" style="color:var(--text3);font-size:.75rem" onclick="nav('home')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</div>
+      <div class="sidebar-item" style="color:var(--text3);font-size:.75rem" onclick="logout()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</div>
     </div>
   </div>
 </nav>
@@ -888,14 +888,8 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   </div>
   <div class="card-block full" style="margin-top:12px">
     <h4>Content calendar — next 7 days</h4>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-top:.25rem">
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid var(--border)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">MON</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"Why introverts make better leaders"</p><p style="font-size:.6rem;color:var(--green);margin-top:3px">✓ Queued</p></div>
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid var(--border)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">TUE</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"The psychology of procrastination"</p><p style="font-size:.6rem;color:var(--amber);margin-top:3px">⏳ Generating</p></div>
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.05)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">WED</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"How mirror neurons shape behaviour"</p><p style="font-size:.6rem;color:var(--purple);margin-top:3px">📋 Planned</p></div>
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid var(--border)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">THU</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"Why you can't stop scrolling"</p><p style="font-size:.6rem;color:var(--purple);margin-top:3px">📋 Planned</p></div>
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid var(--border)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">FRI</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"Dark triad personality explained"</p><p style="font-size:.6rem;color:var(--purple);margin-top:3px">📋 Planned</p></div>
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid var(--border)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">SAT</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"Why we trust faces instantly"</p><p style="font-size:.6rem;color:var(--purple);margin-top:3px">📋 Planned</p></div>
-      <div style="background:var(--bg3);border-radius:8px;padding:.65rem;border:1px solid var(--border)"><p style="font-size:.62rem;color:var(--text3);margin-bottom:3px">SUN</p><p style="font-size:.71rem;color:var(--text);line-height:1.3">"The bystander effect — still true?"</p><p style="font-size:.6rem;color:var(--purple);margin-top:3px">📋 Planned</p></div>
+    <div id="overview-calendar" style="margin-top:.5rem">
+      <p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading calendar… <a onclick="dashPage('planner',null)" style="color:#a5b4fc;cursor:pointer">Go to Content Planner →</a></p>
     </div>
   </div>
 </div>
@@ -903,15 +897,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <!-- ── CHANNELS ── -->
 <div class="dash-page" id="dp-channels">
   <div class="dash-topbar"><div><p class="ph">My Channels</p><p class="ps">Manage your connected YouTube channels and platform toggles</p></div><button class="btn btn-primary btn-sm" onclick="connectYouTubeChannel()">+ Add channel</button></div>
-  <div class="channel-card">
-    <div class="ch-av">PF</div>
-    <div class="ch-info"><p class="ch-name">Psychology Facts</p><p class="ch-meta">18,247 subscribers · 47 videos · Psychology & Behaviour</p></div>
-    <div style="display:flex;flex-direction:column;gap:5px;margin-right:12px">
-      <div class="toggle-wrap-sm"><span style="font-size:.7rem;color:var(--text3);width:70px">TikTok</span><label class="toggle-sm"><input type="checkbox" checked><span class="toggle-sm-sl"></span></label></div>
-      <div class="toggle-wrap-sm"><span style="font-size:.7rem;color:var(--text3);width:70px">Instagram</span><label class="toggle-sm"><input type="checkbox"><span class="toggle-sm-sl"></span></label></div>
-    </div>
-    <div class="ch-actions"><button class="act" onclick="pauseChannel(this)">Pause</button><button class="act act-ok" onclick="dashPage('analytics',document.querySelector(\'[onclick*=\"analytics\"]\'))">Analytics</button></div>
-  </div>
+  <div id="channels-list"><p style="font-size:.78rem;color:var(--text3)">Loading channels…</p></div>
   <div style="background:var(--bg3);border:1px dashed var(--border2);border-radius:10px;padding:2rem;text-align:center;color:var(--text3);font-size:.82rem;cursor:pointer" onclick="connectYouTubeChannel()">
     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
     Click to connect your YouTube channel<br><span style="font-size:.71rem">You will be redirected to Google to grant posting permissions</span>
@@ -1015,19 +1001,11 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="grid2">
     <div class="card-block">
       <h4>Watched channels</h4>
-      <div style="margin-top:.5rem">
-        <div style="display:flex;align-items:center;gap:9px;padding:.6rem 0;border-bottom:1px solid var(--border)"><div style="width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff">PF</div><div style="flex:1"><p style="font-size:.8rem;font-weight:500;color:var(--text)">PsychFacts Daily</p><p style="font-size:.67rem;color:var(--text3)">842K subs · Last check: 4h ago</p></div><span class="badge badge-green">Active</span></div>
-        <div style="display:flex;align-items:center;gap:9px;padding:.6rem 0;border-bottom:1px solid var(--border)"><div style="width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,#f093fb,#f5576c);display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff">MB</div><div style="flex:1"><p style="font-size:.8rem;font-weight:500;color:var(--text)">Mind Bending Facts</p><p style="font-size:.67rem;color:var(--text3)">1.2M subs · Last check: 4h ago</p></div><span class="badge badge-green">Active</span></div>
-        <div style="display:flex;align-items:center;gap:9px;padding:.6rem 0"><div style="width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,#4facfe,#00f2fe);display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff">BE</div><div style="flex:1"><p style="font-size:.8rem;font-weight:500;color:var(--text)">BrainExplainer</p><p style="font-size:.67rem;color:var(--text3)">320K subs · Last check: 4h ago</p></div><span class="badge badge-green">Active</span></div>
-      </div>
+      <div id="competitor-channels-list" style="margin-top:.5rem"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading competitor channels…</p></div>
     </div>
     <div class="card-block">
       <h4>Recent alerts</h4>
-      <div style="margin-top:.5rem">
-        <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:.75rem;margin-bottom:7px"><p style="font-size:.72rem;font-weight:600;color:#fcd34d;margin-bottom:3px">🔥 Viral signal — PsychFacts Daily</p><p style="font-size:.73rem;color:var(--text2);margin-bottom:4px">"Why you can't stop comparing yourself to others" — 84K views in 6 hours</p><p style="font-size:.67rem;color:var(--text3)">EMS 0.82 · Fired 3h ago</p><button class="act act-ok" style="margin-top:6px;font-size:.67rem;padding:4px 10px" onclick="queueResponseVideo(this)">Create response video</button></div>
-        <div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:.75rem"><p style="font-size:.72rem;font-weight:600;color:#a5b4fc;margin-bottom:3px">📊 Strong post — Mind Bending Facts</p><p style="font-size:.73rem;color:var(--text2);margin-bottom:4px">"The real reason you procrastinate" — 12K views in 2 hours</p><p style="font-size:.67rem;color:var(--text3)">EMS 0.61 · Fired 5h ago</p></div>
-      </div>
-    </div>
+      <div id="competitor-alerts" style="margin-top:.5rem"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading alerts…</p></div>
   </div>
 </div>
 
@@ -1056,26 +1034,13 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="grid2">
     <div class="card-block">
       <h4>What AI learned this week</h4>
-      <div style="margin-top:.5rem;display:flex;flex-direction:column;gap:8px">
-        <div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--green)"><p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Hook style → Story format</p><p style="font-size:.72rem;color:var(--text2)">Story-format hooks average 67% higher CTR on your channel vs question hooks</p><span class="badge badge-green" style="margin-top:5px;display:inline-block">Applied ✓</span></div>
-        <div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--purple)"><p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Best post time → Tuesday 3pm</p><p style="font-size:.72rem;color:var(--text2)">Videos posted Tuesday between 3–5pm average 2.3× more early views</p><span class="badge badge-purple" style="margin-top:5px;display:inline-block">Applied ✓</span></div>
-        <div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--amber)"><p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Title pattern → Number + surprise</p><p style="font-size:.72rem;color:var(--text2)">"5 things X" with a counterintuitive claim outperforms plain educational titles by 34%</p><span class="badge badge-amber" style="margin-top:5px;display:inline-block">Testing</span></div>
-      </div>
+      <div id="ai-insights"><p style="font-size:.78rem;color:var(--text3);margin-top:.5rem">Loading AI insights…</p></div>
     </div>
     <div class="card-block">
       <h4>Performance over time</h4>
       <div style="margin-top:.5rem">
         <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--text2);margin-bottom:4px"><span>Avg views/video</span></div>
-        <div style="display:flex;gap:4px;align-items:flex-end;height:80px;margin-bottom:.75rem">
-          <div style="flex:1;background:var(--bg3);border-radius:3px 3px 0 0" title="Month 1 avg views"></div>
-          <div style="flex:1;background:var(--bg3);border-radius:3px 3px 0 0;height:30%"></div>
-          <div style="flex:1;background:var(--bg3);border-radius:3px 3px 0 0;height:45%"></div>
-          <div style="flex:1;background:var(--bg3);border-radius:3px 3px 0 0;height:38%"></div>
-          <div style="flex:1;background:var(--bg3);border-radius:3px 3px 0 0;height:55%"></div>
-          <div style="flex:1;background:var(--purple);border-radius:3px 3px 0 0;height:72%"></div>
-          <div style="flex:1;background:var(--green);border-radius:3px 3px 0 0;height:100%"></div>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:.65rem;color:var(--text3)"><span>W1</span><span>W2</span><span>W3</span><span>W4</span><span>W5</span><span>W6</span><span>W7</span></div>
+        <div id="perf-chart" style="display:flex;gap:4px;align-items:flex-end;height:80px;margin-bottom:.75rem"><p style="font-size:.72rem;color:var(--text3);align-self:center">Loading performance data…</p></div>
       </div>
     </div>
   </div>
@@ -1229,8 +1194,13 @@ function logout() {
   CURRENT_USER = null;
   localStorage.removeItem('vly_token');
   localStorage.removeItem('vly_user');
+  localStorage.removeItem('vly_pending_niche');
+  localStorage.removeItem('vly_connecting_channel');
+  localStorage.removeItem('vly_onboarding_step');
+  // Replace history so back button can't return to dashboard
+  window.history.replaceState(null, '', '/');
   nav('home');
-  toast('Signed out', 'info');
+  toast('You have been signed out', 'info');
 }
 
 async function apiCall(path, method='GET', body=null) {
@@ -1255,19 +1225,42 @@ async function apiCall(path, method='GET', body=null) {
 // ════════════════════════════════════════════
 // ROUTER
 // ════════════════════════════════════════════
+// Pages that require a logged-in session
+const PROTECTED_PAGES = ['dashboard'];
+// Pages only accessible when NOT logged in
+const AUTH_ONLY_PAGES = ['login','signup','reset'];
+
 function nav(page) {
+  // Guard: protected pages redirect to login if not authenticated
+  if (PROTECTED_PAGES.includes(page) && !isLoggedIn()) {
+    showAuthWall();
+    return;
+  }
+  // Guard: auth pages redirect to dashboard if already logged in
+  if (AUTH_ONLY_PAGES.includes(page) && isLoggedIn()) {
+    // Allow signup through if user still needs onboarding
+    const pendingNiche = localStorage.getItem('vly_pending_niche');
+    const needsOnboarding = !CURRENT_USER?.nicheId && !CURRENT_USER?.hasChannels && !pendingNiche;
+    if (page === 'signup' && needsOnboarding) {
+      // Let them through — still onboarding
+    } else if (page !== 'signup') {
+      nav('dashboard');
+      return;
+    }
+  }
+
   document.querySelectorAll('.site-page').forEach(p => {
     p.classList.remove('active');
     p.style.display = 'none';
   });
   const el = document.getElementById('page-' + page);
   if (!el) return;
+
   if (page === 'dashboard') {
-    if (!isLoggedIn()) { nav('login'); return; }
     el.style.display = 'flex';
     el.classList.add('active');
     initDashboard();
-  } else if (['login','signup','reset'].includes(page)) {
+  } else if (AUTH_ONLY_PAGES.includes(page)) {
     el.style.display = 'flex';
     el.classList.add('active');
   } else {
@@ -1275,6 +1268,19 @@ function nav(page) {
     el.classList.add('active');
     window.scrollTo(0,0);
   }
+}
+
+// Auth wall — shown when user tries to access a protected page without login
+function showAuthWall() {
+  // Redirect to login with a message
+  nav('login');
+  setTimeout(() => {
+    const err = document.getElementById('login-err');
+    if (err) {
+      err.textContent = 'Please sign in to access the dashboard.';
+      err.classList.add('show');
+    }
+  }, 100);
 }
 
 // ════════════════════════════════════════════
@@ -1844,16 +1850,33 @@ async function initNiches() {
 // COMPETITORS — live
 // ════════════════════════════════════════════
 async function initCompetitors() {
-  const data = await apiCall('/api/agents/competitor/alerts');
-  const alerts = data?.alerts || [];
+  const [alertData, watchData] = await Promise.all([
+    apiCall('/api/agents/competitor/alerts'),
+    apiCall('/api/agents/competitor/list'),
+  ]);
+  const alerts = alertData?.alerts || [];
   const alertEl = document.getElementById('competitor-alerts');
-  if (alertEl && alerts.length) {
-    alertEl.innerHTML = alerts.map(a => `
-      <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:.75rem;margin-bottom:7px">
+  if (alertEl) {
+    alertEl.innerHTML = alerts.length ? alerts.map(a => `
+      <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:.75rem;margin-bottom:7px" data-video-title="${a.videoTitle||''}">
         <p style="font-size:.72rem;font-weight:600;color:#fcd34d;margin-bottom:3px">🔥 ${a.type||'Alert'} — ${a.channelName||'Competitor'}</p>
         <p style="font-size:.73rem;color:var(--text2);margin-bottom:4px">"${a.videoTitle||'—'}"</p>
         <p style="font-size:.67rem;color:var(--text3)">EMS ${a.emsScore||'—'} · ${a.detectedAt ? new Date(a.detectedAt).toLocaleDateString() : '—'}</p>
-      </div>`).join('');
+        <button class="act act-ok" style="margin-top:6px;font-size:.67rem;padding:4px 10px" onclick="queueResponseVideo(this)">Create response video</button>
+      </div>`).join('')
+      : '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No alerts yet — alerts appear when watched channels post high-engagement videos</p>';
+  }
+  const watched = watchData?.channels || watchData?.watched || [];
+  const chEl = document.getElementById('competitor-channels-list');
+  if (chEl) {
+    chEl.innerHTML = watched.length ? watched.map(ch => `
+      <div style="display:flex;align-items:center;gap:9px;padding:.6rem 0;border-bottom:1px solid var(--border)">
+        <div style="width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff">${(ch.channelName||'?').slice(0,2).toUpperCase()}</div>
+        <div style="flex:1"><p style="font-size:.8rem;font-weight:500;color:var(--text)">${ch.channelName||ch.channelId}</p>
+        <p style="font-size:.67rem;color:var(--text3)">${ch.subscriberCount?ch.subscriberCount.toLocaleString()+' subs · ':''}Last check: ${ch.lastChecked?new Date(ch.lastChecked).toLocaleDateString():'pending'}</p></div>
+        <span class="badge badge-green">Active</span>
+      </div>`).join('')
+      : `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No competitors watched — <button class="act act-ok" style="font-size:.72rem;padding:3px 10px;margin-left:6px" onclick="addCompetitor()">+ Add channel</button></p>`;
   }
 }
 
@@ -2300,12 +2323,25 @@ async function initAffiliate() {
 async function initLearning() {
   const status = await apiCall('/api/agents/status');
   const loop = status?.agents?.learningLoop;
-  if (!loop) return;
-  const el = document.querySelector('#dp-learning .dash-subtitle') ||
-             document.querySelector('#dp-learning .ps');
-  if (el) el.textContent = loop.enabled
-    ? 'Active — runs every Monday at 3AM, analysing your video performance'
-    : 'Shelved — enable FEATURE_LEARNING_LOOP in Railway to activate';
+  const el = document.querySelector('#dp-learning .ps');
+  if (el && loop) {
+    el.textContent = loop.enabled
+      ? 'Active — runs every Monday at 3AM, analysing your video performance'
+      : 'Shelved — enable FEATURE_LEARNING_LOOP in Railway to activate';
+  }
+  // Show real insights if available, otherwise show helpful empty state
+  const insightsEl = document.getElementById('ai-insights');
+  if (insightsEl) {
+    if (loop?.enabled) {
+      insightsEl.innerHTML = `
+        <div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--purple);margin-bottom:8px">
+          <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Learning Loop is active</p>
+          <p style="font-size:.72rem;color:var(--text2)">The AI runs every Monday at 3AM and analyses your last 30 videos. Insights will appear here after the first run — typically within 7 days of posting your first video.</p>
+        </div>`;
+    } else {
+      insightsEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3)">Learning Loop not yet active. It will start running once you have 10+ posted videos.</p>`;
+    }
+  }
 }
 
 async function finishOnboarding() {
