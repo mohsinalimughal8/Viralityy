@@ -1,5 +1,4 @@
-[phases.setup]
-nixPkgs = ["nodejs_20", "python311", "python311Packages.pip"]
+providers = ["node", "python"]
 
 [phases.install]
 cmds = [
