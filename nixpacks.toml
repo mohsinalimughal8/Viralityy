@@ -1,10 +1,2 @@
-providers = ["node", "python"]
-
-[phases.install]
-cmds = [
-  "npm ci --omit=dev",
-  "pip install -r requirements.txt"
-]
-
-[start]
-cmd = "node server.js"
+[phases.setup]
+nixPkgs = ["python311"]
