@@ -100,7 +100,9 @@ const userSchema = new mongoose.Schema({
   trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
   stripeCustomerId:     { type: String },
   stripeSubscriptionId: { type: String },
-  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, tiktokEnabled: Boolean, instagramEnabled: Boolean }],
+  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String }],
+  googleAccessToken:  String,
+  googleRefreshToken: String,
   nicheId:         { type: String },
   nicheName:       { type: String },
   nicheChangesUsed: { type: Number, default: 0 },
@@ -188,23 +190,75 @@ passport.use(new GoogleStrategy({
   scope: ['profile', 'email', 'https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload'],
 }, async (accessToken, refreshToken, profile, done) => {
   try {
+    // 1. Find or create user
     let user = await User.findOne({ googleId: profile.id });
     if (!user) {
       user = await User.findOne({ email: profile.emails[0].value });
-      if (user) { user.googleId = profile.id; await user.save(); }
+      if (user) { user.googleId = profile.id; }
     }
     if (!user) {
       user = await User.create({
-        name:      profile.displayName,
-        email:     profile.emails[0].value,
-        googleId:  profile.id,
-        plan:      'trial',
+        name:           profile.displayName,
+        email:          profile.emails[0].value,
+        googleId:       profile.id,
+        plan:           'trial',
         trialStartedAt: new Date(),
         trialEndsAt:    new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        youtubeChannels: [],
       });
     }
+
+    // 2. Save OAuth tokens on user
+    user.googleAccessToken  = accessToken;
+    user.googleRefreshToken = refreshToken || user.googleRefreshToken;
+
+    // 3. Fetch their YouTube channel via YouTube Data API
+    try {
+      const ytRes = await fetch(
+        'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true',
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const ytData = await ytRes.json();
+      const ytChannel = ytData?.items?.[0];
+
+      if (ytChannel) {
+        const channelId   = ytChannel.id;
+        const channelName = ytChannel.snippet?.title || 'My Channel';
+
+        // Add channel if not already connected
+        const already = (user.youtubeChannels || []).find(c => c.channelId === channelId);
+        if (!already) {
+          if (!user.youtubeChannels) user.youtubeChannels = [];
+          user.youtubeChannels.push({
+            channelId,
+            channelName,
+            accessToken:       accessToken,
+            refreshToken:      refreshToken || '',
+            tiktokEnabled:     false,
+            instagramEnabled:  false,
+            connectedAt:       new Date().toISOString(),
+          });
+          console.log(`[OAuth] Channel auto-connected: ${channelName} (${channelId}) for user ${user.email}`);
+        } else {
+          // Update tokens on existing channel
+          already.accessToken  = accessToken;
+          already.refreshToken = refreshToken || already.refreshToken;
+          console.log(`[OAuth] Tokens refreshed for channel: ${channelName}`);
+        }
+        // Flag for frontend to know a channel was just connected
+        user._channelJustConnected = { channelId, channelName };
+      }
+    } catch (ytErr) {
+      console.warn('[OAuth] YouTube channel fetch failed:', ytErr.message);
+      // Not fatal — user still signs in, they can connect channel manually
+    }
+
+    await user.save();
     return done(null, user);
-  } catch (err) { return done(err); }
+  } catch (err) {
+    console.error('[OAuth] Strategy error:', err);
+    return done(err);
+  }
 }));
 
 passport.serializeUser((user, done) => done(null, user.id));
@@ -292,13 +346,23 @@ app.get('/auth/google/callback',
   try {
     const token = jwt.sign({ userId: req.user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
     const frontendUrl = process.env.FRONTEND_URL || 'https://viralityyyai.netlify.app';
-    // Redirect to Netlify frontend with token in URL — frontend stores it and shows dashboard
-    res.redirect(`${frontendUrl}?token=${token}&user=${encodeURIComponent(JSON.stringify({
-      id:    req.user.id,
-      email: req.user.email || '',
-      name:  req.user.name  || '',
-      plan:  req.user.plan  || 'trial',
-    }))}`);
+
+    const userData = {
+      id:          req.user.id,
+      email:       req.user.email || '',
+      name:        req.user.name  || '',
+      plan:        req.user.plan  || 'trial',
+      nicheId:     (req.user.youtubeChannels || [])[0]?.nicheId || null,
+      hasChannels: (req.user.youtubeChannels || []).length > 0,
+      channels:    (req.user.youtubeChannels || []).map(c => ({
+        channelId:   c.channelId,
+        channelName: c.channelName,
+      })),
+      // Tell the frontend if a channel was just connected in this OAuth flow
+      channelJustConnected: req.user._channelJustConnected || null,
+    };
+
+    res.redirect(`${frontendUrl}?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
   } catch (err) {
     console.error('[OAuth callback error]', err);
     res.status(500).send('Auth callback error: ' + err.message);
