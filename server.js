@@ -1812,6 +1812,178 @@ app.get('/api/agents/scraper/config', requireAuth, (req, res) => {
 
 } // end FEATURE_COMPETITOR_SCRAPER
 
+
+// =============================================================================
+// MISSING ROUTES — added to match all frontend API calls
+// =============================================================================
+
+// ── PREVIEW QUEUE ────────────────────────────────────────────────────────────
+
+// GET /api/agents/preview/queue
+app.get('/api/agents/preview/queue', requireAuth, async (req, res) => {
+  try {
+    const db = mongoose.connection.db;
+    const videos = await db.collection('pipeline_queue')
+      .find({ userId: req.user.id, status: { $in: ['pending', 'queued', 'preview'] } })
+      .sort({ queuedAt: -1 }).limit(20).toArray();
+    videos.forEach(v => { v._id = v._id.toString(); });
+    res.json({ success: true, queue: videos, count: videos.length });
+  } catch (err) {
+    console.error('[Preview] GET /queue error:', err);
+    res.status(500).json({ error: 'Failed to fetch preview queue' });
+  }
+});
+
+// POST /api/agents/preview/approve
+app.post('/api/agents/preview/approve', requireAuth, async (req, res) => {
+  try {
+    const { videoId } = req.body;
+    if (!videoId) return res.status(400).json({ error: 'videoId required' });
+    const db = mongoose.connection.db;
+    const { ObjectId } = require('mongodb');
+    let query;
+    try { query = { _id: new ObjectId(videoId) }; } catch { query = { _id: videoId }; }
+    await db.collection('pipeline_queue').updateOne(
+      { ...query, userId: req.user.id },
+      { $set: { status: 'approved', approvedAt: new Date().toISOString() } }
+    );
+    res.json({ success: true, message: 'Video approved — will post on schedule' });
+  } catch (err) {
+    console.error('[Preview] POST /approve error:', err);
+    res.status(500).json({ error: 'Failed to approve video' });
+  }
+});
+
+// POST /api/agents/preview/skip
+app.post('/api/agents/preview/skip', requireAuth, async (req, res) => {
+  try {
+    const { videoId } = req.body;
+    if (!videoId) return res.status(400).json({ error: 'videoId required' });
+    const db = mongoose.connection.db;
+    const { ObjectId } = require('mongodb');
+    let query;
+    try { query = { _id: new ObjectId(videoId) }; } catch { query = { _id: videoId }; }
+    await db.collection('pipeline_queue').updateOne(
+      { ...query, userId: req.user.id },
+      { $set: { status: 'skipped', skippedAt: new Date().toISOString() } }
+    );
+    res.json({ success: true, message: 'Video skipped and removed from queue' });
+  } catch (err) {
+    console.error('[Preview] POST /skip error:', err);
+    res.status(500).json({ error: 'Failed to skip video' });
+  }
+});
+
+// ── ANALYTICS ────────────────────────────────────────────────────────────────
+
+// GET /api/analytics/videos
+// Returns posted video performance data for the logged-in user
+app.get('/api/analytics/videos', requireAuth, async (req, res) => {
+  try {
+    const db = mongoose.connection.db;
+    // First try posted_videos collection
+    const videos = await db.collection('posted_videos')
+      .find({ userId: req.user.id })
+      .sort({ postedAt: -1 })
+      .limit(50).toArray();
+
+    if (videos.length) {
+      videos.forEach(v => { v._id = v._id.toString(); });
+      return res.json({ success: true, videos });
+    }
+
+    // Fallback — check pipeline_queue for posted items
+    const posted = await db.collection('pipeline_queue')
+      .find({ userId: req.user.id, status: 'posted' })
+      .sort({ postedAt: -1 })
+      .limit(50).toArray();
+
+    posted.forEach(v => { v._id = v._id.toString(); });
+    res.json({ success: true, videos: posted });
+  } catch (err) {
+    console.error('[Analytics] GET /videos error:', err);
+    res.status(500).json({ error: 'Failed to fetch video analytics' });
+  }
+});
+
+// ── AFFILIATE ─────────────────────────────────────────────────────────────────
+
+// GET /api/affiliate/stats
+app.get('/api/affiliate/stats', requireAuth, async (req, res) => {
+  try {
+    const db = mongoose.connection.db;
+    const stats = await db.collection('affiliate_stats')
+      .findOne({ userId: req.user.id });
+    res.json({
+      success:       true,
+      pendingPayout: stats?.pendingPayout  || 0,
+      totalSignups:  stats?.totalSignups   || 0,
+      conversions:   stats?.conversions    || 0,
+      totalEarned:   stats?.totalEarned    || 0,
+      commissionRate: 0.30,
+    });
+  } catch (err) {
+    console.error('[Affiliate] GET /stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch affiliate stats' });
+  }
+});
+
+// ── AUTH EXTRAS ───────────────────────────────────────────────────────────────
+
+// POST /api/auth/forgot-password
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    // In production: send a real reset email via SendGrid/Resend
+    // For now: acknowledge the request so the UI can show a success state
+    console.log('[Auth] Password reset requested for:', email);
+    res.json({ success: true, message: 'If that email exists, a reset link has been sent.' });
+  } catch (err) {
+    console.error('[Auth] forgot-password error:', err);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// ── CHANNELS EXTRAS ───────────────────────────────────────────────────────────
+
+// POST /api/channels/settings — update channel auto-post settings
+app.post('/api/channels/settings', requireAuth, async (req, res) => {
+  try {
+    const { autoPost, channelId } = req.body;
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    // Update global setting or per-channel
+    if (channelId) {
+      const ch = (user.youtubeChannels || []).find(c => c.channelId === channelId);
+      if (ch) ch.autoPost = autoPost;
+    } else {
+      user.autoPost = autoPost;
+    }
+    await user.save();
+    res.json({ success: true, autoPost });
+  } catch (err) {
+    console.error('[Channels] POST /settings error:', err);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// POST /api/channels/:channelId/pause — pause/resume a channel
+app.post('/api/channels/:channelId/pause', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const ch = (user.youtubeChannels || []).find(c => c.channelId === req.params.channelId);
+    if (!ch) return res.status(404).json({ error: 'Channel not found' });
+    ch.paused = !ch.paused;
+    await user.save();
+    res.json({ success: true, paused: ch.paused, channelId: req.params.channelId });
+  } catch (err) {
+    console.error('[Channels] POST /pause error:', err);
+    res.status(500).json({ error: 'Failed to pause channel' });
+  }
+});
+
 // =============================================================================
 // CRON JOBS
 // =============================================================================
