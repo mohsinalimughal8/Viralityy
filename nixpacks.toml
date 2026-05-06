@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python3", "python3Packages.pip"]
+nixPkgs = ["nodejs_20", "python3", "python3Packages.pip"]
 
 [phases.install]
 cmds = ["npm ci", "pip3 install -r requirements.txt"]
