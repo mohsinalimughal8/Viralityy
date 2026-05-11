@@ -1,4 +1,3 @@
-<!-- cache-bust: 2026-05-06 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1789,8 +1788,7 @@ async function runNicheSearch() {
   const el = document.getElementById('ne-results');
   if (el) el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Searching…</div>';
   const data = await apiCall('/api/niches/search', 'POST', { keyword: kw, plan: nichePlan });
-  const result = data?.result;
-  liveNiches = result ? [result] : [];
+  liveNiches = data?.niches || data?.results || [];
   renderNiches();
 }
 
@@ -1798,21 +1796,23 @@ function renderNicheCard(n) {
   const vcls = n.verdict==='hot'?'hot':n.verdict==='moderate'?'moderate':'weak';
   const vbadge = n.verdict==='hot'?'vb-hot':n.verdict==='moderate'?'vb-mod':'vb-weak';
   const barcol = n.verdict==='hot'?'var(--green)':n.verdict==='moderate'?'var(--amber)':'rgba(107,114,128,.5)';
-  const score = n.combined_score || 0;
-  const cpm = n.cpm_range || '';
+  const cpmL = n.cpm_l || n.cpmLow || 0;
+  const cpmH = n.cpm_h || n.cpmHigh || 0;
+  const revEst = cpmH ? '$'+Math.round((cpmL+cpmH)/2*12).toLocaleString()+'/mo est.' : '—';
   return `<div class="ne2-card ${vcls}">
     <div class="ne2-card-inner">
       <div class="ne2-top">
-        <div style="flex:1"><p class="ne2-label">${n.label||n.name||n.niche_id}</p><p class="ne2-cat">${n.cat||n.category||''}</p></div>
-        <div style="text-align:right"><p class="ne2-score">${Math.round(score)}</p><span class="ne2-vbadge ${vbadge}">${(n.verdict||'').toUpperCase()}</span></div>
+        <div style="flex:1"><p class="ne2-label">${n.label||n.name||n.id}</p><p class="ne2-cat">${n.cat||n.category||''}</p></div>
+        <div style="text-align:right"><p class="ne2-score">${Math.round(n.score||0)}</p><span class="ne2-vbadge ${vbadge}">${(n.verdict||'').toUpperCase()}</span></div>
       </div>
-      <div class="ne2-bar"><div class="ne2-bar-fill" style="width:${Math.min(score,100)}%;background:${barcol}"></div></div>
+      <div class="ne2-bar"><div class="ne2-bar-fill" style="width:${Math.min(n.score||0,100)}%;background:${barcol}"></div></div>
       <div class="ne2-meta">
-        ${cpm ? `<span>CPM <span>${cpm}</span></span>` : ''}
-        ${n.competition ? `<span>Competition <span>${n.competition}</span></span>` : ''}
+        ${cpmH ? `<span>CPM <span>$${cpmL}–$${cpmH}</span></span>` : ''}
+        ${n.competition||n.comp ? `<span>Competition <span>${n.competition||n.comp}</span></span>` : ''}
+        ${revEst !== '—' ? `<span>Revenue <span>${revEst}</span></span>` : ''}
       </div>
       <div style="display:flex;gap:7px;margin-top:.65rem">
-        <button class="act act-ok" style="font-size:.68rem;padding:4px 11px" onclick="selectNiche('${n.niche_id||n.id}','${(n.label||n.name||n.niche_id||'').replace(/'/g,"\\'")}')">Use this niche</button>
+        <button class="act act-ok" style="font-size:.68rem;padding:4px 11px" onclick="selectNiche('${n.id||n.nicheId}','${(n.label||n.name||n.id).replace(/'/g,"\''")}')">Use this niche</button>
       </div>
     </div>
   </div>`;
@@ -1831,8 +1831,8 @@ function renderNiches() {
     return;
   }
   let list = [...liveNiches];
-  if (nicheMode === 'discover') list = list.filter(n=>(n.combined_score||0)>=60).sort((a,b)=>(b.combined_score||0)-(a.combined_score||0));
-  else list = list.sort((a,b)=>(b.combined_score||0)-(a.combined_score||0));
+  if (nicheMode === 'discover') list = list.filter(n=>(n.score||0)>=60).sort((a,b)=>(b.score||0)-(a.score||0));
+  else list = list.sort((a,b)=>(b.score||0)-(a.score||0));
   el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">${list.length} niches found</p>` +
     list.map(renderNicheCard).join('');
 }
@@ -1841,20 +1841,8 @@ async function initNiches() {
   const el = document.getElementById('ne-results');
   if (!el || liveNiches.length) { if(liveNiches.length) renderNiches(); return; }
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Loading niche scores…</div>';
-  const keywords = ['psychology', 'finance', 'stoicism', 'productivity', 'fitness'];
-  const results = await Promise.all(
-    keywords.map(kw => apiCall('/api/niches/search', 'POST', { keyword: kw, plan: nichePlan }))
-  );
-  const seen = new Set();
-  liveNiches = [];
-  for (const data of results) {
-    const r = data?.result;
-    if (r && r.niche_id && !seen.has(r.niche_id)) {
-      seen.add(r.niche_id);
-      liveNiches.push(r);
-    }
-  }
-  liveNiches.sort((a, b) => (b.combined_score || 0) - (a.combined_score || 0));
+  const data = await apiCall('/api/niches/recommend?plan='+nichePlan);
+  liveNiches = data?.niches || data?.recommendations || [];
   renderNiches();
 }
 

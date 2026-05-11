@@ -166,13 +166,6 @@ app.use('/api/', limiter);
 // This is what Railway pings. Must respond 200 within 5 minutes.
 // =============================================================================
 app.get('/health', (req, res) => {
-  const { execSync } = require('child_process');
-  const path = require('path');
-  let pythonVersion = null, pythonPath = null, scriptExists = null, scriptTest = null;
-  try { pythonVersion = execSync('python3 --version 2>&1').toString().trim(); } catch(e) { pythonVersion = 'ERROR: ' + e.message; }
-  try { pythonPath = execSync('which python3 2>&1').toString().trim(); } catch(e) { pythonPath = 'ERROR: ' + e.message; }
-  try { scriptExists = require('fs').existsSync(path.join(__dirname, 'niche_engine_v2.py')); } catch(e) { scriptExists = 'ERROR'; }
-  try { scriptTest = execSync(`python3 "${path.join(__dirname, 'niche_engine_v2.py')}" recommend --plan starter --count 1 2>&1`, { timeout: 10000 }).toString().trim().slice(0, 300); } catch(e) { scriptTest = 'ERROR: ' + e.message; }
   res.json({
     status:  'ok',
     uptime:  process.uptime(),
@@ -181,7 +174,6 @@ app.get('/health', (req, res) => {
     stripe:  !!process.env.STRIPE_SECRET_KEY ? 'configured' : 'not configured (billing disabled)',
     youtube: !!process.env.YOUTUBE_API_KEY   ? 'configured' : 'not configured',
     openai:  !!process.env.OPENAI_API_KEY    ? 'configured' : 'not configured',
-    python:  { version: pythonVersion, path: pythonPath, scriptExists, scriptTest },
   });
 });
 
