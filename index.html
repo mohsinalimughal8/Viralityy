@@ -1841,9 +1841,10 @@ function renderNiches() {
     el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No results yet</div>';
     return;
   }
+  const getScore = n => n.combined_score || n.score || 0;
   let list = [...liveNiches];
-  if (nicheMode === 'discover') list = list.filter(n=>(n.score||0)>=60).sort((a,b)=>(b.score||0)-(a.score||0));
-  else list = list.sort((a,b)=>(b.score||0)-(a.score||0));
+  if (nicheMode === 'discover') list = list.filter(n => getScore(n) >= 60).sort((a,b) => getScore(b) - getScore(a));
+  else list = list.sort((a,b) => getScore(b) - getScore(a));
   el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">${list.length} niches found</p>` +
     list.map(renderNicheCard).join('');
 }
@@ -1853,11 +1854,8 @@ async function initNiches() {
   if (!el) return;
   if (liveNiches.length) { renderNiches(); return; }
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Loading live niche scores…</div>';
-  const DEFAULT_KEYWORDS = ['psychology','personal finance','stoicism','ai tools','fitness'];
-  const results = await Promise.all(DEFAULT_KEYWORDS.map(kw => apiCall('/api/niches/search','POST',{keyword:kw,plan:nichePlan}).then(d => d?.result && !Array.isArray(d.result) ? [d.result] : (d?.niches || [])).catch(() => [])));
-  const seen = new Set();
-  results.flat().forEach(n => { const id = n.niche_id||n.id||n.nicheId||n.label; if (id && !seen.has(id)) { seen.add(id); liveNiches.push(n); } });
-  liveNiches.sort((a,b) => (b.combined_score||b.score||0)-(a.combined_score||a.score||0));
+  const data = await apiCall('/api/niches/recommend');
+  liveNiches = data?.niches || [];
   renderNiches();
 }
 
