@@ -1648,7 +1648,9 @@ async function initPlanner() {
   if (!el) return;
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading calendar…</div>';
   const data = await apiCall('/api/agents/planner/calendar');
-  const slots = data?.slots || data?.calendar?.slots || [];
+  // calendar can be an array or an object with a slots property
+  const calArr = Array.isArray(data?.calendar) ? data.calendar : (data?.calendar?.slots || []);
+  const slots  = data?.slots?.length ? data.slots : calArr;
   const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
   const today = new Date().toISOString().slice(0, 10);
   setStat('stat-planner-total',    slots.length || 0);
@@ -1656,8 +1658,9 @@ async function initPlanner() {
   setStat('stat-planner-queued',   slots.filter(s => s.status === 'queued' || s.status === 'pending').length);
   setStat('stat-planner-upcoming', slots.filter(s => (s.scheduledDate || '') >= today && s.status !== 'posted').length);
   if (!slots.length) {
+    const msg = data?.message || 'No calendar yet';
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
-      No calendar yet — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="generateCalendar()">Generate 30-day calendar</button>
+      ${msg} — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="generateCalendar()">Generate 30-day calendar</button>
     </div>`;
     return;
   }
