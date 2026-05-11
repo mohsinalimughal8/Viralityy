@@ -832,7 +832,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="sidebar-footer">
     <div class="sidebar-user" onclick="openAccountSettings()">
       <div class="user-av">MA</div>
-      <div><p class="user-name">Mohsin Ali</p><p class="user-plan">Growth plan · Trial</p></div>
+      <div><p class="user-name"></p><p class="user-plan"></p></div>
     </div>
     <div style="margin-top:8px;padding:0 .5rem">
       <div class="sidebar-item" style="color:var(--text3);font-size:.75rem" onclick="logout()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</div>
@@ -862,28 +862,11 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="grid2">
     <div class="card-block">
       <h4>Today's activity</h4>
-      <div class="act-row"><div class="act-dot" style="background:var(--green)"></div><span class="act-text">Posted: "3 psychology tricks that make people like you"</span><span class="act-time">2m</span></div>
-      <div class="act-row"><div class="act-dot" style="background:var(--purple)"></div><span class="act-text">Queued for review: "Why smart people make bad decisions"</span><span class="act-time">8m</span></div>
-      <div class="act-row"><div class="act-dot" style="background:var(--amber)"></div><span class="act-text">Topic Scout found 5 trending topics in your niche</span><span class="act-time">1h</span></div>
-      <div class="act-row"><div class="act-dot" style="background:var(--green)"></div><span class="act-text">Posted: "The dark side of social media on your brain"</span><span class="act-time">3h</span></div>
-      <div class="act-row"><div class="act-dot" style="background:var(--purple)"></div><span class="act-text">AI optimised: switched hook style to story-format (+23% CTR)</span><span class="act-time">6h</span></div>
+      <div id="activity-list"><div class="act-row"><span class="act-text" style="color:var(--text3)">Loading agent activity…</span></div></div>
     </div>
     <div class="card-block">
       <h4>Top video this week</h4>
-      <div style="background:var(--bg3);border-radius:9px;padding:1rem;margin-bottom:.75rem">
-        <p style="font-size:.83rem;font-weight:600;color:var(--text);margin-bottom:.35rem;line-height:1.35">"5 social skills nobody teaches you but everyone needs"</p>
-        <div style="display:flex;gap:14px;font-size:.7rem;color:var(--text3);margin-bottom:.6rem">
-          <span>👁 42,180 views</span><span>👍 3,240 likes</span><span>💬 189 comments</span>
-        </div>
-        <div style="display:flex;gap:5px">
-          <span class="badge badge-green">Good engagement</span>
-          <span class="badge badge-purple">Story hook</span>
-        </div>
-      </div>
-      <div style="font-size:.72rem;color:var(--text3);line-height:1.6">
-        <p>📈 This format outperformed your avg by <strong style="color:var(--green)">+67%</strong></p>
-        <p style="margin-top:4px">🤖 AI will apply story-format hooks to next 5 videos</p>
-      </div>
+      <div id="top-video-card"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading top video…</p></div>
     </div>
   </div>
   <div class="card-block full" style="margin-top:12px">
@@ -1793,12 +1776,16 @@ async function runNicheSearch() {
 }
 
 function renderNicheCard(n) {
-  const vcls = n.verdict==='hot'?'hot':n.verdict==='moderate'?'moderate':'weak';
-  const vbadge = n.verdict==='hot'?'vb-hot':n.verdict==='moderate'?'vb-mod':'vb-weak';
-  const barcol = n.verdict==='hot'?'var(--green)':n.verdict==='moderate'?'var(--amber)':'rgba(107,114,128,.5)';
-  const cpmL = n.cpm_l || n.cpmLow || 0;
-  const cpmH = n.cpm_h || n.cpmHigh || 0;
-  const revEst = cpmH ? '$'+Math.round((cpmL+cpmH)/2*12).toLocaleString()+'/mo est.' : '—';
+  const score = n.combined_score || n.score || 0;
+  const rawVerdict = (n.verdict || (score >= 70 ? 'HOT' : score >= 50 ? 'MODERATE' : 'WEAK')).toLowerCase();
+  const vcls = rawVerdict === 'hot' ? 'hot' : rawVerdict === 'moderate' ? 'moderate' : 'weak';
+  const vbadge = rawVerdict === 'hot' ? 'vb-hot' : rawVerdict === 'moderate' ? 'vb-mod' : 'vb-weak';
+  const barcol = rawVerdict === 'hot' ? 'var(--green)' : rawVerdict === 'moderate' ? 'var(--amber)' : 'rgba(107,114,128,.5)';
+  const cpmRange = n.cpm_range || (n.cpm_l && n.cpm_h ? "$"+n.cpm_l+"–$"+n.cpm_h : null);
+  const nicheId = n.niche_id || n.id || n.nicheId || '';
+  const nicheLabel = n.label || n.name || nicheId;
+  const comp = n.competition || n.comp || '';
+  const revEst = n.monthly_revenue_estimate?.mid || '—';
   return `<div class="ne2-card ${vcls}">
     <div class="ne2-card-inner">
       <div class="ne2-top">
@@ -1839,10 +1826,14 @@ function renderNiches() {
 
 async function initNiches() {
   const el = document.getElementById('ne-results');
-  if (!el || liveNiches.length) { if(liveNiches.length) renderNiches(); return; }
-  el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Loading niche scores…</div>';
-  const data = await apiCall('/api/niches/recommend?plan='+nichePlan);
-  liveNiches = data?.niches || data?.recommendations || [];
+  if (!el) return;
+  if (liveNiches.length) { renderNiches(); return; }
+  el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Loading live niche scores…</div>';
+  const DEFAULT_KEYWORDS = ['psychology','personal finance','stoicism','ai tools','fitness'];
+  const results = await Promise.all(DEFAULT_KEYWORDS.map(kw => apiCall('/api/niches/search','POST',{keyword:kw,plan:nichePlan}).then(d => d?.result && !Array.isArray(d.result) ? [d.result] : (d?.niches || [])).catch(() => [])));
+  const seen = new Set();
+  results.flat().forEach(n => { const id = n.niche_id||n.id||n.nicheId||n.label; if (id && !seen.has(id)) { seen.add(id); liveNiches.push(n); } });
+  liveNiches.sort((a,b) => (b.combined_score||b.score||0)-(a.combined_score||a.score||0));
   renderNiches();
 }
 
