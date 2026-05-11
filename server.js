@@ -1098,6 +1098,7 @@ app.get('/api/agents/scout/topics', requireAuth, async (req, res) => {
       .sort({ momentumScore: -1 })
       .limit(10)
       .toArray();
+    if (!docs.length) return res.json({ success: true, topics: [], message: 'Click Run Scout to find trending topics in your niche' });
     docs.forEach(d => { d._id = d._id.toString(); });
     res.json({ success: true, count: docs.length, topics: docs });
   } catch (err) {
