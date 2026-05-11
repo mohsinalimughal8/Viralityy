@@ -675,30 +675,36 @@ try {
 // GET /api/niches/recommend
 // Ranked niche list for the logged-in user's plan (Layer 1 — offline)
 // ---------------------------------------------------------------------------
+async function searchNichesParallel(keywords, plan) {
+  const results = await Promise.all(
+    keywords.map(kw =>
+      nicheEngine.search(kw, plan)
+        .then(r => r ? [r] : [])
+        .catch(() => [])
+    )
+  );
+  const seen = new Set();
+  const niches = [];
+  results.flat().forEach(n => {
+    const id = n.niche_id || n.id || n.nicheId || n.label;
+    if (id && !seen.has(id)) { seen.add(id); niches.push(n); }
+  });
+  niches.sort((a, b) => (b.combined_score || b.score || 0) - (a.combined_score || a.score || 0));
+  return niches;
+}
+
 app.get('/api/niches/recommend', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const plan = user.plan || 'shorts_starter';
-    const DEFAULT_KEYWORDS = ['psychology', 'personal finance', 'stoicism', 'ai tools', 'fitness'];
+    const KEYWORDS = [
+      'psychology', 'personal finance', 'stoicism', 'ai tools', 'fitness',
+      'mental health', 'history facts', 'book summaries', 'investing', 'home fitness',
+    ];
 
-    const results = await Promise.all(
-      DEFAULT_KEYWORDS.map(kw =>
-        nicheEngine.search(kw, plan)
-          .then(r => r ? [r] : [])
-          .catch(() => [])
-      )
-    );
-
-    const seen = new Set();
-    const niches = [];
-    results.flat().forEach(n => {
-      const id = n.niche_id || n.id || n.nicheId || n.label;
-      if (id && !seen.has(id)) { seen.add(id); niches.push(n); }
-    });
-    niches.sort((a, b) => (b.combined_score || b.score || 0) - (a.combined_score || a.score || 0));
-
+    const niches = await searchNichesParallel(KEYWORDS, plan);
     res.json({ success: true, niches, count: niches.length });
   } catch (err) {
     console.error('[NicheV2] /api/niches/recommend error:', err);
@@ -842,10 +848,29 @@ app.post('/api/niches/search', requireAuth, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const plan   = bodyPlan || user.plan || 'shorts_starter';
-    const result = await nicheEngine.search(keyword.trim(), plan);
+    const plan = bodyPlan || user.plan || 'shorts_starter';
+    const kw   = keyword.trim().toLowerCase();
 
-    res.json({ success: true, result, niches: result ? [result] : [] });
+    // Build 4 related keywords based on the primary keyword
+    const RELATED_MAP = {
+      'ai':                    ['ai tools', 'artificial intelligence', 'machine learning', 'automation'],
+      'psychology':            ['human behaviour', 'cognitive bias', 'social psychology', 'mindset'],
+      'finance':               ['personal finance', 'investing', 'stock market', 'financial freedom'],
+      'fitness':               ['home fitness', 'weight loss', 'workout', 'nutrition'],
+      'history':               ['history facts', 'ancient civilizations', 'world war', 'historical events'],
+      'stoicism':              ['philosophy', 'marcus aurelius', 'self improvement', 'mindfulness'],
+      'business':              ['entrepreneurship', 'side hustles', 'passive income', 'startup'],
+      'health':                ['mental health', 'sleep optimization', 'stress management', 'wellness'],
+      'investing':             ['stock market', 'crypto', 'real estate investing', 'index funds'],
+      'crypto':                ['bitcoin', 'blockchain', 'defi', 'cryptocurrency'],
+    };
+    const related = RELATED_MAP[kw]
+      || Object.entries(RELATED_MAP).find(([k]) => kw.includes(k))?.[1]
+      || [`${kw} tips`, `${kw} for beginners`, `best ${kw}`, `${kw} facts`];
+
+    const keywords = [kw, ...related.slice(0, 4)];
+    const niches   = await searchNichesParallel(keywords, plan);
+    res.json({ success: true, niches, result: niches[0] || null, count: niches.length });
   } catch (err) {
     console.error('[NicheV2] /api/niches/search error:', err);
     res.status(500).json({ error: 'Failed to search niche' });
