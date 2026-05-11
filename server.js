@@ -386,11 +386,13 @@ app.post('/api/auth/register', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 12);
     const affiliateCode = generateAffiliateCode();
 
+    const ref = typeof req.body.ref === 'string' && req.body.ref.trim() ? req.body.ref.trim() : null;
     const user = await User.create({
       name, email: email.toLowerCase(), passwordHash, affiliateCode,
       plan: 'trial',
       trialStartedAt: new Date(),
       trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      ...(ref && { referredBy: ref }),
     });
 
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
