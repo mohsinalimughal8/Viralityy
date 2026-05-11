@@ -948,10 +948,10 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="dash-page" id="dp-planner">
   <div class="dash-topbar"><div><p class="ph">Content Planner</p><p class="ps">AI-generated 30-day video calendar for your niche</p></div><button class="btn btn-primary btn-sm" onclick="generateCalendar()">Regenerate calendar</button></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Total slots</p><p class="sc-value">30</p><p class="sc-sub">This calendar</p></div>
-    <div class="stat-card"><p class="sc-label">Posted</p><p class="sc-value">12</p><p class="sc-sub green">On schedule</p></div>
-    <div class="stat-card"><p class="sc-label">Queued</p><p class="sc-value">3</p><p class="sc-sub" style="color:var(--amber)">Awaiting review</p></div>
-    <div class="stat-card"><p class="sc-label">Upcoming</p><p class="sc-value">15</p><p class="sc-sub">Next 15 days</p></div>
+    <div class="stat-card"><p class="sc-label">Total slots</p><p class="sc-value" id="stat-planner-total">—</p><p class="sc-sub">This calendar</p></div>
+    <div class="stat-card"><p class="sc-label">Posted</p><p class="sc-value" id="stat-planner-posted">—</p><p class="sc-sub green">On schedule</p></div>
+    <div class="stat-card"><p class="sc-label">Queued</p><p class="sc-value" id="stat-planner-queued">—</p><p class="sc-sub" style="color:var(--amber)">Awaiting review</p></div>
+    <div class="stat-card"><p class="sc-label">Upcoming</p><p class="sc-value" id="stat-planner-upcoming">—</p><p class="sc-sub">Next 15 days</p></div>
   </div>
   <div class="card-block full">
     <h4 style="margin-bottom:.85rem">Upcoming calendar slots</h4>
@@ -963,9 +963,9 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="dash-page" id="dp-scout">
   <div class="dash-topbar"><div><p class="ph">Daily Topic Scout</p><p class="ps">Trending topics found this morning in your niche</p></div><button class="btn btn-primary btn-sm" onclick="runScout()">Run scout now</button></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Topics found today</p><p class="sc-value">5</p><p class="sc-sub green">Scouted 2h ago</p></div>
-    <div class="stat-card"><p class="sc-label">Pipeline queue</p><p class="sc-value">3</p><p class="sc-sub" style="color:var(--amber)">Awaiting research</p></div>
-    <div class="stat-card"><p class="sc-label">Used in scripts</p><p class="sc-value">18</p><p class="sc-sub">This month</p></div>
+    <div class="stat-card"><p class="sc-label">Topics found today</p><p class="sc-value" id="stat-scout-topics">—</p><p class="sc-sub green">Scouted 2h ago</p></div>
+    <div class="stat-card"><p class="sc-label">Pipeline queue</p><p class="sc-value" id="stat-scout-queue">—</p><p class="sc-sub" style="color:var(--amber)">Awaiting research</p></div>
+    <div class="stat-card"><p class="sc-label">Used in scripts</p><p class="sc-value" id="stat-scout-used">—</p><p class="sc-sub">This month</p></div>
   </div>
   <div class="card-block full">
     <h4 style="margin-bottom:.85rem">Today's trending topics</h4>
@@ -977,9 +977,9 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="dash-page" id="dp-competitors">
   <div class="dash-topbar"><div><p class="ph">Competitor Watcher</p><p class="ps">Monitoring rival channels in your niche — alerts on high-engagement posts</p></div><button class="btn btn-primary btn-sm" onclick="addCompetitor()">+ Add competitor</button></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Channels watched</p><p class="sc-value">3</p><p class="sc-sub">In your niche</p></div>
-    <div class="stat-card"><p class="sc-label">Unread alerts</p><p class="sc-value">2</p><p class="sc-sub" style="color:var(--amber)">2 viral signals</p></div>
-    <div class="stat-card"><p class="sc-label">Videos detected</p><p class="sc-value">47</p><p class="sc-sub">Last 30 days</p></div>
+    <div class="stat-card"><p class="sc-label">Channels watched</p><p class="sc-value" id="stat-comp-channels">—</p><p class="sc-sub">In your niche</p></div>
+    <div class="stat-card"><p class="sc-label">Unread alerts</p><p class="sc-value" id="stat-comp-alerts">—</p><p class="sc-sub" style="color:var(--amber)">Viral signals</p></div>
+    <div class="stat-card"><p class="sc-label">Videos detected</p><p class="sc-value" id="stat-comp-videos">—</p><p class="sc-sub">Last 30 days</p></div>
   </div>
   <div class="grid2">
     <div class="card-block">
@@ -1640,7 +1640,13 @@ async function initPlanner() {
   if (!el) return;
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading calendar…</div>';
   const data = await apiCall('/api/agents/planner/calendar');
-  const slots = data?.slots || data?.calendar || [];
+  const slots = data?.slots || data?.calendar?.slots || [];
+  const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+  const today = new Date().toISOString().slice(0, 10);
+  setStat('stat-planner-total',    slots.length || 0);
+  setStat('stat-planner-posted',   slots.filter(s => s.status === 'posted').length);
+  setStat('stat-planner-queued',   slots.filter(s => s.status === 'queued' || s.status === 'pending').length);
+  setStat('stat-planner-upcoming', slots.filter(s => (s.scheduledDate || '') >= today && s.status !== 'posted').length);
   if (!slots.length) {
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
       No calendar yet — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="generateCalendar()">Generate 30-day calendar</button>
@@ -1674,8 +1680,15 @@ async function initScout() {
   const el = document.getElementById('scout-topics');
   if (!el) return;
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading today&#39;s trending topics&#8230;</div>';
-  const data = await apiCall('/api/agents/scout/topics');
+  const [data, statusData] = await Promise.all([
+    apiCall('/api/agents/scout/topics'),
+    apiCall('/api/agents/status'),
+  ]);
   const topics = data?.topics || [];
+  const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+  setStat('stat-scout-topics', topics.length);
+  setStat('stat-scout-queue',  statusData?.agents?.topicScout?.pipelineQueueDepth ?? '—');
+  setStat('stat-scout-used',   statusData?.agents?.scriptResearch?.pendingBriefs ?? '—');
   if (!topics.length) {
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
       No topics yet — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="runScout()">Run Topic Scout now</button>
@@ -1846,6 +1859,11 @@ async function initCompetitors() {
     apiCall('/api/agents/competitor/list'),
   ]);
   const alerts = alertData?.alerts || [];
+  const watched = watchData?.channels || watchData?.watched || [];
+  const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+  setStat('stat-comp-channels', watched.length);
+  setStat('stat-comp-alerts',   alerts.filter(a => !a.read).length);
+  setStat('stat-comp-videos',   alertData?.total ?? alerts.length);
   const alertEl = document.getElementById('competitor-alerts');
   if (alertEl) {
     alertEl.innerHTML = alerts.length ? alerts.map(a => `
@@ -1857,7 +1875,6 @@ async function initCompetitors() {
       </div>`).join('')
       : '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No alerts yet — alerts appear when watched channels post high-engagement videos</p>';
   }
-  const watched = watchData?.channels || watchData?.watched || [];
   const chEl = document.getElementById('competitor-channels-list');
   if (chEl) {
     chEl.innerHTML = watched.length ? watched.map(ch => `
