@@ -1843,7 +1843,7 @@ function renderNiches() {
   }
   const getScore = n => n.combined_score || n.score || 0;
   let list = [...liveNiches];
-  if (nicheMode === 'discover') list = list.filter(n => getScore(n) >= 60).sort((a,b) => getScore(b) - getScore(a));
+  if (nicheMode === 'discover') list = list.filter(n => getScore(n) >= 0).sort((a,b) => getScore(b) - getScore(a));
   else list = list.sort((a,b) => getScore(b) - getScore(a));
   el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">${list.length} niches found</p>` +
     list.map(renderNicheCard).join('');
