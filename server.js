@@ -430,7 +430,8 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 app.get('/api/channels', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    res.json({ channels: user.youtubeChannels || [] });
+    const channels = (user.youtubeChannels || []).map(ch => ({ channelId: ch.channelId || '', channelName: ch.channelName || 'My Channel', subscriberCount: ch.subscriberCount || 0, nicheId: ch.nicheId || null, paused: ch.paused || false }));
+    res.json({ channels, count: channels.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -745,6 +746,11 @@ app.post('/api/niches/select', requireAuth, async (req, res) => {
     user.channels[channelIndex].nicheLabel = detail.label;
     user.channels[channelIndex].nicheSetAt = new Date();
 
+    user.nicheId = nicheId;
+    if (user.youtubeChannels && user.youtubeChannels.length) {
+      user.youtubeChannels.forEach(ch => { ch.nicheId = nicheId; });
+      user.markModified('youtubeChannels');
+    }
     user.markModified('channels');
     await user.save();
 
@@ -823,7 +829,7 @@ app.post('/api/niches/search', requireAuth, async (req, res) => {
     const plan   = bodyPlan || user.plan || 'shorts_starter';
     const result = await nicheEngine.search(keyword.trim(), plan);
 
-    res.json({ success: true, result });
+    res.json({ success: true, result, niches: result ? [result] : [] });
   } catch (err) {
     console.error('[NicheV2] /api/niches/search error:', err);
     res.status(500).json({ error: 'Failed to search niche' });
