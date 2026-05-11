@@ -2337,7 +2337,10 @@ async function initAffiliate() {
 // LEARNING / OPTIMISATION PAGE — real data
 // ════════════════════════════════════════════
 async function initLearning() {
-  const status = await apiCall('/api/agents/status');
+  const [status, analytics] = await Promise.all([
+    apiCall('/api/agents/status'),
+    apiCall('/api/analytics/videos'),
+  ]);
   const loop = status?.agents?.learningLoop;
   const el = document.querySelector('#dp-learning .ps');
   if (el && loop) {
@@ -2345,17 +2348,32 @@ async function initLearning() {
       ? 'Active — runs every Monday at 3AM, analysing your video performance'
       : 'Shelved — enable FEATURE_LEARNING_LOOP in Railway to activate';
   }
-  // Show real insights if available, otherwise show helpful empty state
+
   const insightsEl = document.getElementById('ai-insights');
   if (insightsEl) {
-    if (loop?.enabled) {
-      insightsEl.innerHTML = `
-        <div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--purple);margin-bottom:8px">
-          <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Learning Loop is active</p>
-          <p style="font-size:.72rem;color:var(--text2)">The AI runs every Monday at 3AM and analyses your last 30 videos. Insights will appear here after the first run — typically within 7 days of posting your first video.</p>
-        </div>`;
+    insightsEl.innerHTML = loop?.enabled
+      ? `<div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--purple);margin-bottom:8px">
+          <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Learning Loop is active, runs every Monday</p>
+          <p style="font-size:.72rem;color:var(--text2)">Insights appear here after the first run — typically within 7 days of posting your first video.</p>
+        </div>`
+      : `<p style="font-size:.78rem;color:var(--text3)">Will activate after 10+ videos posted.</p>`;
+  }
+
+  const chartEl = document.getElementById('perf-chart');
+  if (chartEl) {
+    const videos = (analytics?.videos || []).slice(0, 10);
+    if (!videos.length) {
+      chartEl.innerHTML = '<p style="font-size:.72rem;color:var(--text3);align-self:center">No video data yet</p>';
     } else {
-      insightsEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3)">Learning Loop not yet active. It will start running once you have 10+ posted videos.</p>`;
+      const maxViews = Math.max(...videos.map(v => v.viewCount || 0), 1);
+      chartEl.innerHTML = videos.map(v => {
+        const pct = Math.max(Math.round(((v.viewCount || 0) / maxViews) * 100), 4);
+        const label = (v.title || '').slice(0, 18) || '—';
+        return `<div title="${v.title||''} — ${(v.viewCount||0).toLocaleString()} views" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default">
+          <div style="width:100%;background:var(--purple);border-radius:3px 3px 0 0;height:${pct}%;opacity:.85"></div>
+          <span style="font-size:.52rem;color:var(--text3);writing-mode:vertical-rl;transform:rotate(180deg);max-height:38px;overflow:hidden">${label}</span>
+        </div>`;
+      }).join('');
     }
   }
 }
