@@ -675,15 +675,29 @@ try {
 // ---------------------------------------------------------------------------
 app.get('/api/niches/recommend', requireAuth, async (req, res) => {
   try {
-    const user     = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const plan     = user.plan || 'shorts_starter';
-    const count    = Math.min(parseInt(req.query.count) || 10, 30);
-    const category = req.query.category || null;
-    const results  = nicheEngine.recommend(plan, count, category);
+    const plan = user.plan || 'shorts_starter';
+    const DEFAULT_KEYWORDS = ['psychology', 'personal finance', 'stoicism', 'ai tools', 'fitness'];
 
-    res.json({ success: true, plan, count: results.length, niches: results });
+    const results = await Promise.all(
+      DEFAULT_KEYWORDS.map(kw =>
+        nicheEngine.search(kw, plan)
+          .then(r => r ? [r] : [])
+          .catch(() => [])
+      )
+    );
+
+    const seen = new Set();
+    const niches = [];
+    results.flat().forEach(n => {
+      const id = n.niche_id || n.id || n.nicheId || n.label;
+      if (id && !seen.has(id)) { seen.add(id); niches.push(n); }
+    });
+    niches.sort((a, b) => (b.combined_score || b.score || 0) - (a.combined_score || a.score || 0));
+
+    res.json({ success: true, niches, count: niches.length });
   } catch (err) {
     console.error('[NicheV2] /api/niches/recommend error:', err);
     res.status(500).json({ error: 'Failed to fetch niche recommendations' });
