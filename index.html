@@ -2277,7 +2277,7 @@ async function viewBrief(el) {
 async function copyReferralLink() {
   const data = await apiCall('/api/auth/me');
   const userId = data?.user?.id || data?.id || 'unknown';
-  const refLink = 'https://viralityyyai.netlify.app/?ref=' + userId.slice(-8).toUpperCase();
+  const refLink = 'https://viralityy.pages.dev/?ref=' + userId.slice(-8).toUpperCase();
   try {
     await navigator.clipboard.writeText(refLink);
     // Update the input field too
@@ -2318,7 +2318,7 @@ async function initAffiliate() {
   const data = await apiCall('/api/auth/me');
   const userId = data?.user?.id || data?.id;
   if (userId) {
-    const refLink = 'https://viralityyyai.netlify.app/?ref=' + userId.slice(-8).toUpperCase();
+    const refLink = 'https://viralityy.pages.dev/?ref=' + userId.slice(-8).toUpperCase();
     const input = document.getElementById('referral-link-val') || document.querySelector('.referral-link-input');
     if (input) input.value = refLink;
   }
