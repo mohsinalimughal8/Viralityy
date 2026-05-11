@@ -1004,9 +1004,10 @@ app.get('/api/agents/planner/calendar', requireAuth, async (req, res) => {
   try {
     const col = await agentCol('content_calendars');
     const doc = await col.findOne({ userId: req.user.id, status: 'active' });
-    if (!doc) return res.json({ success: true, exists: false, calendar: null });
+    if (!doc) return res.json({ success: true, slots: [], pending: false, message: 'Click Generate calendar to create your 30-day content plan' });
     doc._id = doc._id.toString();
-    res.json({ success: true, exists: true, calendar: doc });
+    const slots = doc.slots || [];
+    res.json({ success: true, exists: true, slots, pending: slots.some(s => s.status === 'pending'), calendar: doc });
   } catch (err) {
     console.error('[Planner] GET /calendar error:', err);
     res.status(500).json({ error: 'Failed to fetch calendar' });
