@@ -590,6 +590,18 @@ app.post('/api/billing/portal', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/billing/promo — promo code plan upgrade bypass
+app.post('/api/billing/promo', requireAuth, async (req, res) => {
+  try {
+    const { promoCode, plan } = req.body;
+    const validPlans = ['shorts_pro', 'growth', 'agency'];
+    if (promoCode !== 'VRL-X9K2-M7QP-4TZW') return res.status(400).json({ success: false, error: 'Invalid promo code' });
+    if (!validPlans.includes(plan)) return res.status(400).json({ success: false, error: 'Invalid plan' });
+    await User.findByIdAndUpdate(req.user.id, { plan });
+    res.json({ success: true, plan });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
 // POST /webhooks/stripe — Stripe event handler (raw body required)
 app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];

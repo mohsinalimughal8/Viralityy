@@ -1843,6 +1843,27 @@ function closeNicheModal() {
   document.getElementById('vly-overlay').style.display = 'none';
 }
 
+let _promoSelectedPlan = 'shorts_pro';
+function promoSelPlan(el, plan) {
+  document.querySelectorAll('#vly-modal .plan-sel-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  _promoSelectedPlan = plan;
+}
+
+async function applyPromoCode() {
+  const code = (document.getElementById('promo-code-input')?.value || '').trim();
+  const msgEl = document.getElementById('promo-msg');
+  if (!code) { msgEl.style.color = 'var(--red,#f87171)'; msgEl.textContent = 'Please enter a promo code.'; return; }
+  msgEl.style.color = 'var(--text3)'; msgEl.textContent = 'Applying…';
+  const res = await apiCall('/api/billing/promo', 'POST', { promoCode: code, plan: _promoSelectedPlan });
+  if (res?.success) {
+    msgEl.style.color = 'var(--green,#34d399)'; msgEl.textContent = 'Plan upgraded successfully!';
+    setTimeout(() => { closeNicheModal(); location.reload(); }, 1200);
+  } else {
+    msgEl.style.color = 'var(--red,#f87171)'; msgEl.textContent = res?.error || 'Invalid promo code';
+  }
+}
+
 async function selectNiche(nicheId, nicheLabel) {
   const channelsData = await apiCall('/api/channels');
   const channels = channelsData?.channels || [];
@@ -1891,11 +1912,32 @@ async function applyNicheToChannel(nicheId, nicheLabel, ch) {
     const modal = document.getElementById('vly-modal');
     const overlay = document.getElementById('vly-overlay');
     modal.innerHTML = `
-      <h3>Niche locked</h3>
-      <p style="margin-bottom:1.25rem">${nicheData?.error || 'Upgrade to Shorts Pro or above to change your niche.'}</p>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
+      <h3>Upgrade your plan</h3>
+      <p style="margin-bottom:1rem">${nicheData?.error || 'Upgrade to Shorts Pro or above to change your niche.'}</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:1rem">
+        <div class="plan-sel-card selected" onclick="promoSelPlan(this,'shorts_pro')" style="padding:.75rem">
+          <p class="plan-sel-name">Shorts Pro</p>
+          <p class="plan-sel-price">$79<span>/mo</span></p>
+          <p class="plan-sel-desc">10 Shorts/day · TikTok</p>
+        </div>
+        <div class="plan-sel-card" onclick="promoSelPlan(this,'growth')" style="padding:.75rem">
+          <p class="plan-sel-name">Growth</p>
+          <p class="plan-sel-price">$99<span>/mo</span></p>
+          <p class="plan-sel-desc">Shorts + long-form · 3 ch</p>
+        </div>
+        <div class="plan-sel-card" onclick="promoSelPlan(this,'agency')" style="padding:.75rem">
+          <p class="plan-sel-name">Agency</p>
+          <p class="plan-sel-price">$249<span>/mo</span></p>
+          <p class="plan-sel-desc">Full suite · 5 channels</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:.75rem">
+        <input id="promo-code-input" type="text" placeholder="Enter promo code" style="flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:7px 12px;font-size:.78rem;color:var(--text);outline:none">
+        <button class="btn btn-primary" style="font-size:.78rem;padding:7px 16px;white-space:nowrap" onclick="applyPromoCode()">Apply Code</button>
+      </div>
+      <div id="promo-msg" style="font-size:.75rem;min-height:1.2em;margin-bottom:.5rem"></div>
+      <div style="display:flex;justify-content:flex-end">
         <button class="vly-modal-close" onclick="closeNicheModal()">Cancel</button>
-        <button class="btn btn-primary" style="font-size:.78rem;padding:7px 18px" onclick="alert('Plan upgrades coming soon — stay tuned!')">Upgrade Plan</button>
       </div>`;
     overlay.style.display = 'flex';
     return;
