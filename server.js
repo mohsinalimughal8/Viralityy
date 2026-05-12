@@ -1100,12 +1100,23 @@ app.post('/api/agents/planner/generate', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/content/calendar — generate 30-day calendar via OpenAI and save to MongoDB
+const PLAN_CONFIG = {
+  trial:      { shortsPerDay: 1,  longFormPerWeek: 0 },
+  starter:    { shortsPerDay: 3,  longFormPerWeek: 0 },
+  shorts_pro: { shortsPerDay: 7,  longFormPerWeek: 0 },
+  growth:     { shortsPerDay: 10, longFormPerWeek: 1 },
+  agency:     { shortsPerDay: 10, longFormPerWeek: 1 },
+};
+
+// POST /api/content/calendar — generate 30-day plan-aware calendar via OpenAI
 app.post('/api/content/calendar', requireAuth, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI not configured' });
     const { channelId, nicheName } = req.body;
     if (!nicheName) return res.status(400).json({ error: 'nicheName is required' });
+
+    const user   = await User.findById(req.user.id);
+    const config = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
 
     const { OpenAI } = require('openai');
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -1117,18 +1128,20 @@ app.post('/api/content/calendar', requireAuth, async (req, res) => {
       return d.toISOString().slice(0, 10);
     });
 
+    // Count how many long-form days fall in the 30-day window
+    const longFormDays = config.longFormPerWeek > 0
+      ? dates.filter(dt => new Date(dt).getDay() === 1).length  // Mondays
+      : 0;
+
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [{
         role: 'user',
-        content: `You are a YouTube Shorts content strategist. Generate exactly 30 unique, viral video topic ideas for a channel in the niche: "${nicheName}".
+        content: `You are a YouTube content strategist. Generate topics for a "${nicheName}" channel.
 
-Return a JSON object with a "slots" array of 30 items. Each item must have:
-- "day": integer 1–30
-- "date": string YYYY-MM-DD from this list: ${dates.join(', ')}
-- "title": compelling, specific video title under 60 characters
-- "angle": one of "hook", "story", "tutorial", "listicle", "myth-bust"
-- "status": "planned"
+Return a JSON object with:
+- "shorts": array of exactly 30 unique Short video titles (under 60 chars each)
+- "longForm": array of exactly ${Math.max(longFormDays, 1)} unique Long-form video titles (descriptive, 60–100 chars)
 
 Return only valid JSON.`,
       }],
@@ -1136,31 +1149,52 @@ Return only valid JSON.`,
       response_format: { type: 'json_object' },
     });
 
-    let slots;
+    let aiTopics;
     try {
-      const parsed = JSON.parse(completion.choices[0].message.content);
-      slots = parsed.slots || parsed.topics || parsed.calendar || (Array.isArray(parsed) ? parsed : Object.values(parsed)[0]);
+      aiTopics = JSON.parse(completion.choices[0].message.content);
     } catch {
       return res.status(500).json({ error: 'Failed to parse OpenAI response' });
     }
-    if (!Array.isArray(slots) || !slots.length) return res.status(500).json({ error: 'OpenAI returned no topics' });
+    const shortTitles    = aiTopics.shorts    || [];
+    const longFormTitles = aiTopics.longForm  || [];
+    if (!shortTitles.length) return res.status(500).json({ error: 'OpenAI returned no topics' });
 
-    slots = slots.map((s, i) => ({
-      day:           s.day || i + 1,
-      scheduledDate: s.date || dates[i],
-      title:         s.title || `Video ${i + 1}`,
-      angle:         s.angle || 'short',
-      status:        'planned',
-    }));
+    // Build one slot per type per day
+    let longFormIdx = 0;
+    const slots = [];
+    for (let i = 0; i < 30; i++) {
+      const day  = i + 1;
+      const date = dates[i];
+      const dow  = new Date(date).getDay(); // 0=Sun 1=Mon
+      slots.push({
+        day, date,
+        title:  shortTitles[i] || `Short ${day}`,
+        type:   'Short',
+        count:  config.shortsPerDay,
+        angle:  'short',
+        status: 'planned',
+      });
+      if (config.longFormPerWeek > 0 && dow === 1) {
+        slots.push({
+          day, date,
+          title:  longFormTitles[longFormIdx++ % (longFormTitles.length || 1)] || `Long-form Deep Dive ${Math.ceil(day / 7)}`,
+          type:   'Long-form',
+          count:  1,
+          angle:  'long-form',
+          status: 'planned',
+        });
+      }
+    }
 
+    const totalVideos = slots.reduce((acc, s) => acc + (s.count || 1), 0);
     const col = await agentCol('content_calendars');
     await col.updateOne(
       { userId: req.user.id, status: 'active' },
-      { $set: { userId: req.user.id, channelId: channelId || '', nicheName, slots, status: 'active', generatedAt: new Date().toISOString() } },
+      { $set: { userId: req.user.id, channelId: channelId || '', nicheName, plan: user.plan, slots, status: 'active', generatedAt: new Date().toISOString() } },
       { upsert: true }
     );
 
-    res.json({ success: true, slots, count: slots.length });
+    res.json({ success: true, slots, count: slots.length, totalVideos, plan: user.plan });
   } catch (err) {
     console.error('[ContentCalendar] error:', err);
     res.status(500).json({ error: err.message || 'Failed to generate calendar' });

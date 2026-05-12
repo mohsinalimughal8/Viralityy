@@ -1672,24 +1672,45 @@ const STATUS_COLOR = {queued:'var(--green)',generating:'var(--amber)',planned:'v
 const STATUS_ICON  = {queued:'✓ Queued',generating:'⏳ Generating',planned:'📋 Planned',posted:'✓ Posted'};
 const ANGLE_COLOR = { hook:'#6366f1', story:'#10b981', tutorial:'#f59e0b', listicle:'#3b82f6', 'myth-bust':'#ec4899', short:'#8b5cf6', planned:'#6b7280' };
 
-function renderCalendarGrid(slots) {
+function renderCalendarGrid(slots, totalVideos) {
   const el = document.getElementById('planner-slots');
   if (!el || !slots?.length) return;
+
+  // Group slots by day number
+  const byDay = {};
+  slots.forEach(s => { (byDay[s.day] = byDay[s.day] || []).push(s); });
+
+  // Unique days in order
+  const days = [...new Set(slots.map(s => s.day))].sort((a, b) => a - b);
+
+  const totalVids = totalVideos || slots.reduce((acc, s) => acc + (s.count || 1), 0);
   const dayHeaders = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d =>
     `<div style="font-size:.6rem;font-weight:700;color:var(--text3);text-align:center;padding:.3rem 0;text-transform:uppercase;letter-spacing:.06em">${d}</div>`
   ).join('');
-  const cells = slots.map((s, i) => {
-    const d = s.scheduledDate ? new Date(s.scheduledDate) : null;
-    const dayNum = d ? d.getDate() : (s.day || i + 1);
-    const mon    = d ? d.toLocaleString('default',{month:'short'}) : '';
-    const color  = ANGLE_COLOR[s.angle] || '#6b7280';
-    return `<div title="${s.title}" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.45rem .4rem;min-height:76px;display:flex;flex-direction:column;gap:3px">
-      <span style="font-size:.58rem;color:var(--text3);font-weight:700">${dayNum}${mon?' '+mon:''}</span>
-      <span style="font-size:.63rem;color:var(--text);line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;flex:1">${s.title || '—'}</span>
-      <span style="font-size:.54rem;color:${color};font-weight:700;text-transform:uppercase">${s.angle || 'planned'}</span>
+
+  const cells = days.map(day => {
+    const items = byDay[day] || [];
+    const first = items[0];
+    const d     = first?.date ? new Date(first.date) : null;
+    const dayNum = d ? d.getDate() : day;
+    const mon    = d ? d.toLocaleString('default', { month: 'short' }) : '';
+    const itemList = items.map(s => {
+      const isLong  = s.type === 'Long-form';
+      const badge   = isLong
+        ? `<span style="display:inline-block;font-size:.5rem;font-weight:700;color:#f59e0b;background:rgba(245,158,11,.12);border-radius:3px;padding:1px 4px;margin-right:3px">LF</span>`
+        : `<span style="display:inline-block;font-size:.5rem;font-weight:700;color:#a5b4fc;background:rgba(99,102,241,.12);border-radius:3px;padding:1px 4px;margin-right:3px">${s.count > 1 ? `×${s.count}` : 'S'}</span>`;
+      return `<div style="display:flex;align-items:flex-start;gap:2px;margin-bottom:2px">
+        ${badge}<span style="font-size:.59rem;color:var(--text);line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${s.title}</span>
+      </div>`;
+    }).join('');
+    return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.45rem .4rem;min-height:80px;display:flex;flex-direction:column;gap:2px">
+      <span style="font-size:.58rem;color:var(--text3);font-weight:700;margin-bottom:2px">${dayNum}${mon ? ' ' + mon : ''}</span>
+      ${itemList}
     </div>`;
   }).join('');
+
   el.innerHTML = `
+    <p style="font-size:.72rem;color:var(--text3);margin-bottom:.6rem">${totalVids} videos planned this month</p>
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px">${dayHeaders}</div>
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">${cells}</div>`;
 }
@@ -1703,17 +1724,18 @@ async function initPlanner() {
   const slots  = data?.slots?.length ? data.slots : calArr;
   const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
   const today = new Date().toISOString().slice(0, 10);
-  setStat('stat-planner-total',    slots.length || 0);
+  const totalVideos = slots.reduce((acc, s) => acc + (s.count || 1), 0);
+  setStat('stat-planner-total',    totalVideos || slots.length || 0);
   setStat('stat-planner-posted',   slots.filter(s => s.status === 'posted').length);
   setStat('stat-planner-queued',   slots.filter(s => s.status === 'queued' || s.status === 'pending' || s.status === 'planned').length);
-  setStat('stat-planner-upcoming', slots.filter(s => (s.scheduledDate || '') >= today && s.status !== 'posted').length);
+  setStat('stat-planner-upcoming', slots.filter(s => (s.date || s.scheduledDate || '') >= today && s.status !== 'posted').length);
   if (!slots.length) {
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
       ${data?.message || 'No calendar yet'} — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="generateCalendar()">Generate 30-day calendar</button>
     </div>`;
     return;
   }
-  renderCalendarGrid(slots);
+  renderCalendarGrid(slots, totalVideos);
 }
 
 async function generateCalendar() {
@@ -1727,13 +1749,14 @@ async function generateCalendar() {
   if (data?.success && data?.slots?.length) {
     toast('30-day calendar generated!', 'success');
     const slots = data.slots;
+    const totalVideos = data.totalVideos || slots.reduce((acc, s) => acc + (s.count || 1), 0);
     const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
     const today = new Date().toISOString().slice(0, 10);
-    setStat('stat-planner-total',    slots.length);
+    setStat('stat-planner-total',    totalVideos);
     setStat('stat-planner-posted',   0);
-    setStat('stat-planner-queued',   slots.length);
-    setStat('stat-planner-upcoming', slots.filter(s => (s.scheduledDate || '') >= today).length);
-    renderCalendarGrid(slots);
+    setStat('stat-planner-queued',   slots.filter(s => s.status === 'planned').length);
+    setStat('stat-planner-upcoming', slots.filter(s => (s.date || s.scheduledDate || '') >= today).length);
+    renderCalendarGrid(slots, totalVideos);
   } else {
     toast(data?.error || 'Generation failed', 'error');
     if (el) el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--red,#f87171);font-size:.82rem">${data?.error || 'Failed to generate calendar. Check that OPENAI_API_KEY is set.'}</div>`;
