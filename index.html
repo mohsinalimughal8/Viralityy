@@ -1805,7 +1805,9 @@ function renderNicheCard(n) {
   const vcls = rawVerdict === 'hot' ? 'hot' : rawVerdict === 'moderate' ? 'moderate' : 'weak';
   const vbadge = rawVerdict === 'hot' ? 'vb-hot' : rawVerdict === 'moderate' ? 'vb-mod' : 'vb-weak';
   const barcol = rawVerdict === 'hot' ? 'var(--green)' : rawVerdict === 'moderate' ? 'var(--amber)' : 'rgba(107,114,128,.5)';
-  const cpmRange = n.cpm_range || (n.cpm_l && n.cpm_h ? "$"+n.cpm_l+"–$"+n.cpm_h : null);
+  const cpmL = n.cpm_l || n.cpmLow || 0;
+  const cpmH = n.cpm_h || n.cpmHigh || 0;
+  const cpmRange = n.cpm_range || (cpmL && cpmH ? '$'+cpmL+'–$'+cpmH : null);
   const nicheId = n.niche_id || n.id || n.nicheId || '';
   const nicheLabel = n.label || n.name || nicheId;
   const comp = n.competition || n.comp || '';
@@ -1813,13 +1815,13 @@ function renderNicheCard(n) {
   return `<div class="ne2-card ${vcls}">
     <div class="ne2-card-inner">
       <div class="ne2-top">
-        <div style="flex:1"><p class="ne2-label">${n.label||n.name||n.id}</p><p class="ne2-cat">${n.cat||n.category||''}</p></div>
-        <div style="text-align:right"><p class="ne2-score">${Math.round(n.score||0)}</p><span class="ne2-vbadge ${vbadge}">${(n.verdict||'').toUpperCase()}</span></div>
+        <div style="flex:1"><p class="ne2-label">${nicheLabel}</p><p class="ne2-cat">${n.cat||n.category||''}</p></div>
+        <div style="text-align:right"><p class="ne2-score">${Math.round(score)}</p><span class="ne2-vbadge ${vbadge}">${rawVerdict.toUpperCase()}</span></div>
       </div>
-      <div class="ne2-bar"><div class="ne2-bar-fill" style="width:${Math.min(n.score||0,100)}%;background:${barcol}"></div></div>
+      <div class="ne2-bar"><div class="ne2-bar-fill" style="width:${Math.min(score,100)}%;background:${barcol}"></div></div>
       <div class="ne2-meta">
-        ${cpmH ? `<span>CPM <span>$${cpmL}–$${cpmH}</span></span>` : ''}
-        ${n.competition||n.comp ? `<span>Competition <span>${n.competition||n.comp}</span></span>` : ''}
+        ${cpmRange ? `<span>CPM <span>${cpmRange}</span></span>` : ''}
+        ${comp ? `<span>Competition <span>${comp}</span></span>` : ''}
         ${revEst !== '—' ? `<span>Revenue <span>${revEst}</span></span>` : ''}
       </div>
       <div style="display:flex;gap:7px;margin-top:.65rem">
