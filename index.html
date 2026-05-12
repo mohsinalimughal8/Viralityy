@@ -1832,8 +1832,22 @@ function renderNicheCard(n) {
 }
 
 async function selectNiche(nicheId, nicheLabel) {
-  const data = await apiCall('/api/niches/select', 'POST', { nicheId });
-  toast(data?.success ? 'Niche set to '+nicheLabel+' — generating new calendar…' : 'Niche selected', 'success');
+  toast('Setting niche…', 'info');
+  const [selectData, channelsData] = await Promise.all([
+    apiCall('/api/niches/select', 'POST', { nicheId }),
+    apiCall('/api/channels'),
+  ]);
+  const channels = channelsData?.channels || [];
+  const channelId = channels[0]?.channelId || null;
+  if (channelId) {
+    await apiCall(`/api/channels/${channelId}/niche`, 'POST', { nicheId, nicheName: nicheLabel });
+  }
+  if (selectData?.success || channelId) {
+    toast('Niche set to "' + nicheLabel + '"' + (channelId ? ' and saved to your channel' : '') + ' — generating calendar…', 'success');
+    initChannels();
+  } else {
+    toast(selectData?.error || 'Failed to set niche', 'error');
+  }
 }
 
 function renderNiches() {

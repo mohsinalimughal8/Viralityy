@@ -2072,6 +2072,27 @@ app.post('/api/channels/settings', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/channels/:channelId/niche — set niche on a specific channel
+app.post('/api/channels/:channelId/niche', requireAuth, async (req, res) => {
+  try {
+    const { nicheId, nicheName } = req.body;
+    if (!nicheId) return res.status(400).json({ error: 'nicheId required' });
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const ch = (user.youtubeChannels || []).find(c => c.channelId === req.params.channelId);
+    if (!ch) return res.status(404).json({ error: 'Channel not found' });
+    ch.nicheId   = nicheId;
+    ch.nicheName = nicheName || nicheId;
+    user.nicheId = nicheId;
+    user.markModified('youtubeChannels');
+    await user.save();
+    res.json({ success: true, channelId: req.params.channelId, nicheId, nicheName: ch.nicheName });
+  } catch (err) {
+    console.error('[Channels] POST /niche error:', err);
+    res.status(500).json({ error: 'Failed to set niche on channel' });
+  }
+});
+
 // POST /api/channels/:channelId/pause — pause/resume a channel
 app.post('/api/channels/:channelId/pause', requireAuth, async (req, res) => {
   try {
