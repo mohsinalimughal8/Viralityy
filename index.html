@@ -1853,7 +1853,17 @@ async function initNiches() {
   if (liveNiches.length) { renderNiches(); return; }
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Loading live niche scores…</div>';
   const data = await apiCall('/api/niches/recommend');
+  console.log('[initNiches] /api/niches/recommend response:', data);
   liveNiches = data?.niches || [];
+  console.log('[initNiches] liveNiches count:', liveNiches.length);
+  if (!liveNiches.length) {
+    el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
+      <p style="margin-bottom:.5rem">No niche data returned from API.</p>
+      <p style="font-size:.7rem;opacity:.7">Check browser console for details. The niche engine may still be loading on the server.</p>
+      <button class="act act-ok" style="margin-top:.75rem;font-size:.72rem" onclick="liveNiches=[];initNiches()">Retry</button>
+    </div>`;
+    return;
+  }
   renderNiches();
 }
 
