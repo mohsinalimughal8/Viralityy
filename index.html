@@ -1844,8 +1844,8 @@ function renderNiches() {
     return;
   }
   const getScore = n => n.combined_score || n.score || 0;
-  const list = [...liveNiches].filter(n => getScore(n) >= 90).sort((a, b) => getScore(b) - getScore(a));
-  el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">${list.length} niches found</p>` +
+  const list = [...liveNiches].sort((a, b) => getScore(b) - getScore(a)).slice(0, 10);
+  el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">Top ${list.length} niches by performance</p>` +
     list.map(renderNicheCard).join('');
 }
 

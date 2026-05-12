@@ -702,9 +702,12 @@ app.get('/api/niches/recommend', requireAuth, async (req, res) => {
     const KEYWORDS = [
       'psychology', 'personal finance', 'stoicism', 'ai tools', 'fitness',
       'mental health', 'history facts', 'book summaries', 'investing', 'home fitness',
+      'motivation', 'productivity', 'self improvement', 'mindset', 'money tips',
+      'entrepreneurship', 'weight loss', 'relationships', 'life hacks', 'crypto',
     ];
 
-    const niches = await searchNichesParallel(KEYWORDS, plan);
+    const allNiches = await searchNichesParallel(KEYWORDS, plan);
+    const niches = allNiches.slice(0, 10);
     res.json({ success: true, niches, count: niches.length });
   } catch (err) {
     console.error('[NicheV2] /api/niches/recommend error:', err);
