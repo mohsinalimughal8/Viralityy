@@ -379,6 +379,14 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 /* NOTIFICATIONS / TOAST */
 #toast{position:fixed;bottom:1.5rem;right:1.5rem;z-index:9999;display:flex;flex-direction:column;gap:8px}
 .toast-msg{padding:.7rem 1.1rem;border-radius:9px;font-size:.78rem;font-weight:500;color:#fff;backdrop-filter:blur(8px);animation:slideIn .2s ease;max-width:280px}
+.vly-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.vly-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:1.5rem;min-width:320px;max-width:440px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.vly-modal h3{font-size:.95rem;font-weight:700;color:var(--text);margin-bottom:.35rem}
+.vly-modal p{font-size:.75rem;color:var(--text3);margin-bottom:1rem}
+.vly-ch-row{display:flex;align-items:center;gap:11px;padding:.7rem .85rem;border-radius:9px;border:1px solid var(--border);cursor:pointer;margin-bottom:7px;transition:all .13s;background:var(--bg3)}
+.vly-ch-row:hover{border-color:var(--purple);background:rgba(99,102,241,.07)}
+.vly-modal-footer{display:flex;justify-content:flex-end;margin-top:1rem}
+.vly-modal-close{padding:6px 16px;border-radius:8px;font-size:.75rem;font-weight:600;cursor:pointer;border:1px solid var(--border2);background:transparent;color:var(--text2)}
 .toast-success{background:rgba(16,185,129,.9);border:1px solid rgba(16,185,129,.4)}
 .toast-error{background:rgba(239,68,68,.9);border:1px solid rgba(239,68,68,.4)}
 .toast-info{background:rgba(99,102,241,.9);border:1px solid rgba(99,102,241,.4)}
@@ -1831,22 +1839,56 @@ function renderNicheCard(n) {
   </div>`;
 }
 
+function closeNicheModal() {
+  document.getElementById('vly-overlay').style.display = 'none';
+}
+
 async function selectNiche(nicheId, nicheLabel) {
-  toast('Setting niche…', 'info');
-  const [selectData, channelsData] = await Promise.all([
-    apiCall('/api/niches/select', 'POST', { nicheId }),
-    apiCall('/api/channels'),
-  ]);
+  const channelsData = await apiCall('/api/channels');
   const channels = channelsData?.channels || [];
-  const channelId = channels[0]?.channelId || null;
-  if (channelId) {
-    await apiCall(`/api/channels/${channelId}/niche`, 'POST', { nicheId, nicheName: nicheLabel });
+
+  if (!channels.length) {
+    // No channels connected — just save to user account
+    const data = await apiCall('/api/niches/select', 'POST', { nicheId });
+    toast(data?.success ? `Niche set to "${nicheLabel}"` : (data?.error || 'Failed'), data?.success ? 'success' : 'error');
+    return;
   }
-  if (selectData?.success || channelId) {
-    toast('Niche set to "' + nicheLabel + '"' + (channelId ? ' and saved to your channel' : '') + ' — generating calendar…', 'success');
+
+  if (channels.length === 1) {
+    // Only one channel — skip picker, apply directly
+    await applyNicheToChannel(nicheId, nicheLabel, channels[0]);
+    return;
+  }
+
+  // Multiple channels — show picker modal
+  const modal = document.getElementById('vly-modal');
+  const overlay = document.getElementById('vly-overlay');
+  modal.innerHTML = `
+    <h3>Apply niche to channel</h3>
+    <p>Choose which channel to apply <strong style="color:var(--text)">${nicheLabel}</strong> to:</p>
+    ${channels.map(ch => `
+      <div class="vly-ch-row" onclick="applyNicheToChannel('${nicheId}','${nicheLabel.replace(/'/g,"\\'")}',${JSON.stringify(ch).replace(/</g,'\\u003c')});closeNicheModal()">
+        <div class="ch-av">${ch.profileImage ? `<img src="${ch.profileImage}" style="width:36px;height:36px;border-radius:9px;object-fit:cover">` : (ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
+        <div class="ch-info">
+          <p class="ch-name">${ch.channelName || ch.channelId}</p>
+          <p style="font-size:.68rem;color:var(--text3)">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers' : 'YouTube channel'}${ch.nicheId ? ' · '+ch.nicheId : ''}</p>
+        </div>
+      </div>`).join('')}
+    <div class="vly-modal-footer"><button class="vly-modal-close" onclick="closeNicheModal()">Cancel</button></div>`;
+  overlay.style.display = 'flex';
+}
+
+async function applyNicheToChannel(nicheId, nicheLabel, ch) {
+  const channelId = ch.channelId || ch._id;
+  const [selectData, nicheData] = await Promise.all([
+    apiCall('/api/niches/select', 'POST', { nicheId }),
+    apiCall(`/api/channels/${channelId}/niche`, 'POST', { nicheId, nicheName: nicheLabel }),
+  ]);
+  if (selectData?.success || nicheData?.success) {
+    toast(`Niche "${nicheLabel}" applied to ${ch.channelName || 'channel'}`, 'success');
     initChannels();
   } else {
-    toast(selectData?.error || 'Failed to set niche', 'error');
+    toast(selectData?.error || nicheData?.error || 'Failed to apply niche', 'error');
   }
 }
 
@@ -2477,5 +2519,8 @@ if (isLoggedIn()) {
   nav('home');
 }
 </script>
+<div id="vly-overlay" class="vly-overlay" style="display:none" onclick="if(event.target===this)closeNicheModal()">
+  <div class="vly-modal" id="vly-modal"></div>
+</div>
 </body>
 </html>
