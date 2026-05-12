@@ -1854,13 +1854,7 @@ async function selectNiche(nicheId, nicheLabel) {
     return;
   }
 
-  if (channels.length === 1) {
-    // Only one channel — skip picker, apply directly
-    await applyNicheToChannel(nicheId, nicheLabel, channels[0]);
-    return;
-  }
-
-  // Multiple channels — show picker modal
+  // Always show picker modal regardless of channel count
   const modal = document.getElementById('vly-modal');
   const overlay = document.getElementById('vly-overlay');
   modal.innerHTML = `
