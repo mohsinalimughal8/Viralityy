@@ -432,7 +432,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 app.get('/api/channels', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    const channels = (user.youtubeChannels || []).map(ch => ({ channelId: ch.channelId || '', channelName: ch.channelName || 'My Channel', subscriberCount: ch.subscriberCount || 0, nicheId: ch.nicheId || null, paused: ch.paused || false }));
+    const channels = (user.youtubeChannels || []).map(ch => ({ channelId: ch.channelId || '', channelName: ch.channelName || 'My Channel', subscriberCount: ch.subscriberCount || 0, nicheId: ch.nicheId || null, nicheName: ch.nicheName || null, paused: ch.paused || false }));
     res.json({ channels, count: channels.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2079,11 +2079,16 @@ app.post('/api/channels/:channelId/niche', requireAuth, async (req, res) => {
     if (!nicheId) return res.status(400).json({ error: 'nicheId required' });
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
+    const isFirstSet = !user.nicheId;
+    if (!isFirstSet && planNicheQuota(user.plan) === 0) {
+      return res.status(403).json({ error: 'Upgrade to Shorts Pro or above to change your niche', code: 'NICHE_LOCKED' });
+    }
     const ch = (user.youtubeChannels || []).find(c => c.channelId === req.params.channelId);
     if (!ch) return res.status(404).json({ error: 'Channel not found' });
     ch.nicheId   = nicheId;
     ch.nicheName = nicheName || nicheId;
-    user.nicheId = nicheId;
+    user.nicheId   = nicheId;
+    user.nicheName = nicheName || nicheId;
     user.markModified('youtubeChannels');
     await user.save();
     res.json({ success: true, channelId: req.params.channelId, nicheId, nicheName: ch.nicheName });
