@@ -1289,6 +1289,24 @@ app.post('/api/content/:id/skip', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/content/approve-all — approve all queued/planned slots so the scheduler picks them up
+app.post('/api/content/approve-all', requireAuth, async (req, res) => {
+  try {
+    const col = agentCol('content_calendars');
+    const result = await col.updateOne(
+      { userId: req.user.id, status: 'active' },
+      { $set: { 'slots.$[s].status': 'approved' } },
+      { arrayFilters: [{ 's.status': { $in: ['planned', 'pending', 'queued'] } }] }
+    );
+    const cal = await col.findOne({ userId: req.user.id, status: 'active' });
+    const approvedCount = (cal?.slots || []).filter(s => s.status === 'approved').length;
+    res.json({ success: true, approvedCount, message: `${approvedCount} item(s) approved — scheduler will pick them up on next hourly run` });
+  } catch (err) {
+    console.error('[ContentQueue] POST /approve-all error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH /api/agents/planner/slots/:day/posted
 // Marks a calendar slot as posted
 app.patch('/api/agents/planner/slots/:day/posted', requireAuth, async (req, res) => {
@@ -2321,18 +2339,231 @@ app.post('/api/channels/:channelId/pause', requireAuth, async (req, res) => {
 // CRON JOBS
 // =============================================================================
 
-// Daily: run video generation pipeline per active channel
-cron.schedule('0 6 * * *', async () => {
-  console.log('[CRON] Daily video generation running...');
+// =============================================================================
+// AUTO-POSTING PIPELINE
+// =============================================================================
+
+// Step 1 — Generate video script via OpenAI
+async function pipelineGenerateScript(title, nicheName, type) {
+  const { OpenAI } = require('openai');
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const isLong = type === 'Long-form';
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{
+      role: 'user',
+      content: `Write a ${isLong ? '3–5 minute' : '45–60 second'} YouTube ${isLong ? '' : 'Shorts '}script for the video titled: "${title}".
+Niche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.
+Start with a strong hook sentence. End with a brief call-to-action.`,
+    }],
+    temperature: 0.8,
+  });
+  return completion.choices[0].message.content.trim();
+}
+
+// Step 2 — Generate voiceover via Google Cloud TTS (uses GEMINI_API_KEY)
+async function pipelineGenerateVoiceover(script, userId) {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_TTS_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY not configured for TTS');
+  const res = await axios.post(
+    `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
+    {
+      input:       { text: script.slice(0, 5000) },
+      voice:       { languageCode: 'en-US', name: 'en-US-Neural2-D', ssmlGender: 'MALE' },
+      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.05 },
+    }
+  );
+  const audioPath = `/tmp/vly_audio_${userId}_${Date.now()}.mp3`;
+  require('fs').writeFileSync(audioPath, Buffer.from(res.data.audioContent, 'base64'));
+  return audioPath;
+}
+
+// Step 3 — Fetch portrait stock footage from Pexels
+async function pipelineFetchFootage(query) {
+  const apiKey = process.env.PEXELS_API_KEY;
+  if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
+  const res = await axios.get('https://api.pexels.com/videos/search', {
+    headers: { Authorization: apiKey },
+    params:  { query: query.slice(0, 100), per_page: 5, orientation: 'portrait' },
+  });
+  const videos = (res.data.videos || []);
+  if (!videos.length) throw new Error(`No Pexels footage found for: ${query}`);
+  const video  = videos[0];
+  const file   = (video.video_files || []).find(f => f.quality === 'hd') ||
+                 (video.video_files || [])[0];
+  if (!file?.link) throw new Error('No usable Pexels video file');
+  return { url: file.link, duration: video.duration };
+}
+
+// Step 4 — Assemble video: overlay audio on footage with ffmpeg
+async function pipelineAssembleVideo(footageUrl, audioPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const footagePath = outputPath.replace('.mp4', '_raw.mp4');
+    exec(
+      `curl -sL -o "${footagePath}" "${footageUrl}" && ` +
+      `ffmpeg -y -i "${footagePath}" -i "${audioPath}" ` +
+      `-c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`,
+      { timeout: 300000 },
+      (err, _stdout, stderr) => {
+        require('fs').unlink(footagePath, () => {});
+        if (err) return reject(new Error('ffmpeg assembly failed: ' + (stderr || err.message).slice(0, 300)));
+        resolve(outputPath);
+      }
+    );
+  });
+}
+
+// Step 5 — Refresh a YouTube OAuth access token and persist to MongoDB
+async function pipelineRefreshToken(channel) {
+  const res = await axios.post('https://oauth2.googleapis.com/token', {
+    client_id:     process.env.YOUTUBE_CLIENT_ID,
+    client_secret: process.env.YOUTUBE_CLIENT_SECRET,
+    refresh_token: channel.refreshToken,
+    grant_type:    'refresh_token',
+  });
+  const newToken = res.data.access_token;
+  await User.updateOne(
+    { 'youtubeChannels.channelId': channel.channelId },
+    { $set: { 'youtubeChannels.$.accessToken': newToken } }
+  );
+  return newToken;
+}
+
+// Step 6 — Upload assembled video to YouTube
+async function pipelineUploadToYouTube(videoPath, title, description, channel) {
+  const { google } = require('googleapis');
+  const oauth2 = new google.auth.OAuth2(
+    process.env.YOUTUBE_CLIENT_ID,
+    process.env.YOUTUBE_CLIENT_SECRET
+  );
+
+  const tryUpload = async (accessToken) => {
+    oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
+    const yt  = google.youtube({ version: 'v3', auth: oauth2 });
+    const res = await yt.videos.insert({
+      part: ['snippet', 'status'],
+      requestBody: {
+        snippet: {
+          title:       title.slice(0, 100),
+          description: description.slice(0, 5000),
+          tags:        ['shorts', 'youtube shorts'],
+          categoryId:  '22',
+        },
+        status: { privacyStatus: 'public' },
+      },
+      media: { body: require('fs').createReadStream(videoPath) },
+    });
+    return res.data.id;
+  };
+
   try {
-    const users = await User.find({ $or: [{ plan: { $nin: ['trial'] } }, { trialEndsAt: { $gt: new Date() } }] });
-    for (const user of users) {
-      for (const channel of (user.youtubeChannels || [])) {
-        console.log(`[CRON] Generating for channel ${channel.channelName} (${user.plan})`);
-        // Trigger Python pipeline — implement social_pipeline.py separately
+    return await tryUpload(channel.accessToken);
+  } catch (err) {
+    if (err.code === 401 || err.status === 401 || /invalid_grant|token/.test(err.message)) {
+      console.log(`[Pipeline] Token expired for ${channel.channelId} — refreshing`);
+      const newToken = await pipelineRefreshToken(channel);
+      channel.accessToken = newToken;
+      return await tryUpload(newToken);
+    }
+    throw err;
+  }
+}
+
+// Main pipeline runner — processes all due approved slots across all users
+async function runAutoPostPipeline() {
+  if (!process.env.OPENAI_API_KEY) {
+    console.log('[AutoPost] Skipping — OPENAI_API_KEY not configured');
+    return;
+  }
+  const col   = agentCol('content_calendars');
+  const today = new Date().toISOString().slice(0, 10);
+  const calendars = await col.find({ status: 'active' }).toArray();
+  let processed = 0;
+
+  for (const calendar of calendars) {
+    const dueSlots = (calendar.slots || []).filter(s =>
+      s.status === 'approved' && !s.posted && (s.date || s.scheduledDate || '') <= today
+    );
+    if (!dueSlots.length) continue;
+
+    const user = await User.findById(calendar.userId).catch(() => null);
+    if (!user) continue;
+    const channel = (user.youtubeChannels || []).find(ch => ch.channelId === calendar.channelId)
+                 || (user.youtubeChannels || [])[0];
+    if (!channel) { console.warn(`[AutoPost] No channel found for calendar ${calendar._id}`); continue; }
+
+    for (const slot of dueSlots) {
+      const slotKey   = `day${slot.day}_vi${slot.videoIndex || 1}`;
+      const outputPath = `/tmp/vly_video_${calendar._id}_${slotKey}_${Date.now()}.mp4`;
+      let   audioPath  = null;
+      console.log(`[AutoPost] Starting: "${slot.title}" (${slot.type}) for ${channel.channelName}`);
+
+      // Mark in-progress
+      await col.updateOne(
+        { _id: calendar._id },
+        { $set: { [`slots.$[s].pipelineStatus`]: 'generating' } },
+        { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+      ).catch(() => {});
+
+      try {
+        // 1. Script
+        const script = await pipelineGenerateScript(slot.title, calendar.nicheName || user.nicheName || '', slot.type);
+        console.log(`[AutoPost] Script generated (${script.length} chars)`);
+
+        // 2. Voiceover
+        audioPath = await pipelineGenerateVoiceover(script, String(calendar.userId));
+        console.log(`[AutoPost] Voiceover saved: ${audioPath}`);
+
+        // 3. Pexels footage
+        const footage = await pipelineFetchFootage(slot.title);
+        console.log(`[AutoPost] Footage fetched: ${footage.url.slice(0, 60)}…`);
+
+        // 4. Assemble
+        await pipelineAssembleVideo(footage.url, audioPath, outputPath);
+        console.log(`[AutoPost] Video assembled: ${outputPath}`);
+
+        // 5. YouTube upload
+        const ytId = await pipelineUploadToYouTube(outputPath, slot.title, script, channel);
+        console.log(`[AutoPost] Uploaded → youtu.be/${ytId}`);
+
+        // 6. Mark posted
+        await col.updateOne(
+          { _id: calendar._id },
+          { $set: {
+            'slots.$[s].status':          'posted',
+            'slots.$[s].posted':          true,
+            'slots.$[s].postedAt':        new Date().toISOString(),
+            'slots.$[s].youtubeVideoId':  ytId,
+            'slots.$[s].pipelineStatus':  'posted',
+          }},
+          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+        );
+        processed++;
+
+      } catch (err) {
+        console.error(`[AutoPost] Failed "${slot.title}": ${err.message}`);
+        await col.updateOne(
+          { _id: calendar._id },
+          { $set: {
+            'slots.$[s].pipelineStatus': 'failed',
+            'slots.$[s].pipelineError':  err.message.slice(0, 500),
+          }},
+          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+        ).catch(() => {});
+      } finally {
+        if (audioPath) require('fs').unlink(audioPath, () => {});
+        require('fs').unlink(outputPath, () => {});
       }
     }
-  } catch (err) { console.error('[CRON] Error:', err); }
+  }
+  console.log(`[AutoPost] Cycle complete — ${processed} video(s) posted`);
+}
+
+// Hourly auto-posting scheduler
+cron.schedule('0 * * * *', async () => {
+  console.log('[AutoPost] Hourly check running...');
+  try { await runAutoPostPipeline(); }
+  catch (err) { console.error('[AutoPost] Scheduler error:', err.message); }
 });
 
 // Learning Loop — ACTIVE (free: ~$0.02/week marginal OpenAI cost)
