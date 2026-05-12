@@ -1651,44 +1651,73 @@ async function skipVideo(id) {
 // ════════════════════════════════════════════
 const STATUS_COLOR = {queued:'var(--green)',generating:'var(--amber)',planned:'var(--purple)',posted:'var(--text3)'};
 const STATUS_ICON  = {queued:'✓ Queued',generating:'⏳ Generating',planned:'📋 Planned',posted:'✓ Posted'};
+const ANGLE_COLOR = { hook:'#6366f1', story:'#10b981', tutorial:'#f59e0b', listicle:'#3b82f6', 'myth-bust':'#ec4899', short:'#8b5cf6', planned:'#6b7280' };
+
+function renderCalendarGrid(slots) {
+  const el = document.getElementById('planner-slots');
+  if (!el || !slots?.length) return;
+  const dayHeaders = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d =>
+    `<div style="font-size:.6rem;font-weight:700;color:var(--text3);text-align:center;padding:.3rem 0;text-transform:uppercase;letter-spacing:.06em">${d}</div>`
+  ).join('');
+  const cells = slots.map((s, i) => {
+    const d = s.scheduledDate ? new Date(s.scheduledDate) : null;
+    const dayNum = d ? d.getDate() : (s.day || i + 1);
+    const mon    = d ? d.toLocaleString('default',{month:'short'}) : '';
+    const color  = ANGLE_COLOR[s.angle] || '#6b7280';
+    return `<div title="${s.title}" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.45rem .4rem;min-height:76px;display:flex;flex-direction:column;gap:3px">
+      <span style="font-size:.58rem;color:var(--text3);font-weight:700">${dayNum}${mon?' '+mon:''}</span>
+      <span style="font-size:.63rem;color:var(--text);line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;flex:1">${s.title || '—'}</span>
+      <span style="font-size:.54rem;color:${color};font-weight:700;text-transform:uppercase">${s.angle || 'planned'}</span>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px">${dayHeaders}</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">${cells}</div>`;
+}
+
 async function initPlanner() {
   const el = document.getElementById('planner-slots');
   if (!el) return;
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading calendar…</div>';
   const data = await apiCall('/api/agents/planner/calendar');
-  // calendar can be an array or an object with a slots property
   const calArr = Array.isArray(data?.calendar) ? data.calendar : (data?.calendar?.slots || []);
   const slots  = data?.slots?.length ? data.slots : calArr;
   const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
   const today = new Date().toISOString().slice(0, 10);
   setStat('stat-planner-total',    slots.length || 0);
   setStat('stat-planner-posted',   slots.filter(s => s.status === 'posted').length);
-  setStat('stat-planner-queued',   slots.filter(s => s.status === 'queued' || s.status === 'pending').length);
+  setStat('stat-planner-queued',   slots.filter(s => s.status === 'queued' || s.status === 'pending' || s.status === 'planned').length);
   setStat('stat-planner-upcoming', slots.filter(s => (s.scheduledDate || '') >= today && s.status !== 'posted').length);
   if (!slots.length) {
-    const msg = data?.message || 'No calendar yet';
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
-      ${msg} — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="generateCalendar()">Generate 30-day calendar</button>
+      ${data?.message || 'No calendar yet'} — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="generateCalendar()">Generate 30-day calendar</button>
     </div>`;
     return;
   }
-  el.innerHTML = slots.slice(0,14).map(s => `
-    <div style="display:flex;align-items:center;gap:12px;padding:.65rem 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:.7rem;color:var(--text3);min-width:90px">${s.scheduledDate ? new Date(s.scheduledDate).toDateString().slice(0,10) : s.day||'—'}</span>
-      <span style="flex:1;font-size:.8rem;color:var(--text);font-weight:500">${s.title||'—'}</span>
-      <span class="badge" style="background:rgba(99,102,241,.1);color:#a5b4fc;font-size:.62rem">${s.angle||s.format||'short'}</span>
-      <span style="font-size:.67rem;color:${STATUS_COLOR[s.status]||'var(--text3)'};font-weight:600;min-width:80px;text-align:right">${STATUS_ICON[s.status]||s.status||'planned'}</span>
-    </div>`).join('');
+  renderCalendarGrid(slots);
 }
 
 async function generateCalendar() {
-  toast('Generating 30-day calendar — this takes about 60 seconds…', 'info');
-  const data = await apiCall('/api/agents/planner/generate', 'POST', {});
-  if (data?.success || data?.slots) {
-    toast('Calendar generated!', 'success');
-    await initPlanner();
+  const el = document.getElementById('planner-slots');
+  if (el) el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">Generating 30-day calendar with AI — please wait ~15 seconds…</div>';
+  const channelsData = await apiCall('/api/channels');
+  const ch = (channelsData?.channels || [])[0] || {};
+  const channelId  = ch.channelId || '';
+  const nicheName  = ch.nicheName || CURRENT_USER?.nicheName || 'General';
+  const data = await apiCall('/api/content/calendar', 'POST', { channelId, nicheName });
+  if (data?.success && data?.slots?.length) {
+    toast('30-day calendar generated!', 'success');
+    const slots = data.slots;
+    const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    const today = new Date().toISOString().slice(0, 10);
+    setStat('stat-planner-total',    slots.length);
+    setStat('stat-planner-posted',   0);
+    setStat('stat-planner-queued',   slots.length);
+    setStat('stat-planner-upcoming', slots.filter(s => (s.scheduledDate || '') >= today).length);
+    renderCalendarGrid(slots);
   } else {
-    toast(data?.error || 'Generation failed — check Railway logs', 'error');
+    toast(data?.error || 'Generation failed', 'error');
+    if (el) el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--red,#f87171);font-size:.82rem">${data?.error || 'Failed to generate calendar. Check that OPENAI_API_KEY is set.'}</div>`;
   }
 }
 

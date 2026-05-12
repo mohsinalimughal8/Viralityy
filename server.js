@@ -1100,6 +1100,73 @@ app.post('/api/agents/planner/generate', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/content/calendar — generate 30-day calendar via OpenAI and save to MongoDB
+app.post('/api/content/calendar', requireAuth, async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI not configured' });
+    const { channelId, nicheName } = req.body;
+    if (!nicheName) return res.status(400).json({ error: 'nicheName is required' });
+
+    const { OpenAI } = require('openai');
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const today = new Date();
+    const dates = Array.from({ length: 30 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() + i);
+      return d.toISOString().slice(0, 10);
+    });
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{
+        role: 'user',
+        content: `You are a YouTube Shorts content strategist. Generate exactly 30 unique, viral video topic ideas for a channel in the niche: "${nicheName}".
+
+Return a JSON object with a "slots" array of 30 items. Each item must have:
+- "day": integer 1–30
+- "date": string YYYY-MM-DD from this list: ${dates.join(', ')}
+- "title": compelling, specific video title under 60 characters
+- "angle": one of "hook", "story", "tutorial", "listicle", "myth-bust"
+- "status": "planned"
+
+Return only valid JSON.`,
+      }],
+      temperature: 0.85,
+      response_format: { type: 'json_object' },
+    });
+
+    let slots;
+    try {
+      const parsed = JSON.parse(completion.choices[0].message.content);
+      slots = parsed.slots || parsed.topics || parsed.calendar || (Array.isArray(parsed) ? parsed : Object.values(parsed)[0]);
+    } catch {
+      return res.status(500).json({ error: 'Failed to parse OpenAI response' });
+    }
+    if (!Array.isArray(slots) || !slots.length) return res.status(500).json({ error: 'OpenAI returned no topics' });
+
+    slots = slots.map((s, i) => ({
+      day:           s.day || i + 1,
+      scheduledDate: s.date || dates[i],
+      title:         s.title || `Video ${i + 1}`,
+      angle:         s.angle || 'short',
+      status:        'planned',
+    }));
+
+    const col = await agentCol('content_calendars');
+    await col.updateOne(
+      { userId: req.user.id, status: 'active' },
+      { $set: { userId: req.user.id, channelId: channelId || '', nicheName, slots, status: 'active', generatedAt: new Date().toISOString() } },
+      { upsert: true }
+    );
+
+    res.json({ success: true, slots, count: slots.length });
+  } catch (err) {
+    console.error('[ContentCalendar] error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate calendar' });
+  }
+});
+
 // PATCH /api/agents/planner/slots/:day/posted
 // Marks a calendar slot as posted
 app.patch('/api/agents/planner/slots/:day/posted', requireAuth, async (req, res) => {
