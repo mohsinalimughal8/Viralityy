@@ -100,7 +100,7 @@ const userSchema = new mongoose.Schema({
   trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
   stripeCustomerId:     { type: String },
   stripeSubscriptionId: { type: String },
-  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String }],
+  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String }],
   googleAccessToken:  String,
   googleRefreshToken: String,
   nicheId:         { type: String },
@@ -439,7 +439,14 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 app.get('/api/channels', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    const channels = (user.youtubeChannels || []).map(ch => ({ channelId: ch.channelId || '', channelName: ch.channelName || 'My Channel', subscriberCount: ch.subscriberCount || 0, nicheId: ch.nicheId || null, nicheName: ch.nicheName || null, paused: ch.paused || false }));
+    const channels = (user.youtubeChannels || []).map(ch => ({
+      channelId:      ch.channelId      || '',
+      channelName:    ch.channelName    || 'My Channel',
+      subscriberCount: ch.subscriberCount || 0,
+      nicheId:        ch.nicheId        || user.nicheId   || null,
+      nicheName:      ch.nicheName      || user.nicheName || null,
+      paused:         ch.paused         || false,
+    }));
     res.json({ channels, count: channels.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2284,7 +2291,9 @@ app.post('/api/channels/:channelId/niche', requireAuth, async (req, res) => {
     user.nicheId   = nicheId;
     user.nicheName = nicheName || nicheId;
     user.markModified('youtubeChannels');
+    console.log(`[Channels] saving niche on channel ${req.params.channelId}: nicheId=${nicheId} nicheName=${ch.nicheName} userId=${user._id}`);
     await user.save();
+    console.log(`[Channels] niche saved — channel.nicheName=${ch.nicheName} user.nicheName=${user.nicheName}`);
     res.json({ success: true, channelId: req.params.channelId, nicheId, nicheName: ch.nicheName });
   } catch (err) {
     console.error('[Channels] POST /niche error:', err);
