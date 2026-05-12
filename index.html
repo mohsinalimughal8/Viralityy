@@ -1016,16 +1016,16 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── AI OPTIMISATION ── -->
 <div class="dash-page" id="dp-learning">
-  <div class="dash-topbar"><div><p class="ph">AI Optimisation</p><p class="ps">What Viralityy has learned about your audience this week</p></div><button class="btn btn-primary btn-sm" onclick="runOptimisation()">Run now</button></div>
+  <div class="dash-topbar"><div><p class="ph">AI Optimisation</p><p class="ps">What Viralityy has learned about your audience this week</p></div><span id="opt-badge" style="font-size:.7rem;color:var(--text3);background:var(--bg3);border-radius:20px;padding:3px 10px;border:1px solid var(--border)">Updated every Monday</span></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Last optimised</p><p class="sc-value">2d ago</p><p class="sc-sub green">Weekly cycle</p></div>
-    <div class="stat-card"><p class="sc-label">Improvements made</p><p class="sc-value">4</p><p class="sc-sub">This cycle</p></div>
-    <div class="stat-card"><p class="sc-label">Avg CTR lift</p><p class="sc-value">+23%</p><p class="sc-sub green">Since M1</p></div>
+    <div class="stat-card"><p class="sc-label">Last optimised</p><p class="sc-value" id="opt-last">—</p><p class="sc-sub green">Weekly cycle</p></div>
+    <div class="stat-card"><p class="sc-label">Videos analysed</p><p class="sc-value" id="opt-count">—</p><p class="sc-sub">Last 4 weeks</p></div>
+    <div class="stat-card"><p class="sc-label">Ideal title length</p><p class="sc-value" id="opt-length" style="font-size:.9rem">—</p><p class="sc-sub green">AI detected</p></div>
   </div>
   <div class="grid2">
     <div class="card-block">
-      <h4>What AI learned this week</h4>
-      <div id="ai-insights"><p style="font-size:.78rem;color:var(--text3);margin-top:.5rem">Loading AI insights…</p></div>
+      <h4>Winning Title Patterns</h4>
+      <div id="title-patterns-card"><p style="font-size:.78rem;color:var(--text3);margin-top:.5rem">Loading title patterns…</p></div>
     </div>
     <div class="card-block">
       <h4>Performance over time</h4>
@@ -2454,15 +2454,6 @@ async function researchTitle() {
   }
 }
 
-async function runOptimisation() {
-  toast('Running AI optimisation — analysing your last 30 videos…', 'info');
-  const data = await apiCall('/api/agents/status');
-  if (data?.agents?.learningLoop?.enabled) {
-    toast('AI Learning Loop is active — it runs automatically every Monday. Check back next week for new optimisations.', 'info');
-  } else {
-    toast('Learning Loop is active — weekly optimisation running in background', 'info');
-  }
-}
 
 function dismissTopic(el) {
   const row = el.closest('[style*="background:var(--bg3)"]') ||
@@ -2551,28 +2542,82 @@ async function initAffiliate() {
 // LEARNING / OPTIMISATION PAGE — real data
 // ════════════════════════════════════════════
 async function initLearning() {
-  const [status, analytics] = await Promise.all([
+  const [status, analytics, insightsRes] = await Promise.all([
     apiCall('/api/agents/status'),
     apiCall('/api/analytics/videos'),
+    apiCall('/api/content/weekly-insights'),
   ]);
+
+  // Subtitle
   const loop = status?.agents?.learningLoop;
-  const el = document.querySelector('#dp-learning .ps');
-  if (el && loop) {
-    el.textContent = loop.enabled
+  const subtitleEl = document.querySelector('#dp-learning .ps');
+  if (subtitleEl && loop) {
+    subtitleEl.textContent = loop.enabled
       ? 'Active — runs every Monday at 3AM, analysing your video performance'
       : 'Shelved — enable FEATURE_LEARNING_LOOP in Railway to activate';
   }
 
-  const insightsEl = document.getElementById('ai-insights');
-  if (insightsEl) {
-    insightsEl.innerHTML = loop?.enabled
-      ? `<div style="background:var(--bg3);border-radius:8px;padding:.75rem;border-left:3px solid var(--purple);margin-bottom:8px">
-          <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:3px">Learning Loop is active, runs every Monday</p>
-          <p style="font-size:.72rem;color:var(--text2)">Insights appear here after the first run — typically within 7 days of posting your first video.</p>
+  const wi = insightsRes?.weeklyInsights;
+
+  // Stat cards
+  const optLast   = document.getElementById('opt-last');
+  const optCount  = document.getElementById('opt-count');
+  const optLength = document.getElementById('opt-length');
+  if (optLast)   optLast.textContent   = wi?.generatedAt ? _relTime(wi.generatedAt) : '—';
+  if (optCount)  optCount.textContent  = wi?.totalAnalyzed > 0 ? wi.totalAnalyzed : '—';
+  if (optLength) optLength.textContent = wi?.titlePatterns?.idealLength || '—';
+
+  // Winning Title Patterns card
+  const patternsEl = document.getElementById('title-patterns-card');
+  if (patternsEl) {
+    const tp = wi?.titlePatterns;
+    if (!wi) {
+      patternsEl.innerHTML = `<div style="padding:.75rem;background:var(--bg3);border-radius:8px;border-left:3px solid var(--purple)">
+        <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:4px">Patterns appear after your first videos post</p>
+        <p style="font-size:.72rem;color:var(--text2)">Once Viralityy has posted at least 5 videos, Monday's AI analysis will identify the title structures driving the most views on your channel.</p>
+      </div>`;
+    } else if (!tp) {
+      patternsEl.innerHTML = `<div style="padding:.75rem;background:var(--bg3);border-radius:8px;border-left:3px solid var(--amber)">
+        <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:4px">Analysis pending</p>
+        <p style="font-size:.72rem;color:var(--text2)">Calendar generated — title pattern analysis runs automatically next Monday once enough videos have been posted.</p>
+      </div>`;
+    } else {
+      const patternRows = (tp.patterns || []).map((p, i) =>
+        `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="min-width:18px;height:18px;background:var(--purple);color:#fff;border-radius:50%;font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center">${i + 1}</span>
+          <span style="font-size:.76rem;color:var(--text)">${p}</span>
         </div>`
-      : `<p style="font-size:.78rem;color:var(--text3)">Will activate after 10+ videos posted.</p>`;
+      ).join('');
+
+      const wordChips = (tp.powerWords || []).map(w =>
+        `<span style="font-size:.68rem;background:rgba(99,102,241,.12);color:var(--purple);border-radius:20px;padding:2px 8px;border:1px solid rgba(99,102,241,.25)">${w}</span>`
+      ).join('');
+
+      const exampleRows = (tp.topExamples || []).map(t =>
+        `<div style="font-size:.73rem;color:var(--text2);padding:4px 0;border-bottom:1px solid var(--border)">"${t}"</div>`
+      ).join('');
+
+      patternsEl.innerHTML = `
+        <div style="margin-bottom:.75rem">
+          <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Top 5 patterns</p>
+          ${patternRows || '<p style="font-size:.75rem;color:var(--text3)">No patterns yet</p>'}
+        </div>
+        ${wordChips ? `<div style="margin-bottom:.75rem">
+          <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Power words</p>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">${wordChips}</div>
+        </div>` : ''}
+        ${exampleRows ? `<div style="margin-bottom:.75rem">
+          <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Best performing titles last week</p>
+          ${exampleRows}
+        </div>` : ''}
+        ${tp.insight ? `<div style="background:var(--bg3);border-radius:8px;padding:.6rem .75rem;border-left:3px solid var(--green);margin-top:.25rem">
+          <p style="font-size:.73rem;color:var(--text2);line-height:1.5">${tp.insight}</p>
+        </div>` : ''}
+        <p style="font-size:.65rem;color:var(--text3);margin-top:.6rem">Updated every Monday automatically</p>`;
+    }
   }
 
+  // Performance bar chart
   const chartEl = document.getElementById('perf-chart');
   if (chartEl) {
     const videos = (analytics?.videos || []).slice(0, 10);
@@ -2581,15 +2626,25 @@ async function initLearning() {
     } else {
       const maxViews = Math.max(...videos.map(v => v.viewCount || 0), 1);
       chartEl.innerHTML = videos.map(v => {
-        const pct = Math.max(Math.round(((v.viewCount || 0) / maxViews) * 100), 4);
+        const pct   = Math.max(Math.round(((v.viewCount || 0) / maxViews) * 100), 4);
         const label = (v.title || '').slice(0, 18) || '—';
-        return `<div title="${v.title||''} — ${(v.viewCount||0).toLocaleString()} views" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default">
+        return `<div title="${v.title || ''} — ${(v.viewCount || 0).toLocaleString()} views" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default">
           <div style="width:100%;background:var(--purple);border-radius:3px 3px 0 0;height:${pct}%;opacity:.85"></div>
           <span style="font-size:.52rem;color:var(--text3);writing-mode:vertical-rl;transform:rotate(180deg);max-height:38px;overflow:hidden">${label}</span>
         </div>`;
       }).join('');
     }
   }
+}
+
+function _relTime(iso) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const h = Math.floor(diff / 3600000);
+  if (h < 1)  return 'Just now';
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7)  return `${d}d ago`;
+  return `${Math.floor(d / 7)}w ago`;
 }
 
 async function finishOnboarding() {

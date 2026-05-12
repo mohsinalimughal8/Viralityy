@@ -1120,7 +1120,7 @@ app.post('/api/content/calendar', requireAuth, async (req, res) => {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     // --- Performance analysis (first-week exception: returns null if no history) ---
-    const insights = await analyzeChannelPerformance(req.user.id, channelId);
+    const insights = await analyzeChannelPerformance(req.user.id, channelId, nicheName);
     let perfContext = '';
     if (insights) {
       const topList    = insights.topPerformers.map(v =>
@@ -1129,6 +1129,10 @@ app.post('/api/content/calendar', requireAuth, async (req, res) => {
       const bottomList = insights.bottomPerformers.map(v =>
         `"${v.title}" — ${v.views.toLocaleString()} views`
       ).join('\n');
+      const tp = insights.titlePatterns;
+      const patternBlock = tp?.patterns?.length
+        ? `\nPROVEN TITLE PATTERNS — Use these structures for new titles:\n${tp.patterns.map((p, i) => `${i + 1}. ${p}`).join('\n')}\nPower words that drive clicks in this niche: ${(tp.powerWords || []).join(', ')}\nIdeal title length: ${tp.idealLength || 'under 60 chars'}\n`
+        : '';
       perfContext = `
 PREVIOUS PERFORMANCE DATA (${insights.totalAnalyzed} videos from last 4 weeks):
 
@@ -1137,7 +1141,7 @@ ${topList}
 
 LOW PERFORMERS — Avoid titles, formats, or concepts similar to these:
 ${bottomList}
-
+${patternBlock}
 Strategy: Generate titles that build on what worked. Use similar hooks, formats, or topic areas as the top performers but with new angles. Never repeat any of the above titles exactly.
 `;
     }
@@ -1258,6 +1262,7 @@ Return JSON: { "titles": [${totalLongForm} strings] }`,
       totalAnalyzed:      insights?.totalAnalyzed   || 0,
       topPerformers:      insights?.topPerformers   || [],
       bottomPerformers:   insights?.bottomPerformers || [],
+      titlePatterns:      insights?.titlePatterns   || null,
       generationStrategy: insights
         ? `AI-optimised: built on top ${insights.topPerformers.length} performer(s), avoided bottom ${insights.bottomPerformers.length}`
         : 'Standard generation — no prior performance data (first week)',
@@ -1274,6 +1279,22 @@ Return JSON: { "titles": [${totalLongForm} strings] }`,
   } catch (err) {
     console.error('[ContentCalendar] error:', err);
     res.status(500).json({ error: err.message || 'Failed to generate calendar' });
+  }
+});
+
+// GET /api/content/weekly-insights — returns weeklyInsights from the active calendar
+app.get('/api/content/weekly-insights', requireAuth, async (req, res) => {
+  try {
+    const col = await agentCol('content_calendars');
+    const doc = await col.findOne(
+      { userId: req.user.id, status: 'active' },
+      { projection: { weeklyInsights: 1, nicheName: 1, generatedAt: 1 } }
+    );
+    if (!doc?.weeklyInsights) return res.json({ success: true, weeklyInsights: null });
+    res.json({ success: true, weeklyInsights: doc.weeklyInsights, nicheName: doc.nicheName, generatedAt: doc.generatedAt });
+  } catch (err) {
+    console.error('[WeeklyInsights] GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch weekly insights' });
   }
 });
 
@@ -2505,9 +2526,56 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel) {
   }
 }
 
+// ─── Title pattern analysis — GPT-4o identifies winning structures from performance data ───
+// enriched = [{ title, views, likes, comments, score }] sorted desc by score
+async function analyzeTitlePatterns(enriched, nicheName) {
+  if (!process.env.OPENAI_API_KEY || !enriched.length) return null;
+  try {
+    const { OpenAI } = require('openai');
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const titleList = enriched
+      .map((v, i) => `${i + 1}. "${v.title}" — ${v.views.toLocaleString()} views, ${v.likes} likes`)
+      .join('\n');
+
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{
+        role: 'user',
+        content: `You are a YouTube title strategy expert. Analyse these video titles from a "${nicheName}" channel and identify what makes the top performers successful.
+
+VIDEO PERFORMANCE DATA (sorted by views, highest first):
+${titleList}
+
+Return JSON with exactly these fields:
+{
+  "patterns": [exactly 5 strings — reusable title templates from high performers, e.g. "How to [action] in [timeframe]", "Why you should never [X]"],
+  "powerWords": [8 to 12 strings — specific words, numbers, or emotional triggers from top titles],
+  "idealLength": "string — optimal character range for this channel, e.g. '45–55 characters'",
+  "topExamples": [exactly 3 strings — the 3 best actual titles verbatim from the data above],
+  "insight": "string — 1–2 sentences on what title style works best for this niche and why"
+}`,
+      }],
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    });
+
+    const p = JSON.parse(res.choices[0].message.content);
+    return {
+      patterns:    Array.isArray(p.patterns)   ? p.patterns.slice(0, 5)   : [],
+      powerWords:  Array.isArray(p.powerWords) ? p.powerWords.slice(0, 12) : [],
+      idealLength: p.idealLength  || 'Under 60 characters',
+      topExamples: Array.isArray(p.topExamples) ? p.topExamples.slice(0, 3) : enriched.slice(0, 3).map(v => v.title),
+      insight:     p.insight || '',
+    };
+  } catch (err) {
+    console.error('[TitlePatterns] Analysis failed (non-fatal):', err.message);
+    return null;
+  }
+}
+
 // ─── Performance analysis — fetches YouTube stats for posted videos (last 4 weeks) ───
-// Returns { topPerformers, bottomPerformers, totalAnalyzed } or null if no history.
-async function analyzeChannelPerformance(userId, channelId) {
+// Returns { topPerformers, bottomPerformers, totalAnalyzed, titlePatterns } or null if no history.
+async function analyzeChannelPerformance(userId, channelId, nicheName) {
   try {
     const col      = agentCol('content_calendars');
     const cutoff   = new Date();
@@ -2555,10 +2623,13 @@ async function analyzeChannelPerformance(userId, channelId) {
       })
       .sort((a, b) => b.score - a.score);
 
+    const titlePatterns = await analyzeTitlePatterns(enriched, nicheName || '');
+
     return {
       totalAnalyzed:    enriched.length,
       topPerformers:    enriched.slice(0, 3),
       bottomPerformers: enriched.slice(-3).reverse(),
+      titlePatterns,
     };
   } catch (err) {
     console.error('[Performance] Analysis failed (non-fatal):', err.message);
@@ -2681,7 +2752,7 @@ async function runWeeklyOptimizedCalendars() {
       if (!nicheName) continue;
 
       const config  = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
-      const insights = await analyzeChannelPerformance(calendar.userId, calendar.channelId);
+      const insights = await analyzeChannelPerformance(calendar.userId, calendar.channelId, nicheName);
 
       // Build performance context (same logic as POST /api/content/calendar)
       let perfContext = '';
@@ -2692,6 +2763,10 @@ async function runWeeklyOptimizedCalendars() {
         const bottomList = insights.bottomPerformers.map(v =>
           `"${v.title}" — ${v.views.toLocaleString()} views`
         ).join('\n');
+        const tp = insights.titlePatterns;
+        const patternBlock = tp?.patterns?.length
+          ? `\nPROVEN TITLE PATTERNS — Use these structures for new titles:\n${tp.patterns.map((p, i) => `${i + 1}. ${p}`).join('\n')}\nPower words that drive clicks in this niche: ${(tp.powerWords || []).join(', ')}\nIdeal title length: ${tp.idealLength || 'under 60 chars'}\n`
+          : '';
         perfContext = `
 PREVIOUS PERFORMANCE DATA (${insights.totalAnalyzed} videos from last 4 weeks):
 
@@ -2700,7 +2775,7 @@ ${topList}
 
 LOW PERFORMERS — Avoid titles, formats, or concepts similar to these:
 ${bottomList}
-
+${patternBlock}
 Strategy: Generate titles that build on what worked. Never repeat any of the above titles exactly.
 `;
       }
@@ -2780,6 +2855,7 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
         totalAnalyzed:      insights?.totalAnalyzed   || 0,
         topPerformers:      insights?.topPerformers   || [],
         bottomPerformers:   insights?.bottomPerformers || [],
+        titlePatterns:      insights?.titlePatterns   || null,
         generationStrategy: insights
           ? `AI-optimised: built on top ${insights.topPerformers.length} performer(s), avoided bottom ${insights.bottomPerformers.length}`
           : 'Standard generation — no prior performance data (first week)',
