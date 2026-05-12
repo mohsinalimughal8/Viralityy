@@ -1860,8 +1860,8 @@ async function selectNiche(nicheId, nicheLabel) {
   modal.innerHTML = `
     <h3>Apply niche to channel</h3>
     <p>Choose which channel to apply <strong style="color:var(--text)">${nicheLabel}</strong> to:</p>
-    ${channels.map(ch => `
-      <div class="vly-ch-row" onclick="applyNicheToChannel('${nicheId}','${nicheLabel.replace(/'/g,"\\'")}',${JSON.stringify(ch).replace(/</g,'\\u003c')});closeNicheModal()">
+    ${channels.map((ch, i) => `
+      <div class="vly-ch-row" data-ch-index="${i}">
         <div class="ch-av">${ch.profileImage ? `<img src="${ch.profileImage}" style="width:36px;height:36px;border-radius:9px;object-fit:cover">` : (ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
         <div class="ch-info">
           <p class="ch-name">${ch.channelName || ch.channelId}</p>
@@ -1870,6 +1870,14 @@ async function selectNiche(nicheId, nicheLabel) {
       </div>`).join('')}
     <div class="vly-modal-footer"><button class="vly-modal-close" onclick="closeNicheModal()">Cancel</button></div>`;
   overlay.style.display = 'flex';
+  // Attach listeners after HTML is in DOM
+  modal.querySelectorAll('.vly-ch-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const ch = channels[parseInt(row.dataset.chIndex, 10)];
+      closeNicheModal();
+      applyNicheToChannel(nicheId, nicheLabel, ch);
+    });
+  });
 }
 
 async function applyNicheToChannel(nicheId, nicheLabel, ch) {
