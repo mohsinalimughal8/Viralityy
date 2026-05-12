@@ -1167,6 +1167,54 @@ Return only valid JSON.`,
   }
 });
 
+// GET /api/content/queue — pending calendar slots awaiting review
+app.get('/api/content/queue', requireAuth, async (req, res) => {
+  try {
+    const col      = await agentCol('content_calendars');
+    const calendar = await col.findOne({ userId: req.user.id, status: 'active' });
+    if (!calendar) return res.json({ success: true, items: [], count: 0 });
+    const items = (calendar.slots || []).filter(s => s.status === 'planned' || s.status === 'pending');
+    res.json({ success: true, items, count: items.length });
+  } catch (err) {
+    console.error('[ContentQueue] GET /queue error:', err);
+    res.status(500).json({ error: 'Failed to fetch content queue' });
+  }
+});
+
+// POST /api/content/:id/approve — approve a calendar slot (id = day number)
+app.post('/api/content/:id/approve', requireAuth, async (req, res) => {
+  try {
+    const day = parseInt(req.params.id);
+    const col = await agentCol('content_calendars');
+    await col.updateOne(
+      { userId: req.user.id, status: 'active' },
+      { $set: { 'slots.$[s].status': 'approved', 'slots.$[s].approvedAt': new Date().toISOString() } },
+      { arrayFilters: [{ 's.day': day }] }
+    );
+    res.json({ success: true, message: 'Content approved' });
+  } catch (err) {
+    console.error('[ContentQueue] POST /approve error:', err);
+    res.status(500).json({ error: 'Failed to approve content' });
+  }
+});
+
+// POST /api/content/:id/skip — skip a calendar slot (id = day number)
+app.post('/api/content/:id/skip', requireAuth, async (req, res) => {
+  try {
+    const day = parseInt(req.params.id);
+    const col = await agentCol('content_calendars');
+    await col.updateOne(
+      { userId: req.user.id, status: 'active' },
+      { $set: { 'slots.$[s].status': 'skipped', 'slots.$[s].skippedAt': new Date().toISOString() } },
+      { arrayFilters: [{ 's.day': day }] }
+    );
+    res.json({ success: true, message: 'Content skipped' });
+  } catch (err) {
+    console.error('[ContentQueue] POST /skip error:', err);
+    res.status(500).json({ error: 'Failed to skip content' });
+  }
+});
+
 // PATCH /api/agents/planner/slots/:day/posted
 // Marks a calendar slot as posted
 app.patch('/api/agents/planner/slots/:day/posted', requireAuth, async (req, res) => {

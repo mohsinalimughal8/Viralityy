@@ -1590,15 +1590,20 @@ async function initAnalytics() {
 }
 
 // ════════════════════════════════════════════
-// PREVIEW QUEUE — live from /api/agents/preview/queue
+// PREVIEW QUEUE — merges /api/content/queue (calendar slots) + /api/agents/preview/queue (pipeline)
 // ════════════════════════════════════════════
 let liveQueue = [];
 async function initPreview() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
   list.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">Loading preview queue…</div>';
-  const data = await apiCall('/api/agents/preview/queue');
-  liveQueue = data?.queue || data?.videos || [];
+  const [calData, pipeData] = await Promise.all([
+    apiCall('/api/content/queue'),
+    apiCall('/api/agents/preview/queue'),
+  ]);
+  const calItems  = (calData?.items  || []).map(s => ({ ...s, _id: String(s.day), _source: 'calendar' }));
+  const pipeItems = (pipeData?.queue || pipeData?.videos || []).map(v => ({ ...v, _source: 'pipeline' }));
+  liveQueue = [...calItems, ...pipeItems];
   renderQueue();
 }
 
@@ -1606,42 +1611,56 @@ function renderQueue() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
   if (!liveQueue.length) {
-    list.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">Queue is empty — no videos pending review</div>';
+    list.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">Queue is empty — no content pending review</div>';
     return;
   }
-  list.innerHTML = liveQueue.map(q => `
-    <div class="preview-card" id="pc-${q._id||q.id}">
+  list.innerHTML = liveQueue.map(q => {
+    const id  = q._id || q.id;
+    const src = q._source || 'pipeline';
+    const dateStr = q.scheduledDate
+      ? 'Scheduled: ' + new Date(q.scheduledDate).toLocaleDateString()
+      : q.scheduledFor
+        ? 'Scheduled: ' + new Date(q.scheduledFor).toLocaleDateString()
+        : 'Pending review';
+    const meta = dateStr + (q.angle ? ' · ' + q.angle : '') + (src === 'calendar' ? ' · Calendar slot' : '');
+    return `
+    <div class="preview-card" id="pc-${id}">
       <div class="preview-card-top">
         <div class="preview-thumb">🎬</div>
         <div class="preview-info">
-          <p class="preview-title">${q.title||'Untitled video'}</p>
-          <p class="preview-meta">${q.scheduledFor ? 'Scheduled: '+new Date(q.scheduledFor).toLocaleDateString() : 'Pending review'}</p>
+          <p class="preview-title">${q.title || 'Untitled video'}</p>
+          <p class="preview-meta">${meta}</p>
         </div>
       </div>
       ${q.scriptBrief ? `<p style="font-size:.76rem;color:var(--text2);line-height:1.5;margin-bottom:.85rem;font-style:italic">"${q.scriptBrief.slice(0,120)}…"</p>` : ''}
       <div class="preview-actions">
-        <button class="act act-ok" onclick="approveVideo('${q._id||q.id}')">✓ Approve</button>
-        <button class="act" onclick="skipVideo('${q._id||q.id}')">Skip</button>
+        <button class="act act-ok" onclick="approveVideo('${id}','${src}')">✓ Approve</button>
+        <button class="act" onclick="skipVideo('${id}','${src}')">Skip</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
-async function approveVideo(id) {
-  const data = await apiCall('/api/agents/preview/approve', 'POST', { videoId: id });
+async function approveVideo(id, source) {
+  const url  = source === 'calendar' ? `/api/content/${id}/approve` : '/api/agents/preview/approve';
+  const body = source === 'calendar' ? {} : { videoId: id };
+  const data = await apiCall(url, 'POST', body);
   if (data?.success) {
-    toast('Video approved — will post on schedule ✓', 'success');
-    liveQueue = liveQueue.filter(q => (q._id||q.id) !== id);
+    toast('Approved ✓', 'success');
+    liveQueue = liveQueue.filter(q => String(q._id || q.id) !== String(id));
     renderQueue();
   } else {
     toast(data?.error || 'Failed to approve', 'error');
   }
 }
 
-async function skipVideo(id) {
-  const data = await apiCall('/api/agents/preview/skip', 'POST', { videoId: id });
+async function skipVideo(id, source) {
+  const url  = source === 'calendar' ? `/api/content/${id}/skip` : '/api/agents/preview/skip';
+  const body = source === 'calendar' ? {} : { videoId: id };
+  const data = await apiCall(url, 'POST', body);
   if (data?.success || !data?.error) {
-    toast('Video skipped', 'info');
-    liveQueue = liveQueue.filter(q => (q._id||q.id) !== id);
+    toast('Skipped', 'info');
+    liveQueue = liveQueue.filter(q => String(q._id || q.id) !== String(id));
     renderQueue();
   }
 }
