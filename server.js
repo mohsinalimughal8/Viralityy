@@ -125,7 +125,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 const ALLOWED_ORIGINS = [
   process.env.APP_URL,
   process.env.FRONTEND_URL,
-  'https://viralityyyai.netlify.app',
+  'https://viralityy.pages.dev',
   'http://localhost:3000',
   'http://localhost:5500',
 ].filter(Boolean);
@@ -345,7 +345,7 @@ app.get('/auth/google/callback',
   (req, res) => {
   try {
     const token = jwt.sign({ userId: req.user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    const frontendUrl = process.env.FRONTEND_URL || 'https://viralityyyai.netlify.app';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://viralityy.pages.dev';
 
     const userData = {
       id:          req.user.id,
