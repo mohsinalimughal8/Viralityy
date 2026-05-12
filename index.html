@@ -1552,7 +1552,7 @@ async function initChannels() {
       <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
       <div class="ch-info">
         <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
-        <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers · ' : ''}${ch.nicheName || ch.nicheId || 'No niche set'}${ch.paused ? ' · Paused' : ''}</p>
+        <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers · ' : ''}${ch.nicheName || 'No niche set'}${ch.paused ? ' · Paused' : ''}</p>
       </div>
       <div class="ch-actions">
         <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
