@@ -284,9 +284,16 @@ function hashIp(ip) {
   return crypto.createHmac('sha256', process.env.IP_SALT || 'default_salt').update(ip || '').digest('hex');
 }
 
+const PLAN_CONFIG = {
+  trial:      { shortsPerDay: 1,  longFormPerWeek: 0, channels: 1 },
+  starter:    { shortsPerDay: 3,  longFormPerWeek: 0, channels: 1 },
+  shorts_pro: { shortsPerDay: 7,  longFormPerWeek: 0, channels: 1 },
+  growth:     { shortsPerDay: 10, longFormPerWeek: 1,  channels: 3 },
+  agency:     { shortsPerDay: 10, longFormPerWeek: 1,  channels: 5 },
+};
+
 function planNicheQuota(plan) {
-  const q = { trial: 0, starter: 0, shorts_pro: 2, growth: 3, agency: 3 };
-  return q[plan] ?? 0;
+  return plan === 'trial' ? 0 : Infinity; // trial locked, all paid plans unlimited
 }
 
 function isPlanActive(user) {
@@ -457,8 +464,7 @@ app.post('/api/channels/connect', requireAuth, async (req, res) => {
     }
 
     // Check channel limit per plan
-    const planLimits = { trial: 1, starter: 1, shorts_pro: 1, growth: 3, agency: 5 };
-    const limit = planLimits[user.plan] || 1;
+    const limit = (PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial).channels;
     if ((user.youtubeChannels || []).length >= limit) {
       return res.status(403).json({ error: `Your plan allows up to ${limit} channel(s). Upgrade to connect more.`, code: 'CHANNEL_LIMIT' });
     }
@@ -503,17 +509,9 @@ app.post('/api/niche/set', requireAuth, async (req, res) => {
     if (!isFirstSet) {
       // Post-setup change — enforce plan quota
       const quota = planNicheQuota(user.plan);
-      if (quota === 0) return res.status(403).json({ error: 'Niche changes are not available on your plan. Upgrade to Shorts Pro or above.', code: 'NICHE_LOCKED' });
+      if (quota === 0) return res.status(403).json({ error: 'Niche changes are not available on the trial plan. Upgrade to a paid plan to change your niche.', code: 'NICHE_LOCKED' });
 
-      // Reset counter if it's a new year
-      const currentYear = new Date().getFullYear();
-      if (user.nicheChangesYear !== currentYear) { user.nicheChangesUsed = 0; user.nicheChangesYear = currentYear; }
-
-      if (user.nicheChangesUsed >= quota) {
-        return res.status(403).json({ error: `You have used all ${quota} niche changes for this year. Your allowance resets on January 1st.`, code: 'NICHE_QUOTA_EXHAUSTED' });
-      }
-
-      user.nicheChangesUsed += 1;
+      user.nicheChangesUsed = (user.nicheChangesUsed || 0) + 1;
     }
 
     user.nicheId = nicheId;
@@ -521,7 +519,8 @@ app.post('/api/niche/set', requireAuth, async (req, res) => {
     await user.save();
 
     const quota = planNicheQuota(user.plan);
-    res.json({ success: true, nicheId, nicheName, changesUsed: user.nicheChangesUsed, changesRemaining: Math.max(0, quota - user.nicheChangesUsed) });
+    const changesRemaining = quota === Infinity ? null : Math.max(0, quota - user.nicheChangesUsed);
+    res.json({ success: true, nicheId, nicheName, changesUsed: user.nicheChangesUsed, changesRemaining });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -530,9 +529,9 @@ app.get('/api/niche/status', requireAuth, async (req, res) => {
   try {
     const user  = await User.findById(req.user.id);
     const quota = planNicheQuota(user.plan);
-    const currentYear = new Date().getFullYear();
-    const changesUsed = user.nicheChangesYear === currentYear ? (user.nicheChangesUsed || 0) : 0;
-    res.json({ nicheId: user.nicheId, nicheName: user.nicheName, quota, changesUsed, changesRemaining: Math.max(0, quota - changesUsed), plan: user.plan });
+    const changesUsed = user.nicheChangesUsed || 0;
+    const changesRemaining = quota === Infinity ? null : Math.max(0, quota - changesUsed);
+    res.json({ nicheId: user.nicheId, nicheName: user.nicheName, quota: quota === Infinity ? 'unlimited' : quota, changesUsed, changesRemaining, plan: user.plan });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1099,14 +1098,6 @@ app.post('/api/agents/planner/generate', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Failed to start calendar generation' });
   }
 });
-
-const PLAN_CONFIG = {
-  trial:      { shortsPerDay: 1,  longFormPerWeek: 0 },
-  starter:    { shortsPerDay: 3,  longFormPerWeek: 0 },
-  shorts_pro: { shortsPerDay: 7,  longFormPerWeek: 0 },
-  growth:     { shortsPerDay: 10, longFormPerWeek: 1 },
-  agency:     { shortsPerDay: 10, longFormPerWeek: 1 },
-};
 
 // POST /api/content/calendar — generate 30-day plan-aware calendar via OpenAI
 app.post('/api/content/calendar', requireAuth, async (req, res) => {
@@ -2242,7 +2233,7 @@ app.post('/api/channels/:channelId/niche', requireAuth, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     const isFirstSet = !user.nicheId;
     if (!isFirstSet && planNicheQuota(user.plan) === 0) {
-      return res.status(403).json({ error: 'Upgrade to Shorts Pro or above to change your niche', code: 'NICHE_LOCKED' });
+      return res.status(403).json({ error: 'Niche changes are not available on the trial plan. Upgrade to a paid plan.', code: 'NICHE_LOCKED' });
     }
     const ch = (user.youtubeChannels || []).find(c => c.channelId === req.params.channelId);
     if (!ch) return res.status(404).json({ error: 'Channel not found' });
