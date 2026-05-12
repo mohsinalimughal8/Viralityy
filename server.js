@@ -1099,7 +1099,7 @@ app.post('/api/agents/planner/generate', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/content/calendar — generate 30-day plan-aware calendar via OpenAI
+// POST /api/content/calendar — generate 30-day plan-aware calendar via OpenAI (unique title per slot)
 app.post('/api/content/calendar', requireAuth, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI not configured' });
@@ -1119,65 +1119,107 @@ app.post('/api/content/calendar', requireAuth, async (req, res) => {
       return d.toISOString().slice(0, 10);
     });
 
-    // Count how many long-form days fall in the 30-day window
-    const longFormDays = config.longFormPerWeek > 0
-      ? dates.filter(dt => new Date(dt).getDay() === 1).length  // Mondays
-      : 0;
+    const longFormDates = config.longFormPerWeek > 0
+      ? dates.filter(dt => new Date(dt).getDay() === 1)
+      : [];
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{
-        role: 'user',
-        content: `You are a YouTube content strategist. Generate topics for a "${nicheName}" channel.
+    const totalShorts   = config.shortsPerDay * 30;
+    const totalLongForm = longFormDates.length;
 
-Return a JSON object with:
-- "shorts": array of exactly 30 unique Short video titles (under 60 chars each)
-- "longForm": array of exactly ${Math.max(longFormDays, 1)} unique Long-form video titles (descriptive, 60–100 chars)
+    // --- Generate all unique short titles in day-batches with a running used-titles list ---
+    const BATCH = 5; // days per OpenAI call
+    const allShortTitles = [];
 
-Return only valid JSON.`,
-      }],
-      temperature: 0.85,
-      response_format: { type: 'json_object' },
-    });
+    for (let batchStart = 0; batchStart < 30; batchStart += BATCH) {
+      const batchDays  = Math.min(BATCH, 30 - batchStart);
+      const batchCount = batchDays * config.shortsPerDay;
+      const usedList   = allShortTitles.length
+        ? `\nAlready used — do NOT repeat these concepts:\n${allShortTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')}\n`
+        : '';
 
-    let aiTopics;
-    try {
-      aiTopics = JSON.parse(completion.choices[0].message.content);
-    } catch {
-      return res.status(500).json({ error: 'Failed to parse OpenAI response' });
+      const batchRes = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{
+          role: 'user',
+          content: `YouTube Shorts content strategist for a "${nicheName}" channel.
+${usedList}
+Generate exactly ${batchCount} NEW, completely unique Short video titles (under 60 chars each).
+Vary the style across: hook, story, tutorial, listicle, myth-bust.
+Each title must be specific, compelling, and cover a DIFFERENT concept.
+
+Return JSON: { "titles": [${batchCount} strings] }`,
+        }],
+        temperature: 0.9,
+        response_format: { type: 'json_object' },
+      });
+
+      let parsed;
+      try { parsed = JSON.parse(batchRes.choices[0].message.content); } catch { parsed = {}; }
+      const batchTitles = parsed.titles || [];
+      allShortTitles.push(...batchTitles);
     }
-    const shortTitles    = aiTopics.shorts    || [];
-    const longFormTitles = aiTopics.longForm  || [];
-    if (!shortTitles.length) return res.status(500).json({ error: 'OpenAI returned no topics' });
 
-    // Build one slot per type per day
+    // --- Generate long-form titles (separate call if needed) ---
+    let allLongFormTitles = [];
+    if (totalLongForm > 0) {
+      const lfRes = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{
+          role: 'user',
+          content: `YouTube long-form content strategist for a "${nicheName}" channel.
+Generate exactly ${totalLongForm} unique Long-form video titles (60–100 chars each).
+These should be in-depth, educational, and distinct from typical Shorts topics.
+Already used Short titles (do NOT overlap):
+${allShortTitles.slice(0, 30).map((t, i) => `${i + 1}. ${t}`).join('\n')}
+
+Return JSON: { "titles": [${totalLongForm} strings] }`,
+        }],
+        temperature: 0.88,
+        response_format: { type: 'json_object' },
+      });
+      try {
+        const p = JSON.parse(lfRes.choices[0].message.content);
+        allLongFormTitles = p.titles || [];
+      } catch { /* use fallbacks below */ }
+    }
+
+    // --- Build one slot per individual video ---
+    let shortIdx   = 0;
     let longFormIdx = 0;
     const slots = [];
+
     for (let i = 0; i < 30; i++) {
       const day  = i + 1;
       const date = dates[i];
-      const dow  = new Date(date).getDay(); // 0=Sun 1=Mon
-      slots.push({
-        day, date,
-        title:  shortTitles[i] || `Short ${day}`,
-        type:   'Short',
-        count:  config.shortsPerDay,
-        angle:  'short',
-        status: 'planned',
-      });
+      const dow  = new Date(date).getDay();
+
+      for (let v = 0; v < config.shortsPerDay; v++) {
+        slots.push({
+          day, date,
+          title:       allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
+          type:        'Short',
+          videoIndex:  v + 1,
+          totalForDay: config.shortsPerDay,
+          angle:       'short',
+          status:      'planned',
+        });
+        shortIdx++;
+      }
+
       if (config.longFormPerWeek > 0 && dow === 1) {
         slots.push({
           day, date,
-          title:  longFormTitles[longFormIdx++ % (longFormTitles.length || 1)] || `Long-form Deep Dive ${Math.ceil(day / 7)}`,
-          type:   'Long-form',
-          count:  1,
-          angle:  'long-form',
-          status: 'planned',
+          title:       allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
+          type:        'Long-form',
+          videoIndex:  1,
+          totalForDay: 1,
+          angle:       'long-form',
+          status:      'planned',
         });
+        longFormIdx++;
       }
     }
 
-    const totalVideos = slots.reduce((acc, s) => acc + (s.count || 1), 0);
     const col = await agentCol('content_calendars');
     await col.updateOne(
       { userId: req.user.id, status: 'active' },
@@ -1185,7 +1227,7 @@ Return only valid JSON.`,
       { upsert: true }
     );
 
-    res.json({ success: true, slots, count: slots.length, totalVideos, plan: user.plan });
+    res.json({ success: true, slots, count: slots.length, totalVideos: slots.length, plan: user.plan });
   } catch (err) {
     console.error('[ContentCalendar] error:', err);
     res.status(500).json({ error: err.message || 'Failed to generate calendar' });
