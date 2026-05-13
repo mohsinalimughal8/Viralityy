@@ -3164,43 +3164,185 @@ function _pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
   return buf;
 }
 
-// Step 3 — Fetch portrait stock footage from Pexels
-async function pipelineFetchFootage(query) {
-  const apiKey = process.env.PEXELS_API_KEY;
-  if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
-  const params = new URLSearchParams({
-    query:       query.slice(0, 100),
-    per_page:    '5',
-    orientation: 'portrait',
-  });
-  const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
-    headers: { Authorization: apiKey },
-  });
-  const data   = await res.json();
-  const videos = data.videos || [];
-  if (!videos.length) throw new Error(`No Pexels footage found for: ${query}`);
-  const video = videos[0];
-  const file  = (video.video_files || []).find(f => f.quality === 'hd') ||
-                (video.video_files || [])[0];
-  if (!file?.link) throw new Error('No usable Pexels video file');
-  return { url: file.link, duration: video.duration };
+// Royalty-free ambient/upbeat tracks for background music (mixed at 15%)
+const ROYALTY_FREE_MUSIC = [
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
+];
+
+// Extract 4 distinct Pexels search queries from video title + script
+function deriveFootageQueries(title, script) {
+  const combined = `${title} ${script}`.slice(0, 300).toLowerCase();
+  const stop = new Set(['the','a','an','is','are','was','were','this','that','these','those',
+    'with','for','and','but','or','not','to','of','in','on','at','by','from','about',
+    'how','why','what','when','where','who','will','can','do','does','did','be','been',
+    'have','has','had','get','got','make','made','take','your','you','my','me','we',
+    'our','they','their','it','its','if','so','than','then','into','over','under','up']);
+  const words = combined.match(/\b[a-z]{4,}\b/g) || [];
+  const seen = new Set();
+  const kw = [];
+  for (const w of words) {
+    if (!stop.has(w) && !seen.has(w)) { seen.add(w); kw.push(w); }
+    if (kw.length >= 8) break;
+  }
+  const queries = [];
+  if (kw[0] && kw[1]) queries.push(`${kw[0]} ${kw[1]}`);
+  if (kw[2] && kw[3]) queries.push(`${kw[2]} ${kw[3]}`);
+  if (kw[4]) queries.push(kw[4]);
+  queries.push('lifestyle motivation');
+  while (queries.length < 4) queries.push('nature relax');
+  return queries.slice(0, 4);
 }
 
-// Step 4 — Assemble video: overlay audio on footage with ffmpeg
-async function pipelineAssembleVideo(footageUrl, audioPath, outputPath) {
-  return new Promise((resolve, reject) => {
-    const footagePath = outputPath.replace('.mp4', '_raw.mp4');
-    exec(
-      `curl -sL -o "${footagePath}" "${footageUrl}" && ` +
-      `ffmpeg -y -i "${footagePath}" -i "${audioPath}" ` +
-      `-c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`,
-      { timeout: 300000 },
-      (err, _stdout, stderr) => {
-        require('fs').unlink(footagePath, () => {});
-        if (err) return reject(new Error('ffmpeg assembly failed: ' + (stderr || err.message).slice(0, 300)));
-        resolve(outputPath);
-      }
+// Escape text for ffmpeg drawtext filter
+function escapeDT(str) {
+  return String(str)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+// Step 3 — Fetch 4 portrait clips from Pexels using script-derived queries
+async function pipelineFetchMultipleFootage(title, script) {
+  const apiKey = process.env.PEXELS_API_KEY;
+  if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
+  const queries = deriveFootageQueries(title, script);
+  const clips = [];
+  for (const query of queries) {
+    try {
+      const params = new URLSearchParams({ query: query.slice(0, 100), per_page: '10', orientation: 'portrait' });
+      const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
+        headers: { Authorization: apiKey },
+      });
+      const data = await res.json();
+      const videos = (data.videos || []).filter(v => v.duration >= 5);
+      if (!videos.length) { console.warn(`[Footage] No results for "${query}", skipping`); continue; }
+      const video = videos[0];
+      const file = (video.video_files || []).find(f => f.quality === 'hd') || (video.video_files || [])[0];
+      if (!file?.link) continue;
+      clips.push({ url: file.link, duration: video.duration, query });
+      console.log(`[Footage] Clip for "${query}": ${video.duration}s`);
+    } catch (e) {
+      console.warn(`[Footage] Failed for "${query}":`, e.message);
+    }
+  }
+  if (!clips.length) throw new Error('No Pexels footage clips fetched');
+  return clips;
+}
+
+// Step 4 — Assemble: concat clips, overlay captions + voiceover, mix background music at 15%
+async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = []) {
+  const fs   = require('fs');
+  const path = require('path');
+  const runId = Date.now();
+
+  // Download footage clips in parallel
+  const clipPaths = footageClips.map((_, i) => path.join('/tmp', `vly_clip_${runId}_${i}.mp4`));
+  await Promise.all(footageClips.map((clip, i) =>
+    new Promise((resolve, reject) => {
+      exec(`curl -sL --max-time 60 -o "${clipPaths[i]}" "${clip.url}"`, { timeout: 90000 },
+        err => err ? reject(new Error(`Clip ${i} download failed: ${err.message}`)) : resolve());
+    })
+  ));
+
+  // Download background music (non-fatal)
+  const musicUrl  = ROYALTY_FREE_MUSIC[Math.floor(Math.random() * ROYALTY_FREE_MUSIC.length)];
+  const musicPath = path.join('/tmp', `vly_music_${runId}.mp3`);
+  let hasMus = false;
+  try {
+    await new Promise((resolve, reject) => {
+      exec(`curl -sL --max-time 30 -o "${musicPath}" "${musicUrl}"`, { timeout: 45000 },
+        err => err ? reject(err) : resolve());
+    });
+    hasMus = fs.existsSync(musicPath) && fs.statSync(musicPath).size > 1000;
+  } catch (e) {
+    console.warn('[Assembly] Music download failed (non-fatal):', e.message);
+  }
+
+  const n       = clipPaths.length;
+  const clipDur = 6;
+  const parts   = [];
+
+  // Scale/crop/trim each clip to 1080x1920 portrait, 6 s
+  for (let i = 0; i < n; i++) {
+    parts.push(
+      `[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,` +
+      `crop=1080:1920,setsar=1,trim=0:${clipDur},setpts=PTS-STARTPTS[v${i}]`
     );
+  }
+
+  // Concat all video streams
+  const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
+  parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
+
+  // Chain drawtext filters for each caption segment
+  const capSegs = captions.slice(0, 20);
+  let lastV = 'vcat';
+  for (let i = 0; i < capSegs.length; i++) {
+    const c     = capSegs[i];
+    const txt   = escapeDT(c.text || '');
+    const st    = Number(c.start || 0).toFixed(2);
+    const en    = Number(c.end   || (Number(c.start || 0) + 3)).toFixed(2);
+    const nextV = i < capSegs.length - 1 ? `vcap${i}` : 'vout';
+    parts.push(
+      `[${lastV}]drawtext=text='${txt}':fontsize=52:fontcolor=white:` +
+      `borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.80:` +
+      `enable='between(t,${st},${en})'[${nextV}]`
+    );
+    lastV = nextV;
+  }
+  if (capSegs.length === 0) parts.push(`[vcat]null[vout]`);
+
+  // Audio: mix voiceover (100%) with optional background music (15%)
+  const voiceIdx = n;
+  if (hasMus) {
+    const musIdx = n + 1;
+    parts.push(
+      `[${voiceIdx}:a]volume=1.0[vo];[${musIdx}:a]volume=0.15[mu];` +
+      `[vo][mu]amix=inputs=2:duration=first:dropout_transition=2[aout]`
+    );
+  } else {
+    parts.push(`[${voiceIdx}:a]volume=1.0[aout]`);
+  }
+
+  // Write filter_complex to temp file (avoids shell escaping issues)
+  const filterPath = path.join('/tmp', `vly_filter_${runId}.txt`);
+  fs.writeFileSync(filterPath, parts.join(';\n'));
+
+  const inputArgs = clipPaths.map(p => `-i "${p}"`).join(' ');
+  const musArg    = hasMus ? `-i "${musicPath}"` : '';
+  const cmd = [
+    'ffmpeg -y',
+    inputArgs,
+    `-i "${audioPath}"`,
+    musArg,
+    `-filter_complex_script "${filterPath}"`,
+    '-map [vout] -map [aout]',
+    '-c:v libx264 -preset fast -crf 23',
+    '-c:a aac -b:a 128k',
+    '-movflags +faststart',
+    '-shortest',
+    `"${outputPath}"`,
+  ].filter(Boolean).join(' ');
+
+  return new Promise((resolve, reject) => {
+    exec(cmd, { timeout: 600000 }, (err, _stdout, stderr) => {
+      for (const p of clipPaths) fs.unlink(p, () => {});
+      fs.unlink(filterPath, () => {});
+      if (hasMus) fs.unlink(musicPath, () => {});
+      if (err) return reject(new Error('ffmpeg assembly failed: ' + (stderr || err.message).slice(0, 500)));
+      resolve(outputPath);
+    });
   });
 }
 
@@ -3474,14 +3616,14 @@ async function runAutoPostPipeline() {
         audioPath = await pipelineGenerateVoiceover(script, String(calendar.userId));
         console.log(`[AutoPost] Step 2/5 — Voiceover saved: ${audioPath}`);
 
-        // Step 3 — Pexels footage
-        console.log(`[AutoPost] Step 3/5 — Fetching Pexels footage (query: "${slot.title.slice(0, 60)}")…`);
-        const footage = await pipelineFetchFootage(slot.title);
-        console.log(`[AutoPost] Step 3/5 — Footage fetched: ${footage.url.slice(0, 80)}… (${footage.width || '?'}x${footage.height || '?'})`);
+        // Step 3 — Pexels footage (multiple clips)
+        console.log(`[AutoPost] Step 3/5 — Fetching Pexels footage clips for "${slot.title.slice(0, 60)}"…`);
+        const footageClips = await pipelineFetchMultipleFootage(slot.title, script);
+        console.log(`[AutoPost] Step 3/5 — Fetched ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
 
-        // Step 4 — Assemble
+        // Step 4 — Assemble with captions + background music
         console.log(`[AutoPost] Step 4/5 — Assembling video → ${outputPath}`);
-        await pipelineAssembleVideo(footage.url, audioPath, outputPath);
+        await pipelineAssembleVideo(footageClips, audioPath, outputPath, scriptData.captions);
         console.log(`[AutoPost] Step 4/5 — Video assembled: ${outputPath}`);
 
         // Step 5 — YouTube upload
