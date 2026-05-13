@@ -1357,6 +1357,56 @@ app.get('/api/content/weekly-insights', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/optimisation/insights — weeklyInsights for the AI Optimisation page
+app.get('/api/optimisation/insights', requireAuth, async (req, res) => {
+  try {
+    const col = await agentCol('content_calendars');
+    const doc = await col.findOne(
+      { userId: req.user.id, status: 'active' },
+      { projection: { weeklyInsights: 1, nicheName: 1, generatedAt: 1, weeklyRefreshedAt: 1 } }
+    );
+    const wi = doc?.weeklyInsights || null;
+    res.json({
+      success:           true,
+      weeklyInsights:    wi,
+      nicheName:         doc?.nicheName         || null,
+      generatedAt:       doc?.generatedAt       || null,
+      weeklyRefreshedAt: doc?.weeklyRefreshedAt || null,
+    });
+  } catch (err) {
+    console.error('[Optimisation] GET /insights error:', err);
+    res.status(500).json({ error: 'Failed to fetch optimisation insights' });
+  }
+});
+
+// GET /api/optimisation/stats — aggregate stats for the AI Optimisation page stat cards
+app.get('/api/optimisation/stats', requireAuth, async (req, res) => {
+  try {
+    const col = await agentCol('content_calendars');
+    const doc = await col.findOne(
+      { userId: req.user.id, status: 'active' },
+      { projection: { weeklyInsights: 1, slots: 1, nicheName: 1 } }
+    );
+    const wi     = doc?.weeklyInsights || {};
+    const slots  = doc?.slots          || [];
+    const posted = slots.filter(s => s.status === 'posted' || s.posted).length;
+    res.json({
+      success:            true,
+      totalAnalyzed:      wi.totalAnalyzed      || 0,
+      trendingTopicsCount: (wi.trendingTopics || []).length,
+      topPerformersCount: (wi.topPerformers  || []).length,
+      generationStrategy: wi.generationStrategy  || null,
+      lastOptimisedAt:    wi.generatedAt         || null,
+      idealTitleLength:   wi.titlePatterns?.idealLength || null,
+      postedThisCycle:    posted,
+      nicheName:          doc?.nicheName         || null,
+    });
+  } catch (err) {
+    console.error('[Optimisation] GET /stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch optimisation stats' });
+  }
+});
+
 // GET /api/content/queue — pending calendar slots awaiting review
 app.get('/api/content/queue', requireAuth, async (req, res) => {
   try {

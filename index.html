@@ -2491,98 +2491,113 @@ async function initAffiliate() {
 // LEARNING / OPTIMISATION PAGE — real data
 // ════════════════════════════════════════════
 async function initLearning() {
-  const [status, analytics, insightsRes] = await Promise.all([
-    apiCall('/api/agents/status'),
-    apiCall('/api/analytics/videos'),
-    apiCall('/api/content/weekly-insights'),
-  ]);
-
-  // Subtitle
-  const loop = status?.agents?.learningLoop;
-  const subtitleEl = document.querySelector('#dp-learning .ps');
-  if (subtitleEl && loop) {
-    subtitleEl.textContent = loop.enabled
-      ? 'Active — runs every Monday at 3AM, analysing your video performance'
-      : 'Shelved — enable FEATURE_LEARNING_LOOP in Railway to activate';
-  }
-
-  const wi = insightsRes?.weeklyInsights;
-
-  // Stat cards
-  const optLast   = document.getElementById('opt-last');
-  const optCount  = document.getElementById('opt-count');
-  const optLength = document.getElementById('opt-length');
-  if (optLast)   optLast.textContent   = wi?.generatedAt ? _relTime(wi.generatedAt) : '—';
-  if (optCount)  optCount.textContent  = wi?.totalAnalyzed > 0 ? wi.totalAnalyzed : '—';
-  if (optLength) optLength.textContent = wi?.titlePatterns?.idealLength || '—';
-
-  // Winning Title Patterns card
   const patternsEl = document.getElementById('title-patterns-card');
-  if (patternsEl) {
-    const tp = wi?.titlePatterns;
-    if (!wi) {
-      patternsEl.innerHTML = `<div style="padding:.75rem;background:var(--bg3);border-radius:8px;border-left:3px solid var(--purple)">
-        <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:4px">Patterns appear after your first videos post</p>
-        <p style="font-size:.72rem;color:var(--text2)">Once Viralityy has posted at least 5 videos, Monday's AI analysis will identify the title structures driving the most views on your channel.</p>
-      </div>`;
-    } else if (!tp) {
-      patternsEl.innerHTML = `<div style="padding:.75rem;background:var(--bg3);border-radius:8px;border-left:3px solid var(--amber)">
-        <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:4px">Analysis pending</p>
-        <p style="font-size:.72rem;color:var(--text2)">Calendar generated — title pattern analysis runs automatically next Monday once enough videos have been posted.</p>
-      </div>`;
-    } else {
-      const patternRows = (tp.patterns || []).map((p, i) =>
-        `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-          <span style="min-width:18px;height:18px;background:var(--purple);color:#fff;border-radius:50%;font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center">${i + 1}</span>
-          <span style="font-size:.76rem;color:var(--text)">${p}</span>
-        </div>`
-      ).join('');
+  const chartEl    = document.getElementById('perf-chart');
 
-      const wordChips = (tp.powerWords || []).map(w =>
-        `<span style="font-size:.68rem;background:rgba(99,102,241,.12);color:var(--purple);border-radius:20px;padding:2px 8px;border:1px solid rgba(99,102,241,.25)">${w}</span>`
-      ).join('');
+  try {
+    const [status, analytics, insightsRes, statsRes] = await Promise.all([
+      apiCall('/api/agents/status'),
+      apiCall('/api/analytics/videos'),
+      apiCall('/api/optimisation/insights'),
+      apiCall('/api/optimisation/stats'),
+    ]);
 
-      const exampleRows = (tp.topExamples || []).map(t =>
-        `<div style="font-size:.73rem;color:var(--text2);padding:4px 0;border-bottom:1px solid var(--border)">"${t}"</div>`
-      ).join('');
-
-      patternsEl.innerHTML = `
-        <div style="margin-bottom:.75rem">
-          <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Top 5 patterns</p>
-          ${patternRows || '<p style="font-size:.75rem;color:var(--text3)">No patterns yet</p>'}
-        </div>
-        ${wordChips ? `<div style="margin-bottom:.75rem">
-          <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Power words</p>
-          <div style="display:flex;flex-wrap:wrap;gap:5px">${wordChips}</div>
-        </div>` : ''}
-        ${exampleRows ? `<div style="margin-bottom:.75rem">
-          <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Best performing titles last week</p>
-          ${exampleRows}
-        </div>` : ''}
-        ${tp.insight ? `<div style="background:var(--bg3);border-radius:8px;padding:.6rem .75rem;border-left:3px solid var(--green);margin-top:.25rem">
-          <p style="font-size:.73rem;color:var(--text2);line-height:1.5">${tp.insight}</p>
-        </div>` : ''}
-        <p style="font-size:.65rem;color:var(--text3);margin-top:.6rem">Updated every Monday automatically</p>`;
+    // Subtitle
+    const loop = status?.agents?.learningLoop;
+    const subtitleEl = document.querySelector('#dp-learning .ps');
+    if (subtitleEl && loop) {
+      subtitleEl.textContent = loop.enabled
+        ? 'Active — runs every Monday at 3AM, analysing your video performance'
+        : 'Shelved — enable FEATURE_LEARNING_LOOP in Railway to activate';
     }
-  }
 
-  // Performance bar chart
-  const chartEl = document.getElementById('perf-chart');
-  if (chartEl) {
-    const videos = (analytics?.videos || []).slice(0, 10);
-    if (!videos.length) {
-      chartEl.innerHTML = '<p style="font-size:.72rem;color:var(--text3);align-self:center">No video data yet</p>';
-    } else {
-      const maxViews = Math.max(...videos.map(v => v.viewCount || 0), 1);
-      chartEl.innerHTML = videos.map(v => {
-        const pct   = Math.max(Math.round(((v.viewCount || 0) / maxViews) * 100), 4);
-        const label = (v.title || '').slice(0, 18) || '—';
-        return `<div title="${v.title || ''} — ${(v.viewCount || 0).toLocaleString()} views" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default">
-          <div style="width:100%;background:var(--purple);border-radius:3px 3px 0 0;height:${pct}%;opacity:.85"></div>
-          <span style="font-size:.52rem;color:var(--text3);writing-mode:vertical-rl;transform:rotate(180deg);max-height:38px;overflow:hidden">${label}</span>
+    const wi    = insightsRes?.weeklyInsights;
+    const stats = statsRes;
+
+    // Stat cards — prefer /stats endpoint, fall back to weeklyInsights fields
+    const optLast   = document.getElementById('opt-last');
+    const optCount  = document.getElementById('opt-count');
+    const optLength = document.getElementById('opt-length');
+    const lastAt    = stats?.lastOptimisedAt || wi?.generatedAt;
+    if (optLast)   optLast.textContent   = lastAt ? _relTime(lastAt) : '—';
+    if (optCount)  optCount.textContent  = (stats?.totalAnalyzed > 0 ? stats.totalAnalyzed : null) ?? (wi?.totalAnalyzed > 0 ? wi.totalAnalyzed : '—');
+    if (optLength) optLength.textContent = stats?.idealTitleLength || wi?.titlePatterns?.idealLength || '—';
+
+    // Trending topics chip (shown when available)
+    const trendCount = stats?.trendingTopicsCount || (wi?.trendingTopics?.length ?? 0);
+    const badgeEl    = document.getElementById('opt-badge');
+    if (badgeEl && trendCount > 0) {
+      badgeEl.textContent = `${trendCount} trending topics analysed this week`;
+    }
+
+    // Winning Title Patterns card
+    if (patternsEl) {
+      const tp = wi?.titlePatterns;
+      if (!wi) {
+        patternsEl.innerHTML = `<div style="padding:.75rem;background:var(--bg3);border-radius:8px;border-left:3px solid var(--purple)">
+          <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:4px">Patterns appear after your first videos post</p>
+          <p style="font-size:.72rem;color:var(--text2)">Once Viralityy has posted at least 5 videos, Monday's AI analysis will identify the title structures driving the most views on your channel.</p>
         </div>`;
-      }).join('');
+      } else if (!tp) {
+        patternsEl.innerHTML = `<div style="padding:.75rem;background:var(--bg3);border-radius:8px;border-left:3px solid var(--amber)">
+          <p style="font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:4px">Analysis pending</p>
+          <p style="font-size:.72rem;color:var(--text2)">Calendar generated — title pattern analysis runs automatically next Monday once enough videos have been posted.</p>
+        </div>`;
+      } else {
+        const patternRows = (tp.patterns || []).map((p, i) =>
+          `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+            <span style="min-width:18px;height:18px;background:var(--purple);color:#fff;border-radius:50%;font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center">${i + 1}</span>
+            <span style="font-size:.76rem;color:var(--text)">${p}</span>
+          </div>`
+        ).join('');
+        const wordChips = (tp.powerWords || []).map(w =>
+          `<span style="font-size:.68rem;background:rgba(99,102,241,.12);color:var(--purple);border-radius:20px;padding:2px 8px;border:1px solid rgba(99,102,241,.25)">${w}</span>`
+        ).join('');
+        const exampleRows = (tp.topExamples || []).map(t =>
+          `<div style="font-size:.73rem;color:var(--text2);padding:4px 0;border-bottom:1px solid var(--border)">"${t}"</div>`
+        ).join('');
+        patternsEl.innerHTML = `
+          <div style="margin-bottom:.75rem">
+            <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Top 5 patterns</p>
+            ${patternRows || '<p style="font-size:.75rem;color:var(--text3)">No patterns yet</p>'}
+          </div>
+          ${wordChips ? `<div style="margin-bottom:.75rem">
+            <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Power words</p>
+            <div style="display:flex;flex-wrap:wrap;gap:5px">${wordChips}</div>
+          </div>` : ''}
+          ${exampleRows ? `<div style="margin-bottom:.75rem">
+            <p style="font-size:.7rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Best performing titles last week</p>
+            ${exampleRows}
+          </div>` : ''}
+          ${tp.insight ? `<div style="background:var(--bg3);border-radius:8px;padding:.6rem .75rem;border-left:3px solid var(--green);margin-top:.25rem">
+            <p style="font-size:.73rem;color:var(--text2);line-height:1.5">${tp.insight}</p>
+          </div>` : ''}
+          <p style="font-size:.65rem;color:var(--text3);margin-top:.6rem">Updated every Monday automatically</p>`;
+      }
     }
+
+    // Performance bar chart
+    if (chartEl) {
+      const videos = (analytics?.videos || []).slice(0, 10);
+      if (!videos.length) {
+        chartEl.innerHTML = '<p style="font-size:.72rem;color:var(--text3);align-self:center">No video data yet — chart appears once videos are posted</p>';
+      } else {
+        const maxViews = Math.max(...videos.map(v => v.viewCount || 0), 1);
+        chartEl.innerHTML = videos.map(v => {
+          const pct   = Math.max(Math.round(((v.viewCount || 0) / maxViews) * 100), 4);
+          const label = (v.title || '').slice(0, 18) || '—';
+          return `<div title="${v.title || ''} — ${(v.viewCount || 0).toLocaleString()} views" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default">
+            <div style="width:100%;background:var(--purple);border-radius:3px 3px 0 0;height:${pct}%;opacity:.85"></div>
+            <span style="font-size:.52rem;color:var(--text3);writing-mode:vertical-rl;transform:rotate(180deg);max-height:38px;overflow:hidden">${label}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+  } catch (err) {
+    console.error('[initLearning] error:', err);
+    if (patternsEl) patternsEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);margin-top:.5rem">Could not load data — refresh to try again</p>';
+    if (chartEl)    chartEl.innerHTML    = '<p style="font-size:.72rem;color:var(--text3);align-self:center">Could not load data</p>';
   }
 }
 
