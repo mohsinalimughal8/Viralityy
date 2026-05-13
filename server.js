@@ -2645,26 +2645,33 @@ async function runAutoPostPipeline() {
   }
   const col   = agentCol('content_calendars');
   const today = new Date().toISOString().slice(0, 10);
+  console.log(`[AutoPost] Scanning active calendars for due approved slots (today: ${today})…`);
   const calendars = await col.find({ status: 'active' }).toArray();
+  console.log(`[AutoPost] ${calendars.length} active calendar(s) found`);
   let processed = 0;
 
   for (const calendar of calendars) {
     const dueSlots = (calendar.slots || []).filter(s =>
       s.status === 'approved' && !s.posted && (s.date || s.scheduledDate || '') <= today
     );
-    if (!dueSlots.length) continue;
+    if (!dueSlots.length) {
+      console.log(`[AutoPost] Calendar ${calendar._id} — no due approved slots, skipping`);
+      continue;
+    }
+    console.log(`[AutoPost] Calendar ${calendar._id} (${calendar.nicheName || 'unknown niche'}) — ${dueSlots.length} due slot(s) found: ${dueSlots.map(s => `"${s.title}"`).join(', ')}`);
 
     const user = await User.findById(calendar.userId).catch(() => null);
-    if (!user) continue;
+    if (!user) { console.warn(`[AutoPost] User ${calendar.userId} not found, skipping calendar ${calendar._id}`); continue; }
     const channel = (user.youtubeChannels || []).find(ch => ch.channelId === calendar.channelId)
                  || (user.youtubeChannels || [])[0];
-    if (!channel) { console.warn(`[AutoPost] No channel found for calendar ${calendar._id}`); continue; }
+    if (!channel) { console.warn(`[AutoPost] No YouTube channel found for calendar ${calendar._id} (channelId: ${calendar.channelId})`); continue; }
+    console.log(`[AutoPost] Using channel "${channel.channelName}" (${channel.channelId})`);
 
     for (const slot of dueSlots) {
-      const slotKey   = `day${slot.day}_vi${slot.videoIndex || 1}`;
+      const slotKey    = `day${slot.day}_vi${slot.videoIndex || 1}`;
       const outputPath = `/tmp/vly_video_${calendar._id}_${slotKey}_${Date.now()}.mp4`;
       let   audioPath  = null;
-      console.log(`[AutoPost] Starting: "${slot.title}" (${slot.type}) for ${channel.channelName}`);
+      console.log(`[AutoPost] ── Starting slot: "${slot.title}" | type: ${slot.type} | date: ${slot.date || slot.scheduledDate} | channel: ${channel.channelName}`);
 
       // Mark in-progress
       await col.updateOne(
@@ -2674,42 +2681,51 @@ async function runAutoPostPipeline() {
       ).catch(() => {});
 
       try {
-        // 1. Script
-        const script = await pipelineGenerateScript(slot.title, calendar.nicheName || user.nicheName || '', slot.type);
-        console.log(`[AutoPost] Script generated (${script.length} chars)`);
+        // Step 1 — Script generation
+        const nicheName = calendar.nicheName || user.nicheName || '';
+        console.log(`[AutoPost] Step 1/5 — Generating script via OpenAI (title: "${slot.title}", niche: "${nicheName}", type: ${slot.type})…`);
+        const script = await pipelineGenerateScript(slot.title, nicheName, slot.type);
+        console.log(`[AutoPost] Step 1/5 — Script ready: ${script.length} chars, ~${Math.round(script.split(' ').length / 130)} min read`);
 
-        // 2. Voiceover
+        // Step 2 — Voiceover
+        console.log(`[AutoPost] Step 2/5 — Generating voiceover via Google TTS (userId: ${calendar.userId})…`);
         audioPath = await pipelineGenerateVoiceover(script, String(calendar.userId));
-        console.log(`[AutoPost] Voiceover saved: ${audioPath}`);
+        console.log(`[AutoPost] Step 2/5 — Voiceover saved: ${audioPath}`);
 
-        // 3. Pexels footage
+        // Step 3 — Pexels footage
+        console.log(`[AutoPost] Step 3/5 — Fetching Pexels footage (query: "${slot.title.slice(0, 60)}")…`);
         const footage = await pipelineFetchFootage(slot.title);
-        console.log(`[AutoPost] Footage fetched: ${footage.url.slice(0, 60)}…`);
+        console.log(`[AutoPost] Step 3/5 — Footage fetched: ${footage.url.slice(0, 80)}… (${footage.width || '?'}x${footage.height || '?'})`);
 
-        // 4. Assemble
+        // Step 4 — Assemble
+        console.log(`[AutoPost] Step 4/5 — Assembling video → ${outputPath}`);
         await pipelineAssembleVideo(footage.url, audioPath, outputPath);
-        console.log(`[AutoPost] Video assembled: ${outputPath}`);
+        console.log(`[AutoPost] Step 4/5 — Video assembled: ${outputPath}`);
 
-        // 5. YouTube upload
+        // Step 5 — YouTube upload
+        console.log(`[AutoPost] Step 5/5 — Uploading to YouTube channel "${channel.channelName}" (${channel.channelId})…`);
         const ytId = await pipelineUploadToYouTube(outputPath, slot.title, script, channel);
-        console.log(`[AutoPost] Uploaded → youtu.be/${ytId}`);
+        console.log(`[AutoPost] Step 5/5 — Upload complete → https://youtu.be/${ytId}`);
 
-        // 6. Mark posted
+        // Mark posted
+        const postedAt = new Date().toISOString();
         await col.updateOne(
           { _id: calendar._id },
           { $set: {
             'slots.$[s].status':          'posted',
             'slots.$[s].posted':          true,
-            'slots.$[s].postedAt':        new Date().toISOString(),
+            'slots.$[s].postedAt':        postedAt,
             'slots.$[s].youtubeVideoId':  ytId,
             'slots.$[s].pipelineStatus':  'posted',
           }},
           { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
         );
         processed++;
+        console.log(`[AutoPost] ✓ Marked as posted — "${slot.title}" | youtubeVideoId: ${ytId} | postedAt: ${postedAt}`);
 
       } catch (err) {
-        console.error(`[AutoPost] Failed "${slot.title}": ${err.message}`);
+        console.error(`[AutoPost] ✗ Failed "${slot.title}" at step — ${err.message}`);
+        console.error(`[AutoPost] Stack: ${err.stack?.split('\n').slice(0, 3).join(' | ')}`);
         await col.updateOne(
           { _id: calendar._id },
           { $set: {
@@ -2724,7 +2740,7 @@ async function runAutoPostPipeline() {
       }
     }
   }
-  console.log(`[AutoPost] Cycle complete — ${processed} video(s) posted`);
+  console.log(`[AutoPost] Cycle complete — ${processed} video(s) posted this run`);
 }
 
 // Topic Scout — searches YouTube for trending videos in a niche (last 7 days, ordered by viewCount).
@@ -2907,6 +2923,22 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
   }
   console.log(`[WeeklyOpt] Complete — ${refreshed}/${calendars.length} calendar(s) refreshed`);
 }
+
+// POST /api/content/trigger-post — dev-only manual trigger for the auto-post pipeline.
+// Immediately runs the pipeline for the next approved due slot without waiting for cron.
+app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_TRIGGER_POST !== 'true') {
+    return res.status(403).json({ error: 'Manual trigger disabled in production. Set ALLOW_TRIGGER_POST=true to enable.' });
+  }
+  console.log(`[AutoPost] Manual trigger fired by user ${req.user.id}`);
+  try {
+    await runAutoPostPipeline();
+    res.json({ success: true, message: 'Pipeline run complete — check server logs for details' });
+  } catch (err) {
+    console.error('[AutoPost] Manual trigger error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Hourly auto-posting scheduler
 cron.schedule('0 * * * *', async () => {
