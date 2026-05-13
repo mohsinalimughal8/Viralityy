@@ -1177,12 +1177,14 @@ Strategy: Generate titles that build on what worked. Use similar hooks, formats,
           role: 'user',
           content: `YouTube Shorts content strategist for a "${nicheName}" channel.
 ${perfContext}${usedList}
-Generate exactly ${batchCount} NEW, completely unique Short video titles (under 60 chars each).
-Vary the style across: hook, story, tutorial, listicle, myth-bust.
-Each title must be specific, compelling, and cover a DIFFERENT concept.
-Never repeat any previously used title or concept listed above.
+Generate exactly ${batchCount} NEW Short video titles (under 60 chars each).
+STRICT RULES:
+- Every title must cover a completely different concept — no overlapping topics or angles.
+- Vary style: hook, story, tutorial, listicle, myth-bust. Use each style at least once.
+- Never reuse a concept, phrase, or idea from the "Already used" list above.
+- Output exactly ${batchCount} titles — no more, no fewer.
 
-Return JSON: { "titles": [${batchCount} strings] }`,
+Return JSON: { "titles": [array of exactly ${batchCount} unique strings] }`,
         }],
         temperature: 0.9,
         response_format: { type: 'json_object' },
@@ -1190,8 +1192,39 @@ Return JSON: { "titles": [${batchCount} strings] }`,
 
       let parsed;
       try { parsed = JSON.parse(batchRes.choices[0].message.content); } catch { parsed = {}; }
-      const batchTitles = parsed.titles || [];
+      const batchTitles = (parsed.titles || []).slice(0, batchCount);
       allShortTitles.push(...batchTitles);
+    }
+
+    // --- Dedup short titles: find any title appearing more than once, regenerate them ---
+    {
+      const seen = new Set();
+      const dupeIdx = [];
+      for (let i = 0; i < allShortTitles.length; i++) {
+        const key = (allShortTitles[i] || '').trim().toLowerCase();
+        if (key && !seen.has(key)) { seen.add(key); }
+        else { dupeIdx.push(i); }
+      }
+      if (dupeIdx.length > 0) {
+        console.log(`[ContentCalendar] ${dupeIdx.length} duplicate short title(s) detected — regenerating`);
+        const goodTitles = allShortTitles.filter((_, i) => !dupeIdx.includes(i));
+        try {
+          const regenRes = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content:
+              `YouTube Shorts content strategist for a "${nicheName}" channel.
+Generate exactly ${dupeIdx.length} REPLACEMENT Short video titles (under 60 chars each).
+Each must cover a completely different concept from every title already used:
+${goodTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+Return JSON: { "titles": [${dupeIdx.length} strings] }` }],
+            temperature: 0.95,
+            response_format: { type: 'json_object' },
+          });
+          const rp = JSON.parse(regenRes.choices[0].message.content);
+          (rp.titles || []).forEach((t, i) => { if (t && dupeIdx[i] != null) allShortTitles[dupeIdx[i]] = t; });
+          console.log(`[ContentCalendar] Replaced ${(rp.titles || []).length} duplicate(s)`);
+        } catch { /* replaced slots will use per-slot fallback titles */ }
+      }
     }
 
     // --- Generate long-form titles (separate call if needed) ---
@@ -1218,6 +1251,32 @@ Return JSON: { "titles": [${totalLongForm} strings] }`,
         const p = JSON.parse(lfRes.choices[0].message.content);
         allLongFormTitles = p.titles || [];
       } catch { /* use fallbacks below */ }
+
+      // --- Dedup long-form titles ---
+      const lfSeen = new Set(allShortTitles.map(t => t.trim().toLowerCase()));
+      const lfDupeIdx = [];
+      for (let i = 0; i < allLongFormTitles.length; i++) {
+        const key = (allLongFormTitles[i] || '').trim().toLowerCase();
+        if (key && !lfSeen.has(key)) { lfSeen.add(key); }
+        else { lfDupeIdx.push(i); }
+      }
+      if (lfDupeIdx.length > 0) {
+        console.log(`[ContentCalendar] ${lfDupeIdx.length} duplicate long-form title(s) detected — regenerating`);
+        try {
+          const lfRegenRes = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content:
+              `YouTube long-form content strategist for a "${nicheName}" channel.
+Generate exactly ${lfDupeIdx.length} REPLACEMENT Long-form video titles (60–100 chars each).
+Each must be unique — different from all already-used titles.
+Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
+            temperature: 0.95,
+            response_format: { type: 'json_object' },
+          });
+          const lfrp = JSON.parse(lfRegenRes.choices[0].message.content);
+          (lfrp.titles || []).forEach((t, i) => { if (t && lfDupeIdx[i] != null) allLongFormTitles[lfDupeIdx[i]] = t; });
+        } catch { /* fallbacks applied during slot build */ }
+      }
     }
 
     // --- Build one slot per individual video ---
