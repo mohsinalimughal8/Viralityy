@@ -3029,29 +3029,80 @@ Return valid JSON:
   }
 }
 
-// Step 2 — Generate voiceover via Google Cloud TTS (uses GEMINI_API_KEY)
+// Step 2 — Generate voiceover via Gemini 2.5 Flash TTS
+// Returns path to a WAV file ready for the ffmpeg assembly step.
 async function pipelineGenerateVoiceover(script, userId) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_TTS_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured for TTS');
-  const res = await fetch(
-    `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
-    {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        input:       { text: script.slice(0, 5000) },
-        voice:       { languageCode: 'en-US', name: 'en-US-Neural2-D', ssmlGender: 'MALE' },
-        audioConfig: { audioEncoding: 'MP3', speakingRate: 1.05 },
-      }),
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY not configured for Gemini TTS');
+
+  const { GoogleGenerativeAI } = require('@google/generative-ai');
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-tts' });
+
+  const prompt = [
+    'Speak in an engaging, clear, and energetic YouTube narrator style. Keep pace natural and enthusiastic.',
+    '',
+    script.slice(0, 5000),
+  ].join('\n');
+
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+          },
+        },
+      });
+
+      const part = result.response.candidates?.[0]?.content?.parts?.[0];
+      if (!part?.inlineData?.data) {
+        const blockReason = result.response.promptFeedback?.blockReason;
+        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini TTS returned no audio data');
+      }
+
+      const rawBuf   = Buffer.from(part.inlineData.data, 'base64');
+      const mimeType = part.inlineData.mimeType || '';
+      // Gemini returns raw PCM (audio/pcm) — wrap in WAV container; pass through if already WAV
+      const wavBuf   = mimeType.includes('wav') ? rawBuf : _pcmToWav(rawBuf, 24000, 1, 16);
+      const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.wav`;
+      require('fs').writeFileSync(audioPath, wavBuf);
+      console.log(`[Voiceover] ✓ ${audioPath} — ${Math.round(wavBuf.length / 1024)} KB (attempt ${attempt}/3)`);
+      return audioPath;
+
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[Voiceover] Attempt ${attempt}/3 failed: ${err.message}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
     }
-  );
-  const data = await res.json();
-  if (!data.audioContent) {
-    throw new Error(data.error?.message || `TTS API returned no audio (status ${res.status})`);
   }
-  const audioPath = `/tmp/vly_audio_${userId}_${Date.now()}.mp3`;
-  require('fs').writeFileSync(audioPath, Buffer.from(data.audioContent, 'base64'));
-  return audioPath;
+  throw new Error(`Voiceover failed after 3 attempts: ${lastErr.message}`);
+}
+
+// Wraps raw signed-16-bit PCM data in a standard WAV container
+function _pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const byteRate   = sampleRate * blockAlign;
+  const dataSize   = pcmData.length;
+  const buf        = Buffer.alloc(44 + dataSize);
+  buf.write('RIFF', 0);                          // ChunkID
+  buf.writeUInt32LE(36 + dataSize, 4);           // ChunkSize
+  buf.write('WAVE', 8);                          // Format
+  buf.write('fmt ', 12);                         // Subchunk1ID
+  buf.writeUInt32LE(16, 16);                     // Subchunk1Size (PCM)
+  buf.writeUInt16LE(1, 20);                      // AudioFormat 1 = PCM
+  buf.writeUInt16LE(numChannels, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(byteRate, 28);
+  buf.writeUInt16LE(blockAlign, 32);
+  buf.writeUInt16LE(bitsPerSample, 34);
+  buf.write('data', 36);                         // Subchunk2ID
+  buf.writeUInt32LE(dataSize, 40);               // Subchunk2Size
+  pcmData.copy(buf, 44);
+  return buf;
 }
 
 // Step 3 — Fetch portrait stock footage from Pexels
