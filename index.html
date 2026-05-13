@@ -860,11 +860,11 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     </div>
   </div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Total views</p><p class="sc-value">284K</p><p class="sc-sub green">↑ 18% this week</p></div>
-    <div class="stat-card"><p class="sc-label">Subscribers</p><p class="sc-value">18.2K</p><p class="sc-sub green">↑ 342 this week</p></div>
-    <div class="stat-card"><p class="sc-label">Videos posted</p><p class="sc-value">47</p><p class="sc-sub">This month</p></div>
-    <div class="stat-card"><p class="sc-label">Avg quality score</p><p class="sc-value">94%</p><p class="sc-sub green">↑ 3pts from last week</p></div>
-    <div class="stat-card"><p class="sc-label">Preview queue</p><p class="sc-value">3</p><p class="sc-sub" style="color:var(--amber)">3 awaiting review</p></div>
+    <div class="stat-card"><p class="sc-label">Total views</p><p class="sc-value" id="ov-views">—</p><p class="sc-sub" id="ov-views-sub">Channel lifetime</p></div>
+    <div class="stat-card"><p class="sc-label">Subscribers</p><p class="sc-value" id="ov-subs">—</p><p class="sc-sub" id="ov-subs-sub">YouTube channel</p></div>
+    <div class="stat-card"><p class="sc-label">Videos posted</p><p class="sc-value" id="ov-posted">—</p><p class="sc-sub">This month</p></div>
+    <div class="stat-card"><p class="sc-label">Avg quality score</p><p class="sc-value" id="ov-quality">—</p><p class="sc-sub">AI scored</p></div>
+    <div class="stat-card"><p class="sc-label">Preview queue</p><p class="sc-value" id="ov-queue">—</p><p class="sc-sub" id="ov-queue-sub" style="color:var(--amber)">Awaiting review</p></div>
   </div>
   <div class="grid2">
     <div class="card-block">
@@ -1512,49 +1512,118 @@ async function initDashboard() {
 // OVERVIEW — live stats from /api/agents/status
 // ════════════════════════════════════════════
 async function initOverview() {
-  // Load agent status and analytics in parallel
-  const [status, analytics, preview, alertData] = await Promise.all([
+  const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+
+  const [status, ytAnalytics, preview, alertData, calData, qualData] = await Promise.all([
     apiCall('/api/agents/status'),
-    apiCall('/api/analytics/videos'),
-    apiCall('/api/agents/preview/queue'),
-    apiCall('/api/agents/competitor/alerts'),
+    apiCall('/api/analytics').catch(() => null),
+    apiCall('/api/agents/preview/queue').catch(() => null),
+    apiCall('/api/agents/competitor/alerts').catch(() => null),
+    apiCall('/api/agents/planner/calendar').catch(() => null),
+    apiCall('/api/quality/scores').catch(() => null),
   ]);
 
-  // Overview stats — real data
-  const videos   = analytics?.videos || [];
-  const totalViews = videos.reduce((s, v) => s + (v.viewCount || 0), 0);
-  const totalLikes = videos.reduce((s, v) => s + (v.likeCount || 0), 0);
+  // ── Stat cards (ID-targeted, no fragile index approach) ──
+  const ytStats    = ytAnalytics?.stats || {};
   const queueCount = preview?.queue?.length || preview?.videos?.length || 0;
   const alertCount = (alertData?.alerts || []).filter(a => !a.read).length;
 
-  // Update sidebar badges
+  // Total views — YouTube channel lifetime total
+  if (ytStats.totalViews > 0) {
+    setEl('ov-views', _fmtViews(ytStats.totalViews));
+    setEl('ov-views-sub', ytAnalytics.channelName || 'Channel lifetime');
+  }
+
+  // Subscribers
+  if (ytStats.totalSubs > 0) {
+    setEl('ov-subs', _fmtViews(ytStats.totalSubs));
+    setEl('ov-subs-sub', 'Total subscribers');
+  }
+
+  // Videos posted — from calendar slots marked posted
+  const slots       = calData?.slots || [];
+  const postedCount = slots.filter(s => s.status === 'posted').length;
+  setEl('ov-posted', postedCount || '—');
+
+  // Avg quality score
+  const avgQ = qualData?.stats?.avg;
+  if (avgQ != null) {
+    setEl('ov-quality', avgQ + '%');
+  }
+
+  // Preview queue
+  setEl('ov-queue', queueCount || '0');
+  const qSubEl = document.getElementById('ov-queue-sub');
+  if (qSubEl) {
+    qSubEl.textContent   = queueCount > 0 ? queueCount + ' awaiting review' : 'All clear';
+    qSubEl.style.color   = queueCount > 0 ? 'var(--amber)' : '';
+  }
+
+  // ── Sidebar badges ──
   const badgePreview = document.getElementById('badge-preview');
   const badgeComp    = document.getElementById('badge-competitors');
   if (badgePreview) badgePreview.textContent = queueCount;
   if (badgeComp)    badgeComp.textContent    = alertCount;
 
-  const statVals = document.querySelectorAll('.sc-value');
-  const statSubs = document.querySelectorAll('.sc-sub');
-  if (statVals[0]) statVals[0].textContent = totalViews > 0 ? totalViews.toLocaleString() : '—';
-  if (statVals[1]) statVals[1].textContent = '—';   // subscribers — needs YouTube Analytics API
-  if (statVals[2]) statVals[2].textContent = videos.length || '—';
-  if (statVals[3]) statVals[3].textContent = '—';   // quality score — needs pipeline data
-  if (statVals[4]) { statVals[4].textContent = queueCount; }
-  if (statSubs[4]) { statSubs[4].textContent = queueCount + ' awaiting review'; statSubs[4].style.color = queueCount > 0 ? 'var(--amber)' : ''; }
-
-  // Agent status in activity feed
+  // ── Activity feed — agent statuses ──
   const actList = document.getElementById('activity-list');
   if (actList && status?.agents) {
-    const rows = Object.entries(status.agents).map(([k,v]) =>
+    const rows = Object.entries(status.agents).map(([k, v]) =>
       `<div class="act-row">
-        <div class="act-dot" style="background:${v.enabled?'var(--green)':'var(--text3)'}"></div>
-        <span class="act-text">${v.name||k} — ${v.status||'unknown'}</span>
+        <div class="act-dot" style="background:${v.enabled ? 'var(--green)' : 'var(--text3)'}"></div>
+        <span class="act-text">${v.name || k} — ${v.status || 'unknown'}</span>
         <span class="act-time">${v.enabled ? 'active' : 'off'}</span>
       </div>`
     ).join('');
     actList.innerHTML = rows || '<div class="act-row"><span class="act-text" style="color:var(--text3)">No agent data yet</span></div>';
   } else if (actList) {
     actList.innerHTML = '<div class="act-row"><span class="act-text" style="color:var(--text3)">Connecting to agents…</span></div>';
+  }
+
+  // ── Top video card ──
+  const topVideoEl = document.getElementById('top-video-card');
+  if (topVideoEl) {
+    const topVid = (ytAnalytics?.topVideos || [])[0];
+    if (topVid) {
+      const eng = topVid.viewCount ? ((topVid.likeCount / topVid.viewCount) * 100).toFixed(1) : 0;
+      topVideoEl.innerHTML = `
+        <p style="font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:.35rem;line-height:1.4">${topVid.title || 'Untitled'}</p>
+        <div style="display:flex;gap:12px;margin-top:.4rem">
+          <span style="font-size:.72rem;color:var(--green)">${_fmtViews(topVid.viewCount)} views</span>
+          <span style="font-size:.72rem;color:var(--text3)">${eng}% engagement</span>
+        </div>`;
+    } else {
+      topVideoEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No video data yet — posts after your first video goes live.</p>';
+    }
+  }
+
+  // ── Content calendar — next 7 upcoming slots ──
+  const calEl = document.getElementById('overview-calendar');
+  if (calEl) {
+    const today    = new Date().toISOString().slice(0, 10);
+    const upcoming = slots
+      .filter(s => s.status !== 'posted' && s.status !== 'skipped' && (s.date || '') >= today)
+      .sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1)
+      .slice(0, 7);
+
+    if (!slots.length) {
+      calEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No calendar yet. <a onclick="dashPage('planner',document.querySelector('[onclick*=planner]'))" style="color:#a5b4fc;cursor:pointer">Generate your content calendar →</a></p>`;
+    } else if (!upcoming.length) {
+      calEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">All slots posted or skipped. <a onclick="dashPage('planner',document.querySelector('[onclick*=planner]'))" style="color:#a5b4fc;cursor:pointer">Regenerate calendar →</a></p>`;
+    } else {
+      calEl.innerHTML = upcoming.map(s => {
+        const dateStr = s.date ? new Date(s.date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : `Day ${s.day}`;
+        const typeCol = s.type === 'Long-form' ? 'var(--amber)' : 'var(--purple)';
+        const badge   = `<span style="font-size:.62rem;background:${s.type==='Long-form'?'rgba(245,158,11,.12)':'rgba(99,102,241,.12)'};color:${typeCol};border-radius:4px;padding:1px 6px;border:1px solid ${s.type==='Long-form'?'rgba(245,158,11,.2)':'rgba(99,102,241,.2)'}">${s.type === 'Long-form' ? 'Long' : 'Short'}</span>`;
+        const statusDot = s.status === 'approved' ? '🟢' : s.status === 'planned' ? '🔵' : '⚪';
+        return `<div style="display:flex;align-items:center;gap:.65rem;padding:.5rem 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:.68rem;color:var(--text3);min-width:64px;flex-shrink:0">${dateStr}</span>
+          ${badge}
+          <span style="font-size:.76rem;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.title || 'Untitled'}</span>
+          <span style="font-size:.75rem">${statusDot}</span>
+        </div>`;
+      }).join('');
+    }
   }
 }
 
