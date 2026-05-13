@@ -50,6 +50,10 @@ const FEATURES = {
   affiliateProgram:    true,
   analyticsCollection: true,
 
+  // ── Now active ───────────────────────────────────────────────────────────
+  voiceover: true,   // Google Cloud TTS via GEMINI_API_KEY
+  preview:   true,   // Preview Engine — approval queue before posting
+
   // ── Shelved — requires paid subscriptions at scale ────────────────────────
   // Twitter paid tiers above Basic, Reddit enterprise for commercial use
   // Enable when ready: set FEATURE_TREND_SCRAPER=true in Railway env vars
@@ -3029,16 +3033,24 @@ Return valid JSON:
 async function pipelineGenerateVoiceover(script, userId) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_TTS_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY not configured for TTS');
-  const res = await axios.post(
+  const res = await fetch(
     `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
     {
-      input:       { text: script.slice(0, 5000) },
-      voice:       { languageCode: 'en-US', name: 'en-US-Neural2-D', ssmlGender: 'MALE' },
-      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.05 },
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        input:       { text: script.slice(0, 5000) },
+        voice:       { languageCode: 'en-US', name: 'en-US-Neural2-D', ssmlGender: 'MALE' },
+        audioConfig: { audioEncoding: 'MP3', speakingRate: 1.05 },
+      }),
     }
   );
+  const data = await res.json();
+  if (!data.audioContent) {
+    throw new Error(data.error?.message || `TTS API returned no audio (status ${res.status})`);
+  }
   const audioPath = `/tmp/vly_audio_${userId}_${Date.now()}.mp3`;
-  require('fs').writeFileSync(audioPath, Buffer.from(res.data.audioContent, 'base64'));
+  require('fs').writeFileSync(audioPath, Buffer.from(data.audioContent, 'base64'));
   return audioPath;
 }
 
@@ -3046,15 +3058,20 @@ async function pipelineGenerateVoiceover(script, userId) {
 async function pipelineFetchFootage(query) {
   const apiKey = process.env.PEXELS_API_KEY;
   if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
-  const res = await axios.get('https://api.pexels.com/videos/search', {
-    headers: { Authorization: apiKey },
-    params:  { query: query.slice(0, 100), per_page: 5, orientation: 'portrait' },
+  const params = new URLSearchParams({
+    query:       query.slice(0, 100),
+    per_page:    '5',
+    orientation: 'portrait',
   });
-  const videos = (res.data.videos || []);
+  const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
+    headers: { Authorization: apiKey },
+  });
+  const data   = await res.json();
+  const videos = data.videos || [];
   if (!videos.length) throw new Error(`No Pexels footage found for: ${query}`);
-  const video  = videos[0];
-  const file   = (video.video_files || []).find(f => f.quality === 'hd') ||
-                 (video.video_files || [])[0];
+  const video = videos[0];
+  const file  = (video.video_files || []).find(f => f.quality === 'hd') ||
+                (video.video_files || [])[0];
   if (!file?.link) throw new Error('No usable Pexels video file');
   return { url: file.link, duration: video.duration };
 }
@@ -3079,18 +3096,23 @@ async function pipelineAssembleVideo(footageUrl, audioPath, outputPath) {
 
 // Step 5 — Refresh a YouTube OAuth access token and persist to MongoDB
 async function pipelineRefreshToken(channel) {
-  const res = await axios.post('https://oauth2.googleapis.com/token', {
-    client_id:     process.env.YOUTUBE_CLIENT_ID,
-    client_secret: process.env.YOUTUBE_CLIENT_SECRET,
-    refresh_token: channel.refreshToken,
-    grant_type:    'refresh_token',
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      client_id:     process.env.YOUTUBE_CLIENT_ID,
+      client_secret: process.env.YOUTUBE_CLIENT_SECRET,
+      refresh_token: channel.refreshToken,
+      grant_type:    'refresh_token',
+    }),
   });
-  const newToken = res.data.access_token;
+  const data = await res.json();
+  if (!data.access_token) throw new Error(data.error_description || 'Token refresh failed');
   await User.updateOne(
     { 'youtubeChannels.channelId': channel.channelId },
-    { $set: { 'youtubeChannels.$.accessToken': newToken } }
+    { $set: { 'youtubeChannels.$.accessToken': data.access_token } }
   );
-  return newToken;
+  return data.access_token;
 }
 
 // Step 6 — Upload assembled video to YouTube
