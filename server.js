@@ -2727,6 +2727,33 @@ async function runAutoPostPipeline() {
   console.log(`[AutoPost] Cycle complete — ${processed} video(s) posted`);
 }
 
+// Topic Scout — searches YouTube for trending videos in a niche (last 7 days, ordered by viewCount).
+// Returns top 10 video titles to seed the calendar generation prompt with fresh trends.
+// Runs silently as part of the Monday cron job — no API route exposed.
+async function scoutTrendingTopics(nicheName) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    console.log('[TopicScout] Skipping — YOUTUBE_API_KEY not configured');
+    return [];
+  }
+  try {
+    const publishedAfter = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(nicheName)}&order=viewCount&type=video&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=10&key=${apiKey}`;
+    const ytRes = await fetch(url);
+    if (!ytRes.ok) {
+      console.warn(`[TopicScout] YouTube API returned ${ytRes.status} for "${nicheName}"`);
+      return [];
+    }
+    const data   = await ytRes.json();
+    const topics = (data.items || []).map(item => item.snippet?.title || '').filter(Boolean);
+    console.log(`[TopicScout] Found ${topics.length} trending topics for "${nicheName}"`);
+    return topics;
+  } catch (err) {
+    console.warn('[TopicScout] Failed:', err.message);
+    return [];
+  }
+}
+
 // Weekly AI-optimised calendar regeneration — runs every Monday for all active calendars.
 // Fetches YouTube performance data, identifies top/bottom performers, then regenerates
 // the next 30 days of slots with AI-optimised prompts injecting that intelligence.
@@ -2753,6 +2780,12 @@ async function runWeeklyOptimizedCalendars() {
 
       const config  = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
       const insights = await analyzeChannelPerformance(calendar.userId, calendar.channelId, nicheName);
+
+      // Scout trending topics via YouTube Data API (last 7 days, ordered by viewCount)
+      const trendingTopics = await scoutTrendingTopics(nicheName);
+      const trendingContext = trendingTopics.length > 0
+        ? `\nTRENDING THIS WEEK in "${nicheName}":\n${trendingTopics.map((t, i) => `${i + 1}. ${t}`).join('\n')}\nGenerate video titles inspired by these trends but with fresh, unique angles — do not copy them verbatim.\n`
+        : '';
 
       // Build performance context (same logic as POST /api/content/calendar)
       let perfContext = '';
@@ -2799,7 +2832,7 @@ Strategy: Generate titles that build on what worked. Never repeat any of the abo
           model: 'gpt-4o-mini',
           messages: [{ role: 'user', content:
             `YouTube Shorts content strategist for a "${nicheName}" channel.
-${perfContext}${usedList}
+${perfContext}${trendingContext}${usedList}
 Generate exactly ${batchCount} NEW, completely unique Short video titles (under 60 chars each).
 Vary style: hook, story, tutorial, listicle, myth-bust. Never repeat any used concept.
 Return JSON: { "titles": [${batchCount} strings] }` }],
@@ -2821,7 +2854,7 @@ Return JSON: { "titles": [${batchCount} strings] }` }],
           model: 'gpt-4o-mini',
           messages: [{ role: 'user', content:
             `YouTube long-form content strategist for a "${nicheName}" channel.
-${perfContext}
+${perfContext}${trendingContext}
 Generate exactly ${longFormDates.length} unique Long-form video titles (60–100 chars each).
 In-depth, educational, distinct from Shorts. Build on top performers with deeper angles.
 Already used Shorts (do NOT overlap): ${allShortTitles.slice(0, 20).map((t, i) => `${i + 1}. ${t}`).join('; ')}
@@ -2856,6 +2889,7 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
         topPerformers:      insights?.topPerformers   || [],
         bottomPerformers:   insights?.bottomPerformers || [],
         titlePatterns:      insights?.titlePatterns   || null,
+        trendingTopics:     trendingTopics,
         generationStrategy: insights
           ? `AI-optimised: built on top ${insights.topPerformers.length} performer(s), avoided bottom ${insights.bottomPerformers.length}`
           : 'Standard generation — no prior performance data (first week)',
