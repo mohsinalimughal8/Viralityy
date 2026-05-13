@@ -2584,6 +2584,128 @@ app.post('/api/agents/preview/skip', requireAuth, async (req, res) => {
 
 // ── ANALYTICS ────────────────────────────────────────────────────────────────
 
+// GET /api/analytics — real YouTube channel analytics for last 30 days
+// Uses YouTube Data API v3 (channel stats + top videos) and attempts YouTube Analytics API
+// for daily views/watch time/subscribers (requires yt-analytics scope — falls back gracefully).
+app.get('/api/analytics', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    const channels = user.youtubeChannels || [];
+    const ch = channels.find(c => !c.paused && c.channelId) || channels[0];
+
+    if (!ch) return res.json({ success: true, noChannel: true });
+
+    // Resolve a working access token, refreshing if needed
+    const getToken = async () => {
+      const probe = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=id&mine=true`,
+        { headers: { Authorization: `Bearer ${ch.accessToken}` } }
+      );
+      if (probe.status !== 401) return ch.accessToken;
+
+      const refreshToken = ch.refreshToken || user.googleRefreshToken;
+      if (!refreshToken) return ch.accessToken;
+
+      const tokRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id:     process.env.YOUTUBE_CLIENT_ID,
+          client_secret: process.env.YOUTUBE_CLIENT_SECRET,
+          refresh_token: refreshToken,
+          grant_type:    'refresh_token',
+        }),
+      });
+      const tokData = await tokRes.json();
+      if (!tokData.access_token) return ch.accessToken;
+      await User.updateOne(
+        { 'youtubeChannels.channelId': ch.channelId },
+        { $set: { 'youtubeChannels.$.accessToken': tokData.access_token } }
+      ).catch(() => {});
+      return tokData.access_token;
+    };
+
+    const accessToken = await getToken();
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    const apiKey = process.env.YOUTUBE_API_KEY ? `&key=${process.env.YOUTUBE_API_KEY}` : '';
+
+    // 1. Channel-level statistics (total views, subscribers)
+    const chanRes  = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${ch.channelId}${apiKey}`,
+      { headers: auth }
+    );
+    const chanData = await chanRes.json();
+    const chanStats = chanData?.items?.[0]?.statistics || {};
+
+    // 2. Top 5 videos by view count in last 30 days
+    const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const searchRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${ch.channelId}&type=video&order=viewCount&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=10${apiKey}`,
+      { headers: auth }
+    );
+    const searchData = await searchRes.json();
+    const videoIds   = (searchData?.items || []).map(v => v.id?.videoId).filter(Boolean);
+
+    let topVideos = [];
+    if (videoIds.length) {
+      const vidRes  = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds.join(',')}${apiKey}`,
+        { headers: auth }
+      );
+      const vidData = await vidRes.json();
+      topVideos = (vidData?.items || [])
+        .map(v => ({
+          id:           v.id,
+          title:        v.snippet?.title || '',
+          publishedAt:  v.snippet?.publishedAt || '',
+          viewCount:    parseInt(v.statistics?.viewCount  || 0),
+          likeCount:    parseInt(v.statistics?.likeCount  || 0),
+          commentCount: parseInt(v.statistics?.commentCount || 0),
+        }))
+        .sort((a, b) => b.viewCount - a.viewCount)
+        .slice(0, 5);
+    }
+
+    // 3. YouTube Analytics API — 30-day daily breakdown (requires yt-analytics scope, may be unavailable)
+    let dailyViews       = [];
+    let watchTimeMinutes = null;
+    let subscribersGained = null;
+
+    try {
+      const endDate   = new Date().toISOString().slice(0, 10);
+      const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const analyticsRes = await fetch(
+        `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3D${ch.channelId}&startDate=${startDate}&endDate=${endDate}&metrics=views,estimatedMinutesWatched,subscribersGained&dimensions=day&sort=day`,
+        { headers: auth }
+      );
+      const analyticsData = await analyticsRes.json();
+      if (Array.isArray(analyticsData?.rows)) {
+        dailyViews        = analyticsData.rows.map(r => ({ date: r[0], views: parseInt(r[1] || 0) }));
+        watchTimeMinutes  = analyticsData.rows.reduce((a, r) => a + (parseInt(r[2] || 0)), 0);
+        subscribersGained = analyticsData.rows.reduce((a, r) => a + (parseInt(r[3] || 0)), 0);
+      }
+    } catch (_) { /* Analytics API unavailable */ }
+
+    const totalViews = parseInt(chanStats.viewCount || 0);
+    const totalSubs  = parseInt(chanStats.subscriberCount || 0);
+    const avgViews   = topVideos.length
+      ? Math.round(topVideos.reduce((a, v) => a + v.viewCount, 0) / topVideos.length)
+      : null;
+
+    res.json({
+      success: true,
+      channelName: ch.channelName,
+      channelId:   ch.channelId,
+      stats: { totalViews, totalSubs, watchTimeMinutes, subscribersGained, avgViews },
+      topVideos,
+      dailyViews,
+    });
+  } catch (err) {
+    console.error('[Analytics] GET /api/analytics error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/analytics/videos
 // Returns posted video performance data for the logged-in user
 app.get('/api/analytics/videos', requireAuth, async (req, res) => {

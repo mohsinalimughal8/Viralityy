@@ -929,24 +929,41 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── ANALYTICS ── -->
 <div class="dash-page" id="dp-analytics">
-  <div class="dash-topbar"><div><p class="ph">Analytics</p><p class="ps">Video performance across your channels</p></div>
-    <div style="display:flex;gap:7px">
-      <select style="background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-size:.75rem;padding:6px 10px;border-radius:7px;outline:none"><option>All videos</option><option>This week</option><option>This month</option></select>
-      <select style="background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-size:.75rem;padding:6px 10px;border-radius:7px;outline:none"><option>Sort: views</option><option>Sort: likes</option><option>Sort: engagement</option></select>
+  <div class="dash-topbar"><div><p class="ph">Analytics</p><p class="ps" id="anal-subtitle">Last 30 days</p></div>
+    <button class="btn btn-ghost btn-sm" onclick="refreshAnalytics()">Refresh</button>
+  </div>
+
+  <!-- Loading state -->
+  <div id="anal-loading" style="padding:3rem;text-align:center">
+    <p style="font-size:.82rem;color:var(--text3)">Loading analytics…</p>
+  </div>
+
+  <!-- No channel connected -->
+  <div id="anal-no-channel" style="display:none;padding:3rem 1rem;text-align:center">
+    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="1.5" style="margin-bottom:1rem"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 0 0 1.46 6.42 29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
+    <p style="font-size:.88rem;font-weight:600;color:var(--text);margin-bottom:.35rem">Connect your YouTube channel to see analytics</p>
+    <p style="font-size:.75rem;color:var(--text3);margin-bottom:1.1rem">Sign in with Google to pull live views, watch time and subscriber data.</p>
+    <button class="btn btn-primary btn-sm" onclick="window.location.href=API_BASE+'/auth/google'">Connect YouTube</button>
+  </div>
+
+  <!-- Main content -->
+  <div id="anal-content" style="display:none">
+    <div class="stats-row">
+      <div class="stat-card"><p class="sc-label">Total views</p><p class="sc-value" id="anal-views">—</p><p class="sc-sub" id="anal-views-sub">Channel lifetime</p></div>
+      <div class="stat-card"><p class="sc-label">Watch time</p><p class="sc-value" id="anal-watchtime">—</p><p class="sc-sub" id="anal-wt-sub">Last 30 days</p></div>
+      <div class="stat-card"><p class="sc-label">Subscribers gained</p><p class="sc-value" id="anal-subs">—</p><p class="sc-sub" id="anal-subs-sub">Last 30 days</p></div>
+      <div class="stat-card"><p class="sc-label">Avg views / video</p><p class="sc-value" id="anal-avgviews">—</p><p class="sc-sub">Top videos this month</p></div>
     </div>
-  </div>
-  <div class="stats-row" style="margin-bottom:1.25rem">
-    <div class="stat-card"><p class="sc-label">Total views</p><p class="sc-value">284K</p><p class="sc-sub green">↑ 18%</p></div>
-    <div class="stat-card"><p class="sc-label">Total likes</p><p class="sc-value">21.4K</p><p class="sc-sub green">7.5% rate</p></div>
-    <div class="stat-card"><p class="sc-label">Comments</p><p class="sc-value">4.2K</p><p class="sc-sub green">↑ 24%</p></div>
-    <div class="stat-card"><p class="sc-label">Good performers</p><p class="sc-value">31</p><p class="sc-sub">of 47 videos</p></div>
-  </div>
-  <div class="card-block full">
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Title</th><th>Views</th><th>Likes</th><th>Engagement</th><th>Performance</th><th>Posted</th></tr></thead>
-        <tbody id="analytics-tbody"></tbody>
-      </table>
+    <div class="card-block full" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.65rem">
+        <h4 style="margin:0">Daily views — last 30 days</h4>
+        <span style="font-size:.7rem;color:var(--text3)" id="anal-chart-note"></span>
+      </div>
+      <div id="anal-chart" style="display:flex;gap:3px;align-items:flex-end;height:90px"></div>
+    </div>
+    <div class="card-block full" style="margin-top:12px">
+      <h4>Top 5 videos this month</h4>
+      <div id="anal-top-videos" style="margin-top:.65rem"></div>
     </div>
   </div>
 </div>
@@ -1557,31 +1574,113 @@ async function initChannels() {
 }
 
 // ════════════════════════════════════════════
-// ANALYTICS — live from /api/analytics/videos
+// ANALYTICS — live from /api/analytics (YouTube Data API + Analytics API)
 // ════════════════════════════════════════════
-function perfColor(p){return p==='good'?'var(--green)':p==='average'?'var(--amber)':'var(--red)'}
+function _fmtViews(n) {
+  if (n == null) return '—';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function _fmtHours(mins) {
+  if (mins == null) return '—';
+  if (mins >= 60) return (mins / 60).toFixed(1) + 'h';
+  return mins + 'min';
+}
 async function initAnalytics() {
-  const tb = document.getElementById('analytics-tbody');
-  if (!tb) return;
-  tb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--text3)">Loading video analytics…</td></tr>';
-  const data = await apiCall('/api/analytics/videos');
-  const videos = data?.videos || [];
-  if (!videos.length) {
-    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--text3)">No videos yet — content calendar will generate your first video soon</td></tr>';
-    return;
+  const loadEl   = document.getElementById('anal-loading');
+  const noChEl   = document.getElementById('anal-no-channel');
+  const contentEl= document.getElementById('anal-content');
+  const chartEl  = document.getElementById('anal-chart');
+  const topEl    = document.getElementById('anal-top-videos');
+
+  if (loadEl)    loadEl.style.display    = 'block';
+  if (noChEl)    noChEl.style.display    = 'none';
+  if (contentEl) contentEl.style.display = 'none';
+
+  try {
+    const data = await apiCall('/api/analytics');
+
+    if (loadEl) loadEl.style.display = 'none';
+
+    if (data?.noChannel || !data?.success) {
+      if (noChEl) noChEl.style.display = 'block';
+      return;
+    }
+
+    if (contentEl) contentEl.style.display = 'block';
+
+    const s = data.stats || {};
+    const subtitleEl = document.getElementById('anal-subtitle');
+    if (subtitleEl) subtitleEl.textContent = `${data.channelName || 'Your channel'} — last 30 days`;
+
+    // Stat cards
+    const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    setEl('anal-views',    _fmtViews(s.totalViews));
+    setEl('anal-watchtime', _fmtHours(s.watchTimeMinutes));
+    setEl('anal-subs',     s.subscribersGained != null ? '+' + s.subscribersGained.toLocaleString() : '—');
+    setEl('anal-avgviews', _fmtViews(s.avgViews));
+
+    if (s.watchTimeMinutes == null) setEl('anal-wt-sub', 'Connect Analytics scope');
+    if (s.subscribersGained == null) setEl('anal-subs-sub', 'Connect Analytics scope');
+
+    // Daily views chart — 30-day CSS bar chart
+    if (chartEl) {
+      const daily = data.dailyViews || [];
+      if (!daily.length) {
+        // Fallback: build placeholder from top videos
+        chartEl.innerHTML = '<p style="font-size:.72rem;color:var(--text3);align-self:center">Daily breakdown requires YouTube Analytics scope — connect channel with analytics permissions to enable.</p>';
+        const noteEl = document.getElementById('anal-chart-note');
+        if (noteEl) noteEl.textContent = '';
+      } else {
+        const maxV = Math.max(...daily.map(d => d.views), 1);
+        chartEl.innerHTML = daily.map(d => {
+          const pct   = Math.max(Math.round((d.views / maxV) * 100), 2);
+          const label = d.date ? d.date.slice(5) : ''; // MM-DD
+          return `<div title="${d.date}: ${d.views.toLocaleString()} views" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:default">
+            <div style="width:100%;background:var(--purple);border-radius:3px 3px 0 0;height:${pct}%;opacity:.8"></div>
+            <span style="font-size:.42rem;color:var(--text3);writing-mode:vertical-rl;transform:rotate(180deg);max-height:28px;overflow:hidden">${label}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Top 5 videos
+    if (topEl) {
+      const videos = data.topVideos || [];
+      if (!videos.length) {
+        topEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">No videos posted in the last 30 days.</p>';
+      } else {
+        topEl.innerHTML = videos.map((v, i) => {
+          const eng = v.viewCount ? ((v.likeCount / v.viewCount) * 100).toFixed(1) : 0;
+          const pub = v.publishedAt ? new Date(v.publishedAt).toLocaleDateString('en-GB', { day:'numeric', month:'short' }) : '—';
+          const maxV = videos[0].viewCount || 1;
+          const barW = Math.max(Math.round((v.viewCount / maxV) * 100), 3);
+          return `<div style="padding:.65rem 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.75rem">
+            <span style="min-width:20px;height:20px;background:var(--purple);color:#fff;border-radius:50%;font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${i + 1}</span>
+            <div style="flex:1;min-width:0">
+              <p style="font-size:.78rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px">${v.title || 'Untitled'}</p>
+              <div style="height:4px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:4px">
+                <div style="width:${barW}%;height:100%;background:var(--purple);border-radius:3px;opacity:.7"></div>
+              </div>
+              <div style="display:flex;gap:12px">
+                <span style="font-size:.68rem;color:var(--text2)">${_fmtViews(v.viewCount)} views</span>
+                <span style="font-size:.68rem;color:var(--text3)">${eng}% eng.</span>
+                <span style="font-size:.68rem;color:var(--text3)">${pub}</span>
+              </div>
+            </div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+  } catch (err) {
+    console.error('[initAnalytics]', err);
+    if (loadEl)  loadEl.style.display  = 'none';
+    if (noChEl)  noChEl.style.display  = 'block';
+    const p = noChEl?.querySelector('p');
+    if (p) p.textContent = 'Could not load analytics — refresh to try again.';
   }
-  tb.innerHTML = videos.map(v => {
-    const engRate = v.likeCount && v.viewCount ? ((v.likeCount/v.viewCount)*100).toFixed(1)+'%' : '—';
-    const perf    = v.viewCount > 10000 ? 'good' : v.viewCount > 3000 ? 'average' : 'poor';
-    return `<tr>
-      <td title="${v.title}">${(v.title||'').length>40?(v.title||'').slice(0,40)+'…':(v.title||'—')}</td>
-      <td>${v.viewCount?.toLocaleString()||'—'}</td>
-      <td>${v.likeCount?.toLocaleString()||'—'}</td>
-      <td>${engRate}</td>
-      <td><div class="perf-bar"><div class="perf-fill" style="width:${perf==='good'?80:perf==='average'?50:25}%;background:${perfColor(perf)}"></div></div></td>
-      <td>${v.postedAt ? new Date(v.postedAt).toLocaleDateString() : '—'}</td>
-    </tr>`;
-  }).join('');
 }
 
 // ════════════════════════════════════════════
