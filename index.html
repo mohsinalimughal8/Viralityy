@@ -828,7 +828,6 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="sidebar-item" onclick="dashPage('analytics',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Analytics</div>
   <div class="sidebar-section">AI Agents</div>
   <div class="sidebar-item" onclick="dashPage('planner',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Content Planner</div>
-  <div class="sidebar-item" onclick="dashPage('scout',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Topic Scout</div>
   <div class="sidebar-item" onclick="dashPage('competitors',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Competitors <span class="s-badge" id="badge-competitors">2</span></div>
   <div class="sidebar-item" onclick="dashPage('research',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>Script Briefs</div>
   <div class="sidebar-section">Quality</div>
@@ -954,7 +953,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT PLANNER ── -->
 <div class="dash-page" id="dp-planner">
-  <div class="dash-topbar"><div><p class="ph">Content Planner</p><p class="ps">AI-generated 30-day video calendar for your niche</p></div><button class="btn btn-primary btn-sm" onclick="generateCalendar()">Regenerate calendar</button></div>
+  <div class="dash-topbar"><div><p class="ph">Content Planner</p><p class="ps">AI-generated 30-day video calendar for your niche</p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><button class="btn btn-primary btn-sm" onclick="generateCalendar()">Regenerate calendar</button></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Total slots</p><p class="sc-value" id="stat-planner-total">—</p><p class="sc-sub">This calendar</p></div>
     <div class="stat-card"><p class="sc-label">Posted</p><p class="sc-value" id="stat-planner-posted">—</p><p class="sc-sub green">On schedule</p></div>
@@ -967,19 +966,6 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   </div>
 </div>
 
-<!-- ── TOPIC SCOUT ── -->
-<div class="dash-page" id="dp-scout">
-  <div class="dash-topbar"><div><p class="ph">Daily Topic Scout</p><p class="ps">Trending topics found this morning in your niche</p></div><button class="btn btn-primary btn-sm" onclick="runScout()">Run scout now</button></div>
-  <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Topics found today</p><p class="sc-value" id="stat-scout-topics">—</p><p class="sc-sub green">Scouted 2h ago</p></div>
-    <div class="stat-card"><p class="sc-label">Pipeline queue</p><p class="sc-value" id="stat-scout-queue">—</p><p class="sc-sub" style="color:var(--amber)">Awaiting research</p></div>
-    <div class="stat-card"><p class="sc-label">Used in scripts</p><p class="sc-value" id="stat-scout-used">—</p><p class="sc-sub">This month</p></div>
-  </div>
-  <div class="card-block full">
-    <h4 style="margin-bottom:.85rem">Today's trending topics</h4>
-    <div id="scout-topics"></div>
-  </div>
-</div>
 
 <!-- ── COMPETITOR INTELLIGENCE ── -->
 <div class="dash-page" id="dp-competitors">
@@ -1445,7 +1431,6 @@ function dashPage(id, el) {
   if (id === 'analytics')   initAnalytics();
   if (id === 'preview')     initPreview();
   if (id === 'planner')     initPlanner();
-  if (id === 'scout')       initScout();
   if (id === 'research')    initResearch();
   if (id === 'overview')    initOverview();
   if (id === 'channels')    initChannels();
@@ -1737,7 +1722,16 @@ async function initPlanner() {
   const el = document.getElementById('planner-slots');
   if (!el) return;
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading calendar…</div>';
-  const data = await apiCall('/api/agents/planner/calendar');
+  const [data, insightsRes] = await Promise.all([
+    apiCall('/api/agents/planner/calendar'),
+    apiCall('/api/content/weekly-insights'),
+  ]);
+  const trendingCount = insightsRes?.weeklyInsights?.trendingTopics?.length || 0;
+  const statusEl = document.getElementById('planner-trending-status');
+  if (statusEl && trendingCount > 0) {
+    statusEl.textContent = `AI analysed ${trendingCount} trending topic${trendingCount === 1 ? '' : 's'} in your niche to generate this calendar`;
+    statusEl.style.display = 'block';
+  }
   const calArr = Array.isArray(data?.calendar) ? data.calendar : (data?.calendar?.slots || []);
   const slots  = data?.slots?.length ? data.slots : calArr;
   const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
@@ -1781,51 +1775,6 @@ async function generateCalendar() {
   }
 }
 
-// ════════════════════════════════════════════
-// TOPIC SCOUT — live from /api/agents/scout/topics
-// ════════════════════════════════════════════
-async function initScout() {
-  const el = document.getElementById('scout-topics');
-  if (!el) return;
-  el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading today&#39;s trending topics&#8230;</div>';
-  const [data, statusData] = await Promise.all([
-    apiCall('/api/agents/scout/topics'),
-    apiCall('/api/agents/status'),
-  ]);
-  const topics = data?.topics || [];
-  const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-  setStat('stat-scout-topics', topics.length);
-  setStat('stat-scout-queue',  statusData?.agents?.topicScout?.pipelineQueueDepth ?? '—');
-  setStat('stat-scout-used',   statusData?.agents?.scriptResearch?.pendingBriefs ?? '—');
-  if (!topics.length) {
-    el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
-      No topics yet — <button class="act act-ok" style="font-size:.72rem;margin-left:8px" onclick="runScout()">Run Topic Scout now</button>
-    </div>`;
-    return;
-  }
-  el.innerHTML = topics.map((t,i) => `
-    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:.9rem 1.1rem;margin-bottom:8px;display:flex;align-items:flex-start;gap:12px">
-      <div style="width:28px;height:28px;border-radius:7px;background:rgba(99,102,241,.1);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;color:#a5b4fc;flex-shrink:0">#${i+1}</div>
-      <div style="flex:1">
-        <p style="font-size:.82rem;font-weight:600;color:var(--text);margin-bottom:3px">${t.title||t.topic||'—'}</p>
-        <p style="font-size:.7rem;color:var(--text3);margin-bottom:5px">${t.viewCount ? t.viewCount.toLocaleString()+' views' : ''} ${t.trend||''}</p>
-        <div style="display:flex;gap:5px">
-          <button class="act act-ok" style="font-size:.67rem;padding:3px 9px" onclick="addToPipeline('${t._id||t.id||i}','${(t.title||t.topic||'').replace(/'/g,"\'")}')">Add to pipeline</button>
-          <button class="act" style="font-size:.67rem;padding:3px 9px" onclick="dismissTopic(this)">Dismiss</button>
-        </div>
-      </div>
-      <div style="text-align:right;flex-shrink:0">
-        <p style="font-size:1.1rem;font-weight:500;color:var(--text);line-height:1">${t.score ? Math.round(t.score*100) : t.momentumScore ? Math.round(t.momentumScore*100) : '—'}</p>
-        <p style="font-size:.62rem;color:var(--text3)">score</p>
-      </div>
-    </div>`).join('');
-}
-
-async function runScout() {
-  toast('Running Topic Scout — scanning YouTube for trends…', 'info');
-  await apiCall('/api/agents/scout/run', 'POST', {});
-  setTimeout(() => initScout(), 30000);
-}
 
 async function addToPipeline(id, title) {
   const data = await apiCall('/api/agents/research/brief', 'POST', { title });
@@ -1846,7 +1795,7 @@ async function initResearch() {
   const data = await apiCall('/api/agents/research/briefs');
   const briefs = data?.briefs || [];
   if (!briefs.length) {
-    el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No briefs yet — add topics from the Topic Scout to generate research briefs</div>';
+    el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No briefs yet — research briefs are generated automatically each week</div>';
     return;
   }
   el.innerHTML = briefs.map(b => `
