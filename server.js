@@ -2953,21 +2953,80 @@ app.get('/api/quality/scores', requireAuth, async (req, res) => {
 // =============================================================================
 
 // Step 1 — Generate video script via OpenAI
+// Step 1 — Generate viral-optimised script via OpenAI
+// Returns { title, script, hook, loopEnding, captions, hashtags, wordCount }
+// Shorts: structured JSON with hook rules, 60-80 word cap, caption segments, hashtags
+// Long-form: plain text wrapped in the same shape for a consistent call site
 async function pipelineGenerateScript(title, nicheName, type) {
   const { OpenAI } = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const isLong = type === 'Long-form';
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [{
-      role: 'user',
-      content: `Write a ${isLong ? '3–5 minute' : '45–60 second'} YouTube ${isLong ? '' : 'Shorts '}script for the video titled: "${title}".
-Niche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.
-Start with a strong hook sentence. End with a brief call-to-action.`,
-    }],
-    temperature: 0.8,
-  });
-  return completion.choices[0].message.content.trim();
+
+  if (type === 'Long-form') {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: `Write a 3–5 minute YouTube script for: "${title}".\nNiche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.\nStart with a strong hook. End with a clear call-to-action.` }],
+      temperature: 0.8,
+    });
+    const script = completion.choices[0].message.content.trim();
+    return { title, script, hook: '', loopEnding: '', captions: [], hashtags: [], wordCount: script.split(/\s+/).length };
+  }
+
+  // ── Shorts: viral-optimised structured JSON ──
+  const prompt = `You are a viral YouTube Shorts script writer for a "${nicheName}" channel.
+Write a viral-optimised Shorts script for the video: "${title}"
+
+STRICT RULES:
+1. HOOK (first 3 seconds): Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.
+2. LENGTH: Script must be 60-80 words total (hard limit — 20-30 seconds of speech). If you reach 100 words, stop.
+3. STRUCTURE: Hook (3 sec) → 3 rapid value points (15 sec) → Loop ending (5 sec). The LAST sentence MUST echo or reference the hook to create a rewatch loop.
+4. STYLE: Short punchy sentences only. Zero filler words (no "basically", "actually", "you know"). Every sentence adds new information.
+5. TITLE: Generate a viral title using power words. Format: "[Number] [Topic] That [Surprising Outcome]" OR "Why [Common Belief] Is Wrong" OR "The [Topic] Secret Nobody Tells You".
+6. HASHTAGS: Generate exactly 5 hashtags relevant to the ${nicheName} niche.
+7. CAPTIONS: Split the full script into caption segments — each segment MAX 4 words, estimated timestamps at ~2.5 words/sec pace.
+
+Return valid JSON only — no prose, no markdown:
+{
+  "title": "viral title here",
+  "script": "full spoken script, 60-80 words, no stage directions",
+  "wordCount": 72,
+  "hook": "the opening hook sentence only",
+  "loopEnding": "the last sentence that echoes the hook",
+  "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
+  "captions": [
+    {"text": "Did you know", "start": 0, "end": 1.6},
+    {"text": "most people fail", "start": 1.6, "end": 3.0}
+  ]
+}`;
+
+  let best = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await openai.chat.completions.create({
+        model:           'gpt-4o-mini',
+        messages:        [{ role: 'user', content: prompt }],
+        temperature:     0.85,
+        response_format: { type: 'json_object' },
+      });
+      const parsed    = JSON.parse(res.choices[0].message.content);
+      const wordCount = (parsed.script || '').split(/\s+/).filter(Boolean).length;
+      console.log(`[Script] Attempt ${attempt}/3 — ${wordCount} words`);
+      if (wordCount <= 100) { best = { ...parsed, wordCount }; break; }
+      console.warn(`[Script] ${wordCount} words exceeds 100 — regenerating`);
+    } catch (err) {
+      console.warn(`[Script] Attempt ${attempt}/3 failed: ${err.message}`);
+    }
+  }
+  if (!best) throw new Error('Script generation failed to produce a sub-100-word script after 3 attempts');
+
+  return {
+    title:      best.title      || title,
+    script:     best.script     || '',
+    hook:       best.hook       || '',
+    loopEnding: best.loopEnding || '',
+    captions:   Array.isArray(best.captions)  ? best.captions.slice(0, 200)  : [],
+    hashtags:   Array.isArray(best.hashtags)  ? best.hashtags.slice(0, 5)    : [],
+    wordCount:  best.wordCount  || 0,
+  };
 }
 
 // Structured script generator — returns JSON with hook / mainPoints / cta / estimatedDuration / fullScript
@@ -3361,11 +3420,32 @@ async function runAutoPostPipeline() {
       ).catch(() => {});
 
       try {
-        // Step 1 — Script generation
+        // Step 1 — Script generation (viral-optimised)
         const nicheName = calendar.nicheName || user.nicheName || '';
         console.log(`[AutoPost] Step 1/5 — Generating script via OpenAI (title: "${slot.title}", niche: "${nicheName}", type: ${slot.type})…`);
-        const script = await pipelineGenerateScript(slot.title, nicheName, slot.type);
-        console.log(`[AutoPost] Step 1/5 — Script ready: ${script.length} chars, ~${Math.round(script.split(' ').length / 130)} min read`);
+        const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type);
+        const script     = scriptData.script;
+        console.log(`[AutoPost] Step 1/5 — Script ready: ${scriptData.wordCount} words | hook: "${(scriptData.hook || '').slice(0, 60)}" | ${scriptData.captions.length} caption segments | ${scriptData.hashtags.length} hashtags`);
+
+        // Persist captions + hashtags to scripts collection (non-blocking)
+        agentCol('scripts').updateOne(
+          { userId: calendar.userId, slotDay: slot.day, videoIndex: slot.videoIndex || 1 },
+          { $set: {
+            userId:        calendar.userId,
+            calendarId:    calendar._id.toString(),
+            slotDay:       slot.day,
+            videoIndex:    slot.videoIndex || 1,
+            title:         scriptData.title,
+            hook:          scriptData.hook,
+            loopEnding:    scriptData.loopEnding,
+            captions:      scriptData.captions,
+            hashtags:      scriptData.hashtags,
+            wordCount:     scriptData.wordCount,
+            fullScript:    script,
+            updatedAt:     new Date().toISOString(),
+          }},
+          { upsert: true }
+        ).catch(e => console.warn('[Script] MongoDB save failed:', e.message));
 
         // Quality scoring — runs after script, before voiceover; non-blocking on failure
         try {
