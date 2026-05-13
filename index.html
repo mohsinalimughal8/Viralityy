@@ -1000,14 +1000,14 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── SCRIPT RESEARCH ── -->
 <div class="dash-page" id="dp-research">
-  <div class="dash-topbar"><div><p class="ph">Script Briefs</p><p class="ps">AI-researched briefs ready for the script writer</p></div><button class="btn btn-primary btn-sm" onclick="researchTitle()">+ Research title</button></div>
+  <div class="dash-topbar"><div><p class="ph">Script Briefs</p><p class="ps">AI-generated structured scripts for your upcoming calendar slots</p></div></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Pending briefs</p><p class="sc-value">4</p><p class="sc-sub" style="color:var(--amber)">Ready to script</p></div>
-    <div class="stat-card"><p class="sc-label">Scripted</p><p class="sc-value">31</p><p class="sc-sub green">This month</p></div>
-    <div class="stat-card"><p class="sc-label">Avg research time</p><p class="sc-value">48s</p><p class="sc-sub">Per brief</p></div>
+    <div class="stat-card"><p class="sc-label">Scripts ready</p><p class="sc-value" id="stat-scripts-ready">—</p><p class="sc-sub green">Generated</p></div>
+    <div class="stat-card"><p class="sc-label">Shorts</p><p class="sc-value" id="stat-scripts-shorts">—</p><p class="sc-sub">In queue</p></div>
+    <div class="stat-card"><p class="sc-label">Long-form</p><p class="sc-value" id="stat-scripts-longform">—</p><p class="sc-sub">Available</p></div>
   </div>
   <div class="card-block full">
-    <h4 style="margin-bottom:.85rem">Pending script briefs</h4>
+    <h4 style="margin-bottom:.85rem">Generated scripts</h4>
     <div id="research-briefs"></div>
   </div>
 </div>
@@ -1803,25 +1803,81 @@ async function addToPipeline(id, title) {
 async function initResearch() {
   const el = document.getElementById('research-briefs');
   if (!el) return;
-  el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading script briefs…</div>';
-  const data = await apiCall('/api/agents/research/briefs');
-  const briefs = data?.briefs || [];
-  if (!briefs.length) {
-    el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No briefs yet — research briefs are generated automatically each week</div>';
-    return;
+  el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading scripts — generating up to 5 now if needed…</div>';
+
+  try {
+    const data    = await apiCall('/api/scripts');
+    const scripts = data?.scripts || [];
+
+    const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    setStat('stat-scripts-ready',    scripts.length || '—');
+    setStat('stat-scripts-shorts',   scripts.filter(s => s.type !== 'Long-form').length || '—');
+    setStat('stat-scripts-longform', scripts.filter(s => s.type === 'Long-form').length || '—');
+
+    if (!scripts.length) {
+      const noCalendar = data?.hasCalendar === false;
+      el.innerHTML = `<div style="padding:2.5rem;text-align:center;border:1px dashed var(--border2);border-radius:10px">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .6rem;opacity:.35"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <p style="font-size:.83rem;font-weight:500;color:var(--text2);margin-bottom:5px">${noCalendar ? 'No calendar yet' : 'Scripts are auto-generated when your content calendar is created.'}</p>
+        <p style="font-size:.73rem;color:var(--text3)">${noCalendar ? 'Generate your 30-day content calendar to create scripts automatically.' : 'Regenerate your calendar to trigger script generation, or check back shortly.'}</p>
+      </div>`;
+      return;
+    }
+
+    el.innerHTML = scripts.map((s, i) => {
+      const pts = (s.mainPoints || []).map((pt, j) =>
+        `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
+          <span style="min-width:18px;height:18px;background:var(--purple);color:#fff;border-radius:50%;font-size:.6rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${j+1}</span>
+          <span style="font-size:.75rem;color:var(--text2);line-height:1.4">${pt}</span>
+        </div>`
+      ).join('');
+      const typeBadge = s.type === 'Long-form' ? 'LF' : 'S';
+      const typeColor = s.type === 'Long-form' ? 'rgba(245,158,11,.15)' : 'rgba(99,102,241,.12)';
+      const typeTxt   = s.type === 'Long-form' ? '#fbbf24' : 'var(--purple)';
+      return `
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
+          <div style="padding:.85rem 1rem;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none" onclick="toggleScript('sbody-${i}','schev-${i}')">
+            <div style="width:34px;height:34px;border-radius:8px;background:${typeColor};display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:${typeTxt};flex-shrink:0">${typeBadge}</div>
+            <div style="flex:1;min-width:0">
+              <p style="font-size:.83rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title||'—'}</p>
+              <p style="font-size:.68rem;color:var(--text3);margin-top:2px">${s.scheduledDate||'TBD'} · ${s.type||'Short'} · ${s.estimatedDuration||'—'}</p>
+            </div>
+            <svg id="schev-${i}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0;transition:transform .2s;color:var(--text3)"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div id="sbody-${i}" style="display:none;padding:0 1rem 1rem">
+            ${s.hook ? `<div style="background:rgba(99,102,241,.07);border-left:3px solid var(--purple);border-radius:0 6px 6px 0;padding:.65rem .8rem;margin-bottom:.75rem">
+              <p style="font-size:.65rem;font-weight:700;color:var(--purple);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Hook — first 3 seconds</p>
+              <p style="font-size:.79rem;color:var(--text);line-height:1.55">${s.hook}</p>
+            </div>` : ''}
+            ${pts ? `<div style="margin-bottom:.75rem">
+              <p style="font-size:.65rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Main points</p>
+              ${pts}
+            </div>` : ''}
+            ${s.cta ? `<div style="background:rgba(16,185,129,.07);border-left:3px solid var(--green);border-radius:0 6px 6px 0;padding:.65rem .8rem;margin-bottom:.75rem">
+              <p style="font-size:.65rem;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Call to action</p>
+              <p style="font-size:.79rem;color:var(--text);line-height:1.55">${s.cta}</p>
+            </div>` : ''}
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:.25rem">
+              <span style="font-size:.67rem;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:var(--text2)">Est. ${s.estimatedDuration||'—'}</span>
+              <span style="font-size:.67rem;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:var(--text2)">${s.type||'Short'}</span>
+              ${s.nicheName ? `<span style="font-size:.67rem;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:var(--text2)">${s.nicheName}</span>` : ''}
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (err) {
+    console.error('[initResearch]', err);
+    el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Could not load scripts — refresh to try again</div>';
   }
-  el.innerHTML = briefs.map(b => `
-    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:.9rem 1.1rem;margin-bottom:8px;display:flex;align-items:center;gap:12px">
-      <div style="width:32px;height:32px;border-radius:8px;background:rgba(16,185,129,.1);display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0">📄</div>
-      <div style="flex:1">
-        <p style="font-size:.82rem;font-weight:600;color:var(--text);margin-bottom:3px">${b.title||'—'}</p>
-        <p style="font-size:.7rem;color:var(--text3)">${b.facts ? b.facts+' key facts · ' : ''}${b.confidence||''} ${b.confidence?'confidence · ':''}${b.status||'ready'}</p>
-      </div>
-      <div style="display:flex;gap:6px">
-        <button class="act act-ok" style="font-size:.67rem;padding:4px 11px" onclick="viewBrief(this)">View brief</button>
-        <button class="act" style="font-size:.67rem;padding:4px 11px" onclick="markScripted(this)">Mark scripted</button>
-      </div>
-    </div>`).join('');
+}
+
+function toggleScript(bodyId, chevId) {
+  const body = document.getElementById(bodyId);
+  const chev = document.getElementById(chevId);
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (chev) chev.style.transform = open ? '' : 'rotate(180deg)';
 }
 
 // ════════════════════════════════════════════

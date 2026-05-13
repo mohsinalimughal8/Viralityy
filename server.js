@@ -1335,6 +1335,34 @@ Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
     );
 
     res.json({ success: true, slots, count: slots.length, totalVideos: slots.length, plan: user.plan, weeklyInsights });
+
+    // Fire-and-forget: generate structured scripts for the first 10 planned slots
+    if (process.env.OPENAI_API_KEY) {
+      setImmediate(async () => {
+        try {
+          const scriptsCol = agentCol('scripts');
+          await scriptsCol.deleteMany({ userId: req.user.id });
+          const calDoc  = await agentCol('content_calendars').findOne({ userId: req.user.id, status: 'active' });
+          const calId   = calDoc?._id?.toString() || '';
+          const { OpenAI } = require('openai');
+          const openai  = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+          const firstSlots = slots.filter(s => s.status === 'planned').slice(0, 10);
+          for (const slot of firstSlots) {
+            try {
+              const structured = await generateStructuredScript(slot.title, nicheName, slot.type, openai);
+              await scriptsCol.insertOne({
+                userId: req.user.id, calendarId: calId, slotDay: slot.day, videoIndex: slot.videoIndex || 1,
+                title: slot.title, type: slot.type, scheduledDate: slot.date, nicheName,
+                hook: structured.hook || '', mainPoints: Array.isArray(structured.mainPoints) ? structured.mainPoints.slice(0, 5) : [],
+                cta: structured.cta || '', estimatedDuration: structured.estimatedDuration || (slot.type === 'Long-form' ? '5:00' : '0:55'),
+                fullScript: structured.fullScript || '', generatedAt: new Date().toISOString(),
+              });
+            } catch (e) { console.error(`[Scripts] bg gen failed "${slot.title}":`, e.message); }
+          }
+          console.log(`[Scripts] Background generation done — ${firstSlots.length} scripts saved`);
+        } catch (e) { console.error('[Scripts] Background generation error:', e.message); }
+      });
+    }
   } catch (err) {
     console.error('[ContentCalendar] error:', err);
     res.status(500).json({ error: err.message || 'Failed to generate calendar' });
@@ -1905,6 +1933,78 @@ app.patch('/api/agents/research/briefs/:briefId/scripted', requireAuth, async (r
   } catch (err) {
     console.error('[Research] PATCH /scripted error:', err);
     res.status(500).json({ error: 'Failed to update brief' });
+  }
+});
+
+// =============================================================================
+// SCRIPTS — structured OpenAI scripts tied to calendar slots
+// =============================================================================
+
+// GET /api/scripts — returns generated scripts for the user's active calendar.
+// On first call (or when fewer than 5 scripts exist), generates up to 5 structured
+// scripts for upcoming planned slots via OpenAI and caches them to MongoDB.
+app.get('/api/scripts', requireAuth, async (req, res) => {
+  try {
+    const scriptsCol   = agentCol('scripts');
+    const calendarsCol = agentCol('content_calendars');
+
+    // Read existing cached scripts
+    let scripts = await scriptsCol
+      .find({ userId: req.user.id })
+      .sort({ scheduledDate: 1, slotDay: 1, videoIndex: 1 })
+      .toArray();
+    scripts.forEach(s => { s._id = s._id.toString(); });
+
+    // Need an active calendar to generate from
+    const calendar = await calendarsCol.findOne({ userId: req.user.id, status: 'active' });
+    if (!calendar) return res.json({ success: true, scripts, count: scripts.length, hasCalendar: false });
+
+    // Generate for upcoming slots that are missing scripts (max 5 per request)
+    const generatedKeys = new Set(scripts.map(s => `${s.slotDay}_${s.videoIndex || 1}`));
+    const today         = new Date().toISOString().slice(0, 10);
+    const missing       = (calendar.slots || [])
+      .filter(s => (s.date || '') >= today && s.status === 'planned' && !generatedKeys.has(`${s.day}_${s.videoIndex || 1}`))
+      .slice(0, 5);
+
+    if (missing.length > 0 && process.env.OPENAI_API_KEY) {
+      const { OpenAI } = require('openai');
+      const openai    = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const nicheName = calendar.nicheName || '';
+
+      for (const slot of missing) {
+        try {
+          console.log(`[Scripts] Generating structured script for "${slot.title}" (day ${slot.day})…`);
+          const structured = await generateStructuredScript(slot.title, nicheName, slot.type, openai);
+          const doc = {
+            userId:            req.user.id,
+            calendarId:        calendar._id.toString(),
+            slotDay:           slot.day,
+            videoIndex:        slot.videoIndex || 1,
+            title:             slot.title,
+            type:              slot.type,
+            scheduledDate:     slot.date,
+            nicheName,
+            hook:              structured.hook              || '',
+            mainPoints:        Array.isArray(structured.mainPoints) ? structured.mainPoints.slice(0, 5) : [],
+            cta:               structured.cta               || '',
+            estimatedDuration: structured.estimatedDuration || (slot.type === 'Long-form' ? '5:00' : '0:55'),
+            fullScript:        structured.fullScript         || '',
+            generatedAt:       new Date().toISOString(),
+          };
+          const ins = await scriptsCol.insertOne(doc);
+          scripts.push({ ...doc, _id: ins.insertedId.toString() });
+          console.log(`[Scripts] Saved: "${slot.title}"`);
+        } catch (err) {
+          console.error(`[Scripts] Failed for "${slot.title}":`, err.message);
+        }
+      }
+      scripts.sort((a, b) => (a.scheduledDate || '') < (b.scheduledDate || '') ? -1 : 1);
+    }
+
+    res.json({ success: true, scripts, count: scripts.length, hasCalendar: true });
+  } catch (err) {
+    console.error('[Scripts] GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch scripts' });
   }
 });
 
@@ -2644,6 +2744,31 @@ Start with a strong hook sentence. End with a brief call-to-action.`,
     temperature: 0.8,
   });
   return completion.choices[0].message.content.trim();
+}
+
+// Structured script generator — returns JSON with hook / mainPoints / cta / estimatedDuration / fullScript
+async function generateStructuredScript(title, nicheName, type, openai) {
+  const isLong = type === 'Long-form';
+  const res = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{
+      role: 'user',
+      content: `You are a YouTube ${isLong ? 'long-form' : 'Shorts'} script strategist for a "${nicheName}" channel.
+Write a structured script plan for the video titled: "${title}"
+
+Return valid JSON with exactly these fields:
+{
+  "hook": "Opening 1-2 sentences for the first 3 seconds — must immediately grab attention",
+  "mainPoints": ["key point 1", "key point 2", "key point 3", "key point 4", "key point 5"],
+  "cta": "Call-to-action at the end (1-2 sentences)",
+  "estimatedDuration": "${isLong ? '4:30' : '0:52'}",
+  "fullScript": "Complete natural spoken script (${isLong ? '3-5 minutes' : '45-60 seconds'}), no stage directions"
+}`,
+    }],
+    temperature: 0.78,
+    response_format: { type: 'json_object' },
+  });
+  return JSON.parse(res.choices[0].message.content);
 }
 
 // Step 2 — Generate voiceover via Google Cloud TTS (uses GEMINI_API_KEY)
