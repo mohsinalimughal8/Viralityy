@@ -352,12 +352,20 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .qp-score{font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:20px}
 .preview-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:1rem 1.15rem;margin-bottom:10px;transition:border-color .14s}
 .preview-card:hover{border-color:var(--border2)}
-.preview-card-top{display:flex;align-items:flex-start;gap:10px;margin-bottom:.85rem}
+.preview-card-top{display:flex;align-items:flex-start;gap:10px;margin-bottom:.75rem}
 .preview-thumb{width:48px;height:48px;border-radius:7px;background:linear-gradient(135deg,#1a1a3e,#2d1b69);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:1.2rem}
-.preview-info{flex:1}
+.preview-info{flex:1;min-width:0}
 .preview-title{font-size:.83rem;font-weight:600;color:var(--text);margin-bottom:3px;line-height:1.35}
 .preview-meta{font-size:.68rem;color:var(--text3)}
-.preview-actions{display:flex;gap:7px}
+.preview-meta-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:.7rem}
+.preview-badge{font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(139,92,246,.18);color:#a78bfa}
+.preview-badge-long{background:rgba(59,130,246,.18);color:#93c5fd}
+.preview-sched{font-size:.71rem;color:var(--text2)}
+.preview-countdown{font-size:.69rem;font-weight:600;color:var(--amber);background:rgba(245,158,11,.08);padding:2px 8px;border-radius:20px}
+.preview-countdown.past{color:var(--green);background:rgba(16,185,129,.08)}
+.preview-player{margin:.7rem 0;border-radius:8px;overflow:hidden;background:#000;display:none}
+.preview-player video{width:100%;max-height:280px;display:block}
+.preview-actions{display:flex;gap:7px;flex-wrap:wrap}
 .aff-stat{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.9rem 1.1rem;text-align:center}
 .aff-stat-num{font-family:'DM Serif Display',serif;font-size:1.5rem;color:var(--text);line-height:1}
 .aff-stat-label{font-size:.68rem;color:var(--text3);margin-top:.2rem}
@@ -1072,7 +1080,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── PREVIEW QUEUE ── -->
 <div class="dash-page" id="dp-preview">
-  <div class="dash-topbar"><div><p class="ph">Preview Queue</p><p class="ps">3 videos awaiting your review before posting</p></div>
+  <div class="dash-topbar"><div><p class="ph">Preview Queue</p><p class="ps" id="preview-queue-subtitle">Loading…</p></div>
     <div style="display:flex;gap:8px;align-items:center">
       <div class="toggle-wrap-sm"><span style="font-size:.76rem;color:var(--text2);margin-right:6px">Auto-post</span><label class="toggle-sm"><input type="checkbox" id="auto-post-toggle" onchange="handleAutoPostToggle(this.checked)"><span class="toggle-sm-sl"></span></label></div>
     </div>
@@ -1771,6 +1779,8 @@ async function initAnalytics() {
 // PREVIEW QUEUE — merges /api/content/queue (calendar slots) + /api/agents/preview/queue (pipeline)
 // ════════════════════════════════════════════
 let liveQueue = [];
+let _countdownTimer = null;
+
 async function initPreview() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
@@ -1779,10 +1789,52 @@ async function initPreview() {
     apiCall('/api/content/queue'),
     apiCall('/api/agents/preview/queue'),
   ]);
-  const calItems  = (calData?.items  || []).map(s => ({ ...s, _id: String(s.day), _source: 'calendar' }));
+  const calItems  = (calData?.items  || []).map(s => ({ ...s, slotId: s.slotId || `${s.day}_${s.videoIndex || 1}`, _source: 'calendar' }));
   const pipeItems = (pipeData?.queue || pipeData?.videos || []).map(v => ({ ...v, _source: 'pipeline' }));
   liveQueue = [...calItems, ...pipeItems];
+
+  const sub = document.getElementById('preview-queue-subtitle');
+  if (sub) sub.textContent = liveQueue.length ? `${liveQueue.length} video${liveQueue.length !== 1 ? 's' : ''} awaiting your review` : 'No videos pending review';
+
   renderQueue();
+  if (_countdownTimer) clearInterval(_countdownTimer);
+  _countdownTimer = setInterval(tickCountdowns, 30000);
+}
+
+function _fmtPostTime(isoStr) {
+  if (!isoStr) return null;
+  const d = new Date(isoStr);
+  if (isNaN(d)) return null;
+  const now = new Date();
+  const todayStr  = now.toDateString();
+  const tomorrowStr = new Date(now.getTime() + 86400000).toDateString();
+  const timeLabel = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === todayStr)     return `Posts at ${timeLabel} today`;
+  if (d.toDateString() === tomorrowStr)  return `Posts at ${timeLabel} tomorrow`;
+  return `Posts ${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} at ${timeLabel}`;
+}
+
+function _fmtCountdown(isoStr) {
+  if (!isoStr) return null;
+  const ms = new Date(isoStr) - new Date();
+  if (ms <= 0) return { text: 'Due now', past: true };
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h >= 24) { const d = Math.floor(h / 24); return { text: `Posts in ${d}d ${h % 24}h`, past: false }; }
+  if (h > 0)   return { text: `Posts in ${h}h ${m}m`, past: false };
+  return { text: `Posts in ${m}m`, past: false };
+}
+
+function tickCountdowns() {
+  liveQueue.forEach(q => {
+    const slotId = q.slotId || String(q._id || q.id);
+    const el = document.getElementById(`cd-${slotId}`);
+    if (!el) return;
+    const cd = _fmtCountdown(q.scheduledPostTime);
+    if (!cd) return;
+    el.textContent = cd.text;
+    el.className = 'preview-countdown' + (cd.past ? ' past' : '');
+  });
 }
 
 function renderQueue() {
@@ -1793,52 +1845,94 @@ function renderQueue() {
     return;
   }
   list.innerHTML = liveQueue.map(q => {
-    const id  = q._id || q.id;
-    const src = q._source || 'pipeline';
-    const dateStr = q.scheduledDate
-      ? 'Scheduled: ' + new Date(q.scheduledDate).toLocaleDateString()
-      : q.scheduledFor
-        ? 'Scheduled: ' + new Date(q.scheduledFor).toLocaleDateString()
-        : 'Pending review';
-    const meta = dateStr + (q.angle ? ' · ' + q.angle : '') + (src === 'calendar' ? ' · Calendar slot' : '');
+    const slotId = q.slotId || String(q._id || q.id);
+    const src    = q._source || 'pipeline';
+    const isShort = (q.type || '').toLowerCase() !== 'long-form';
+    const badgeCls = isShort ? 'preview-badge' : 'preview-badge preview-badge-long';
+    const typeLabel = isShort ? 'Short' : 'Long-form';
+    const postTimeStr = _fmtPostTime(q.scheduledPostTime) || (q.scheduledDate ? `Scheduled ${q.scheduledDate}` : 'Pending review');
+    const cd = _fmtCountdown(q.scheduledPostTime);
+    const countdownHtml = cd ? `<span class="preview-countdown${cd.past ? ' past' : ''}" id="cd-${slotId}">${cd.text}</span>` : '';
+    const hasPreview = !!q.previewReadyAt;
+    const statusLabel = q.status === 'approved' ? '<span style="color:var(--green);font-size:.69rem;font-weight:600">✓ Approved</span>' : '';
+
     return `
-    <div class="preview-card" id="pc-${id}">
+    <div class="preview-card" id="pc-${slotId}">
       <div class="preview-card-top">
         <div class="preview-thumb">🎬</div>
         <div class="preview-info">
           <p class="preview-title">${q.title || 'Untitled video'}</p>
-          <p class="preview-meta">${meta}</p>
+          <div class="preview-meta-row">
+            <span class="${badgeCls}">${typeLabel}</span>
+            <span class="preview-sched">${postTimeStr}</span>
+            ${countdownHtml}
+            ${statusLabel}
+          </div>
+          <p class="preview-meta">Day ${q.day || '?'} · Video ${q.videoIndex || 1}${q.angle ? ' · ' + q.angle : ''}</p>
         </div>
       </div>
-      ${q.scriptBrief ? `<p style="font-size:.76rem;color:var(--text2);line-height:1.5;margin-bottom:.85rem;font-style:italic">"${q.scriptBrief.slice(0,120)}…"</p>` : ''}
+      <div class="preview-player" id="player-${slotId}">
+        <video controls playsinline preload="none">
+          <source src="/api/content/preview/${slotId}" type="video/mp4">
+        </video>
+      </div>
       <div class="preview-actions">
-        <button class="act act-ok" onclick="approveVideo('${id}','${src}')">✓ Approve</button>
-        <button class="act" onclick="skipVideo('${id}','${src}')">Skip</button>
+        ${hasPreview ? `<button class="act" onclick="togglePreview('${slotId}')">▶ Preview</button>` : `<button class="act" style="opacity:.45;cursor:not-allowed" title="Video not yet generated">▶ Preview</button>`}
+        <button class="act act-ok" onclick="approveVideo('${slotId}','${src}')">✓ Approve</button>
+        <button class="act" style="background:rgba(139,92,246,.18);color:#a78bfa" onclick="postNowVideo('${slotId}')">⚡ Post Now</button>
+        <button class="act" onclick="skipVideo('${slotId}','${src}')">Skip</button>
       </div>
     </div>`;
   }).join('');
 }
 
-async function approveVideo(id, source) {
-  const url  = source === 'calendar' ? `/api/content/${id}/approve` : '/api/agents/preview/approve';
-  const body = source === 'calendar' ? {} : { videoId: id };
+function togglePreview(slotId) {
+  const wrap = document.getElementById(`player-${slotId}`);
+  if (!wrap) return;
+  const isVisible = wrap.style.display === 'block';
+  wrap.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) {
+    const video = wrap.querySelector('video');
+    if (video) video.play().catch(() => {});
+  }
+}
+
+async function approveVideo(slotId, source) {
+  const day = slotId.split('_')[0];
+  const url  = source === 'calendar' ? `/api/content/${day}/approve` : '/api/agents/preview/approve';
+  const body = source === 'calendar' ? {} : { videoId: slotId };
   const data = await apiCall(url, 'POST', body);
   if (data?.success) {
     toast('Approved ✓', 'success');
-    liveQueue = liveQueue.filter(q => String(q._id || q.id) !== String(id));
+    liveQueue = liveQueue.filter(q => (q.slotId || String(q._id || q.id)) !== slotId);
     renderQueue();
   } else {
     toast(data?.error || 'Failed to approve', 'error');
   }
 }
 
-async function skipVideo(id, source) {
-  const url  = source === 'calendar' ? `/api/content/${id}/skip` : '/api/agents/preview/skip';
-  const body = source === 'calendar' ? {} : { videoId: id };
+async function postNowVideo(slotId) {
+  const btn = document.querySelector(`#pc-${slotId} .act[onclick*="postNow"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Posting…'; }
+  const data = await apiCall(`/api/content/post-now/${slotId}`, 'POST', {});
+  if (data?.success) {
+    toast(data.message || 'Queued for posting', 'success');
+    liveQueue = liveQueue.filter(q => (q.slotId || String(q._id || q.id)) !== slotId);
+    renderQueue();
+  } else {
+    toast(data?.error || 'Failed to post', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Post Now'; }
+  }
+}
+
+async function skipVideo(slotId, source) {
+  const day = slotId.split('_')[0];
+  const url  = source === 'calendar' ? `/api/content/${day}/skip` : '/api/agents/preview/skip';
+  const body = source === 'calendar' ? {} : { videoId: slotId };
   const data = await apiCall(url, 'POST', body);
   if (data?.success || !data?.error) {
     toast('Skipped', 'info');
-    liveQueue = liveQueue.filter(q => String(q._id || q.id) !== String(id));
+    liveQueue = liveQueue.filter(q => (q.slotId || String(q._id || q.id)) !== slotId);
     renderQueue();
   }
 }

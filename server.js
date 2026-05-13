@@ -66,6 +66,27 @@ const active  = Object.entries(FEATURES).filter(([,v])=>v).map(([k])=>k);
 console.log('[Features] Active:', active.join(', ') || 'none');
 console.log('[Features] Shelved (enable via env var):', shelved.join(', ') || 'none');
 
+// ─── Scientific posting times based on YouTube Shorts algorithm research ───
+// Optimal daily posting windows; slots distributed across these based on daily video count.
+const POSTING_TIMES_BY_COUNT = {
+  1: ['18:00'],
+  2: ['12:00', '18:00'],
+  3: ['07:00', '15:00', '21:00'],
+  4: ['07:00', '12:00', '18:00', '21:00'],
+  5: ['07:00', '12:00', '15:00', '18:00', '21:00'],
+  6: ['07:00', '09:00', '12:00', '15:00', '18:00', '21:00'],
+  7: ['07:00', '09:00', '11:00', '13:00', '15:00', '18:00', '21:00'],
+};
+
+// Returns an ISO-like datetime string "YYYY-MM-DDTHH:MM:00" for the slot's optimal posting time.
+// videoIndex is 1-based; totalForDay is the number of videos scheduled for that day.
+function assignPostingTime(date, videoIndex, totalForDay) {
+  const key   = Math.min(Math.max(totalForDay || 1, 1), 7);
+  const times = POSTING_TIMES_BY_COUNT[key] || POSTING_TIMES_BY_COUNT[5];
+  const hhmm  = times[(videoIndex - 1) % times.length];
+  return `${date}T${hhmm}:00`;
+}
+
 
 // =============================================================================
 // DATABASE
@@ -1306,12 +1327,13 @@ Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
       for (let v = 0; v < config.shortsPerDay; v++) {
         slots.push({
           day, date,
-          title:       allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
-          type:        'Short',
-          videoIndex:  v + 1,
-          totalForDay: config.shortsPerDay,
-          angle:       'short',
-          status:      'planned',
+          title:             allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
+          type:              'Short',
+          videoIndex:        v + 1,
+          totalForDay:       config.shortsPerDay,
+          angle:             'short',
+          status:            'planned',
+          scheduledPostTime: assignPostingTime(date, v + 1, config.shortsPerDay),
         });
         shortIdx++;
       }
@@ -1319,12 +1341,13 @@ Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
       if (config.longFormPerWeek > 0 && dow === 1) {
         slots.push({
           day, date,
-          title:       allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
-          type:        'Long-form',
-          videoIndex:  1,
-          totalForDay: 1,
-          angle:       'long-form',
-          status:      'planned',
+          title:             allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
+          type:              'Long-form',
+          videoIndex:        1,
+          totalForDay:       1,
+          angle:             'long-form',
+          status:            'planned',
+          scheduledPostTime: assignPostingTime(date, 1, 1),
         });
         longFormIdx++;
       }
@@ -1449,13 +1472,15 @@ app.get('/api/optimisation/stats', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/content/queue — pending calendar slots awaiting review
+// GET /api/content/queue — pending/approved calendar slots awaiting review or posting
 app.get('/api/content/queue', requireAuth, async (req, res) => {
   try {
     const col      = await agentCol('content_calendars');
     const calendar = await col.findOne({ userId: req.user.id, status: 'active' });
     if (!calendar) return res.json({ success: true, items: [], count: 0 });
-    const items = (calendar.slots || []).filter(s => s.status === 'planned' || s.status === 'pending');
+    const items = (calendar.slots || [])
+      .filter(s => !s.posted && ['planned', 'pending', 'approved'].includes(s.status))
+      .map(s => ({ ...s, slotId: `${s.day}_${s.videoIndex || 1}` }));
     res.json({ success: true, items, count: items.length });
   } catch (err) {
     console.error('[ContentQueue] GET /queue error:', err);
@@ -3518,23 +3543,30 @@ async function analyzeChannelPerformance(userId, channelId, nicheName) {
   }
 }
 
-// Main pipeline runner — processes all due approved slots across all users
-async function runAutoPostPipeline() {
+// Main pipeline runner — processes all due approved slots across all users.
+// Pass forceSlotKey = "day_videoIndex" to bypass the time check for one specific slot (post-now).
+async function runAutoPostPipeline({ forceSlotKey = null, forceUserId = null } = {}) {
   if (!process.env.OPENAI_API_KEY) {
     console.log('[AutoPost] Skipping — OPENAI_API_KEY not configured');
     return;
   }
-  const col   = agentCol('content_calendars');
-  const today = new Date().toISOString().slice(0, 10);
-  console.log(`[AutoPost] Scanning active calendars for due approved slots (today: ${today})…`);
-  const calendars = await col.find({ status: 'active' }).toArray();
+  const col = agentCol('content_calendars');
+  const now = new Date().toISOString();
+  console.log(`[AutoPost] Scanning active calendars for due approved slots (now: ${now.slice(0, 16)})…`);
+  const query = forceUserId ? { status: 'active', userId: forceUserId } : { status: 'active' };
+  const calendars = await col.find(query).toArray();
   console.log(`[AutoPost] ${calendars.length} active calendar(s) found`);
   let processed = 0;
 
   for (const calendar of calendars) {
-    const dueSlots = (calendar.slots || []).filter(s =>
-      s.status === 'approved' && !s.posted && (s.date || s.scheduledDate || '') <= today
-    );
+    const dueSlots = (calendar.slots || []).filter(s => {
+      if (s.posted) return false;
+      const slotKey = `${s.day}_${s.videoIndex || 1}`;
+      if (forceSlotKey && slotKey === forceSlotKey) return true; // force-run bypass
+      if (s.status !== 'approved') return false;
+      const postAt = s.scheduledPostTime || `${s.date || s.scheduledDate || ''}T18:00:00`;
+      return postAt <= now;
+    });
     if (!dueSlots.length) {
       console.log(`[AutoPost] Calendar ${calendar._id} — no due approved slots, skipping`);
       continue;
@@ -3625,6 +3657,15 @@ async function runAutoPostPipeline() {
         console.log(`[AutoPost] Step 4/5 — Assembling video → ${outputPath}`);
         await pipelineAssembleVideo(footageClips, audioPath, outputPath, scriptData.captions);
         console.log(`[AutoPost] Step 4/5 — Video assembled: ${outputPath}`);
+
+        // Save a preview copy so the user can watch it before it goes live
+        const previewPath = `/tmp/vly_prev_${calendar.userId}_${slot.day}_${slot.videoIndex || 1}.mp4`;
+        require('fs').copyFile(outputPath, previewPath, () => {});
+        col.updateOne(
+          { _id: calendar._id },
+          { $set: { 'slots.$[s].previewPath': previewPath, 'slots.$[s].previewReadyAt': new Date().toISOString() } },
+          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+        ).catch(() => {});
 
         // Step 5 — YouTube upload
         console.log(`[AutoPost] Step 5/5 — Uploading to YouTube channel "${channel.channelName}" (${channel.channelId})…`);
@@ -3813,12 +3854,14 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
         const day = i + 1, date = dates[i], dow = new Date(date).getDay();
         for (let v = 0; v < config.shortsPerDay; v++) {
           slots.push({ day, date, title: allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
-            type: 'Short', videoIndex: v + 1, totalForDay: config.shortsPerDay, angle: 'short', status: 'planned' });
+            type: 'Short', videoIndex: v + 1, totalForDay: config.shortsPerDay, angle: 'short', status: 'planned',
+            scheduledPostTime: assignPostingTime(date, v + 1, config.shortsPerDay) });
           shortIdx++;
         }
         if (config.longFormPerWeek > 0 && dow === 1) {
           slots.push({ day, date, title: allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
-            type: 'Long-form', videoIndex: 1, totalForDay: 1, angle: 'long-form', status: 'planned' });
+            type: 'Long-form', videoIndex: 1, totalForDay: 1, angle: 'long-form', status: 'planned',
+            scheduledPostTime: assignPostingTime(date, 1, 1) });
           longFormIdx++;
         }
       }
@@ -3856,7 +3899,7 @@ app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
   }
   console.log(`[AutoPost] Manual trigger fired by user ${req.user.id}`);
   try {
-    await runAutoPostPipeline();
+    await runAutoPostPipeline({ forceUserId: String(req.user.id) });
     res.json({ success: true, message: 'Pipeline run complete — check server logs for details' });
   } catch (err) {
     console.error('[AutoPost] Manual trigger error:', err.message);
@@ -3864,11 +3907,75 @@ app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
   }
 });
 
-// Hourly auto-posting scheduler
+// Hourly auto-posting scheduler — posts any slot whose scheduledPostTime has passed
 cron.schedule('0 * * * *', async () => {
   console.log('[AutoPost] Hourly check running...');
   try { await runAutoPostPipeline(); }
   catch (err) { console.error('[AutoPost] Scheduler error:', err.message); }
+});
+
+// GET /api/content/preview/:slotId — stream assembled video preview from /tmp
+// slotId format: "day_videoIndex" e.g. "3_2"
+app.get('/api/content/preview/:slotId', requireAuth, async (req, res) => {
+  const [day, vi] = req.params.slotId.split('_').map(Number);
+  if (!day) return res.status(400).json({ error: 'Invalid slotId — expected day_videoIndex' });
+  const previewPath = `/tmp/vly_prev_${req.user.id}_${day}_${vi || 1}.mp4`;
+  const fs = require('fs');
+  if (!fs.existsSync(previewPath)) {
+    return res.status(404).json({ error: 'Preview not ready — video must be generated first via the pipeline' });
+  }
+  const stat  = fs.statSync(previewPath);
+  const range = req.headers.range;
+  if (range) {
+    const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(startStr, 10);
+    const end   = endStr ? parseInt(endStr, 10) : stat.size - 1;
+    res.writeHead(206, {
+      'Content-Range':  `bytes ${start}-${end}/${stat.size}`,
+      'Accept-Ranges':  'bytes',
+      'Content-Length': end - start + 1,
+      'Content-Type':   'video/mp4',
+    });
+    fs.createReadStream(previewPath, { start, end }).pipe(res);
+  } else {
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': stat.size, 'Accept-Ranges': 'bytes' });
+    fs.createReadStream(previewPath).pipe(res);
+  }
+});
+
+// POST /api/content/post-now/:slotId — immediately post a specific slot, bypassing scheduled time
+app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
+  try {
+    const [dayStr, viStr] = req.params.slotId.split('_');
+    const day = parseInt(dayStr), vi = parseInt(viStr) || 1;
+    if (!day) return res.status(400).json({ error: 'Invalid slotId — expected day_videoIndex' });
+
+    // Approve the slot so the pipeline will pick it up
+    const col = agentCol('content_calendars');
+    const cal = await col.findOne({ userId: req.user.id, status: 'active' });
+    if (!cal) return res.status(404).json({ error: 'No active calendar found' });
+    const slot = (cal.slots || []).find(s => s.day === day && (s.videoIndex || 1) === vi);
+    if (!slot) return res.status(404).json({ error: `Slot day=${day} videoIndex=${vi} not found` });
+    if (slot.posted) return res.status(400).json({ error: 'Slot already posted' });
+
+    await col.updateOne(
+      { _id: cal._id },
+      { $set: { 'slots.$[s].status': 'approved', 'slots.$[s].approvedAt': new Date().toISOString() } },
+      { arrayFilters: [{ 's.day': day, 's.videoIndex': vi }] }
+    );
+
+    // Fire pipeline asynchronously for just this slot
+    const slotKey = `${day}_${vi}`;
+    setImmediate(async () => {
+      try { await runAutoPostPipeline({ forceSlotKey: slotKey, forceUserId: String(req.user.id) }); }
+      catch (e) { console.error(`[PostNow] Pipeline failed for ${slotKey}:`, e.message); }
+    });
+
+    res.json({ success: true, message: `"${slot.title}" queued for immediate posting — check back in a few minutes` });
+  } catch (err) {
+    console.error('[PostNow] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Learning Loop — Monday 3 AM: AI-optimised calendar regeneration based on YouTube performance
