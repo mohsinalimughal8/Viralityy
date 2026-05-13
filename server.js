@@ -184,28 +184,35 @@ app.get('/health', (req, res) => {
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
 passport.use(new GoogleStrategy({
-  clientID:     process.env.YOUTUBE_CLIENT_ID,
-  clientSecret: process.env.YOUTUBE_CLIENT_SECRET,
-  callbackURL:  `${process.env.APP_URL}/auth/google/callback`,
-  scope: ['profile', 'email', 'https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload'],
-}, async (accessToken, refreshToken, profile, done) => {
+  clientID:          process.env.YOUTUBE_CLIENT_ID,
+  clientSecret:      process.env.YOUTUBE_CLIENT_SECRET,
+  callbackURL:       `${process.env.APP_URL}/auth/google/callback`,
+  scope:             ['profile', 'email', 'https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload'],
+  passReqToCallback: true,
+}, async (req, accessToken, refreshToken, profile, done) => {
   try {
     // 1. Find or create user
+    let isNewUser = false;
     let user = await User.findOne({ googleId: profile.id });
     if (!user) {
       user = await User.findOne({ email: profile.emails[0].value });
       if (user) { user.googleId = profile.id; }
     }
     if (!user) {
+      isNewUser = true;
+      const affiliateRef = req.session?.affiliateRef || null;
       user = await User.create({
-        name:           profile.displayName,
-        email:          profile.emails[0].value,
-        googleId:       profile.id,
-        plan:           'trial',
-        trialStartedAt: new Date(),
-        trialEndsAt:    new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        name:            profile.displayName,
+        email:           profile.emails[0].value,
+        googleId:        profile.id,
+        plan:            'trial',
+        trialStartedAt:  new Date(),
+        trialEndsAt:     new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         youtubeChannels: [],
+        affiliateCode:   generateAffiliateCode(),
+        ...(affiliateRef && { referredBy: affiliateRef }),
       });
+      if (affiliateRef) console.log(`[OAuth] New user ${user.email} referred by code: ${affiliateRef}`);
     }
 
     // 2. Save OAuth tokens on user
@@ -318,7 +325,10 @@ function runPython(scriptPath, args, timeoutMs = 60000) {
 // =============================================================================
 // AUTH ROUTES
 // =============================================================================
-app.get('/auth/google', passport.authenticate('google', {
+app.get('/auth/google', (req, res, next) => {
+  if (req.query.ref) req.session.affiliateRef = req.query.ref;
+  next();
+}, passport.authenticate('google', {
   scope: [
     'profile',
     'email',
@@ -2738,23 +2748,84 @@ app.get('/api/analytics/videos', requireAuth, async (req, res) => {
 
 // ── AFFILIATE ─────────────────────────────────────────────────────────────────
 
-// GET /api/affiliate/stats
+// GET /api/affiliate/stats — legacy stub kept for backward compat
 app.get('/api/affiliate/stats', requireAuth, async (req, res) => {
   try {
     const db = mongoose.connection.db;
-    const stats = await db.collection('affiliate_stats')
-      .findOne({ userId: req.user.id });
-    res.json({
-      success:       true,
-      pendingPayout: stats?.pendingPayout  || 0,
-      totalSignups:  stats?.totalSignups   || 0,
-      conversions:   stats?.conversions    || 0,
-      totalEarned:   stats?.totalEarned    || 0,
-      commissionRate: 0.30,
-    });
+    const stats = await db.collection('affiliate_stats').findOne({ userId: req.user.id });
+    res.json({ success: true, pendingPayout: stats?.pendingPayout || 0, totalSignups: stats?.totalSignups || 0, conversions: stats?.conversions || 0, totalEarned: stats?.totalEarned || 0, commissionRate: 0.30 });
   } catch (err) {
     console.error('[Affiliate] GET /stats error:', err);
     res.status(500).json({ error: 'Failed to fetch affiliate stats' });
+  }
+});
+
+// GET /api/affiliate — real referral data sourced directly from User collection
+app.get('/api/affiliate', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Ensure affiliate code exists (backfill for legacy accounts)
+    if (!user.affiliateCode) {
+      user.affiliateCode = generateAffiliateCode();
+      await user.save();
+    }
+
+    const referralLink = `https://viralityy.pages.dev?ref=${user.affiliateCode}`;
+
+    // All users who signed up via this affiliate's code
+    const referred = await User.find({ referredBy: user.affiliateCode })
+      .select('name email plan createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const EARNINGS_PER_UPGRADE = 10;
+    const upgrades    = referred.filter(u => u.plan && u.plan !== 'trial');
+    const earnings    = upgrades.length * EARNINGS_PER_UPGRADE;
+    const convRate    = referred.length ? Math.round((upgrades.length / referred.length) * 100) : 0;
+
+    // Referral history — mask names for privacy
+    const history = referred.map(u => ({
+      id:          u._id.toString(),
+      initials:    (u.name || 'U').slice(0, 1).toUpperCase() + (u.name?.split(' ')[1]?.[0] || '').toUpperCase(),
+      signedUpAt:  u.createdAt,
+      plan:        u.plan || 'trial',
+      upgraded:    u.plan !== 'trial',
+    }));
+
+    // Top 5 leaderboard — affiliate codes with the most referrals
+    const leaderboard = await User.aggregate([
+      { $match: { referredBy: { $exists: true, $ne: null, $ne: '' } } },
+      { $group: { _id: '$referredBy', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 },
+    ]);
+    const myRank   = leaderboard.findIndex(l => l._id === user.affiliateCode) + 1;
+    const topBoard = leaderboard.map((l, i) => ({
+      rank:       i + 1,
+      isYou:      l._id === user.affiliateCode,
+      count:      l.count,
+      label:      l._id === user.affiliateCode ? 'You' : `Affiliate #${i + 1}`,
+    }));
+
+    res.json({
+      success: true,
+      affiliateCode: user.affiliateCode,
+      referralLink,
+      stats: {
+        total:       referred.length,
+        upgrades:    upgrades.length,
+        earnings,
+        convRate,
+        myRank: myRank || null,
+      },
+      history,
+      leaderboard: topBoard,
+    });
+  } catch (err) {
+    console.error('[Affiliate] GET /api/affiliate error:', err.message);
+    res.status(500).json({ error: 'Failed to load affiliate data' });
   }
 });
 

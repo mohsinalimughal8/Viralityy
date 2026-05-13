@@ -1082,30 +1082,41 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── AFFILIATE ── -->
 <div class="dash-page" id="dp-affiliate">
-  <div class="dash-topbar"><div><p class="ph">Affiliate Programme</p><p class="ps">Earn 30% commission on every referred subscriber — for their entire subscription</p></div></div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem">
-    <div class="aff-stat"><div class="aff-stat-num">$0.00</div><div class="aff-stat-label">Pending payout</div></div>
-    <div class="aff-stat"><div class="aff-stat-num">0</div><div class="aff-stat-label">Total signups</div></div>
-    <div class="aff-stat"><div class="aff-stat-num">0</div><div class="aff-stat-label">Conversions</div></div>
-    <div class="aff-stat"><div class="aff-stat-num">$0.00</div><div class="aff-stat-label">Total earned</div></div>
-    <div class="aff-stat"><div class="aff-stat-num">30%</div><div class="aff-stat-label">Commission rate</div></div>
+  <div class="dash-topbar"><div><p class="ph">Affiliate Programme</p><p class="ps">Earn $10 for every user you refer who upgrades to a paid plan</p></div></div>
+
+  <!-- Stats row -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.1rem">
+    <div class="aff-stat"><div class="aff-stat-num" id="aff-total">—</div><div class="aff-stat-label">Total referrals</div></div>
+    <div class="aff-stat"><div class="aff-stat-num" id="aff-upgrades">—</div><div class="aff-stat-label">Upgrades</div></div>
+    <div class="aff-stat"><div class="aff-stat-num" id="aff-earnings">—</div><div class="aff-stat-label">Est. earnings</div></div>
+    <div class="aff-stat"><div class="aff-stat-num" id="aff-convrate">—</div><div class="aff-stat-label">Conversion rate</div></div>
+    <div class="aff-stat"><div class="aff-stat-num" id="aff-rank">—</div><div class="aff-stat-label">Leaderboard rank</div></div>
   </div>
+
+  <!-- Referral link -->
   <div class="card-block">
     <h4>Your referral link</h4>
     <div class="referral-link-wrap" style="margin-top:.65rem">
-      <input class="referral-link-input" id="referral-link-val" readonly value="Sign in to see your referral link">
+      <input class="referral-link-input" id="referral-link-val" readonly value="Loading…">
       <button class="copy-btn" onclick="copyReferralLink()">Copy</button>
     </div>
-    <p style="font-size:.72rem;color:var(--text3);margin-top:.6rem">Share this link. When someone signs up and pays, you earn 30% of every payment they make — forever.</p>
+    <p style="font-size:.72rem;color:var(--text3);margin-top:.55rem">When someone signs up via your link and upgrades to a paid plan, you earn $10. Paid monthly.</p>
   </div>
-  <div class="card-block" style="margin-top:12px">
-    <h4>How it works</h4>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:.75rem">
-      <div style="text-align:center;padding:.85rem;background:var(--bg3);border-radius:9px"><p style="font-size:1.4rem;margin-bottom:.3rem">🔗</p><p style="font-size:.79rem;font-weight:600;color:var(--text);margin-bottom:.2rem">Share your link</p><p style="font-size:.71rem;color:var(--text3)">Share with creators, communities, or your audience</p></div>
-      <div style="text-align:center;padding:.85rem;background:var(--bg3);border-radius:9px"><p style="font-size:1.4rem;margin-bottom:.3rem">👤</p><p style="font-size:.79rem;font-weight:600;color:var(--text);margin-bottom:.2rem">They sign up</p><p style="font-size:.71rem;color:var(--text3)">Tracked via 30-day cookie — even if they return later</p></div>
-      <div style="text-align:center;padding:.85rem;background:var(--bg3);border-radius:9px"><p style="font-size:1.4rem;margin-bottom:.3rem">💰</p><p style="font-size:.79rem;font-weight:600;color:var(--text);margin-bottom:.2rem">You earn 30%</p><p style="font-size:.71rem;color:var(--text3)">On every payment they make, for the life of their subscription</p></div>
+
+  <!-- Referral history + Leaderboard side by side -->
+  <div class="grid2" style="margin-top:12px">
+    <div class="card-block">
+      <h4>Referral history</h4>
+      <div id="aff-history" style="margin-top:.65rem">
+        <p style="font-size:.78rem;color:var(--text3)">Loading…</p>
+      </div>
     </div>
-    <p style="font-size:.72rem;color:var(--text3);margin-top:.85rem">Minimum payout: $50 · Paid via Payoneer within 7 business days</p>
+    <div class="card-block">
+      <h4>Top 5 affiliates</h4>
+      <div id="aff-leaderboard" style="margin-top:.65rem">
+        <p style="font-size:.78rem;color:var(--text3)">Loading…</p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1175,11 +1186,13 @@ const API_BASE = 'https://viralityy-production.up.railway.app';
 let AUTH_TOKEN = localStorage.getItem('vly_token') || null;
 let CURRENT_USER = JSON.parse(localStorage.getItem('vly_user') || 'null');
 
-// Check if OAuth just redirected back with a token in the URL
+// Check if OAuth just redirected back with a token in the URL; also capture affiliate ref
 (function() {
   const params = new URLSearchParams(window.location.search);
-  const t = params.get('token');
-  const u = params.get('user');
+  const t   = params.get('token');
+  const u   = params.get('user');
+  const ref = params.get('ref');
+  if (ref) localStorage.setItem('vly_ref', ref);
   if (t) {
     AUTH_TOKEN = t;
     localStorage.setItem('vly_token', t);
@@ -1344,9 +1357,10 @@ function togglePw(id, btn) {
   btn.style.color = isText ? '' : '#a5b4fc';
 }
 
-// Google OAuth — redirects to Railway which handles it and sends back a token
+// Google OAuth — redirects to Railway; passes affiliate ref code if present
 function googleSignIn() {
-  window.location.href = API_BASE + '/auth/google';
+  const ref = localStorage.getItem('vly_ref');
+  window.location.href = API_BASE + '/auth/google' + (ref ? '?ref=' + encodeURIComponent(ref) : '');
 }
 
 async function doLogin() {
@@ -1423,7 +1437,8 @@ async function validateStep1() {
     if (err) { err.textContent = 'Password must be at least 8 characters.'; err.classList.add('show'); }
     return;
   }
-  const data = await apiCall('/api/auth/register', 'POST', { email, password: pw, name: email.split('@')[0] });
+  const ref  = localStorage.getItem('vly_ref') || undefined;
+  const data = await apiCall('/api/auth/register', 'POST', { email, password: pw, name: email.split('@')[0], ...(ref && { ref }) });
   if (data?.token) {
     AUTH_TOKEN = data.token;
     CURRENT_USER = data.user;
@@ -2657,18 +2672,18 @@ async function viewBrief(el) {
   toast('Brief: ' + title + ' — full brief viewer coming in next update', 'info');
 }
 
+let _affLinkCache = null;
 async function copyReferralLink() {
-  const data = await apiCall('/api/auth/me');
-  const userId = data?.user?.id || data?.id || 'unknown';
-  const refLink = 'https://viralityy.pages.dev/?ref=' + userId.slice(-8).toUpperCase();
+  const link = _affLinkCache || document.getElementById('referral-link-val')?.value;
+  if (!link || link === 'Loading…') {
+    toast('Referral link loading — try again in a moment', 'info');
+    return;
+  }
   try {
-    await navigator.clipboard.writeText(refLink);
-    // Update the input field too
-    const input = document.getElementById('referral-link-val') || document.querySelector('.referral-link-input');
-    if (input) input.value = refLink;
+    await navigator.clipboard.writeText(link);
     toast('Referral link copied!', 'success');
   } catch(e) {
-    toast('Your link: ' + refLink, 'info');
+    toast('Your link: ' + link, 'info');
   }
 }
 
@@ -2695,24 +2710,90 @@ async function handleAutoPostToggle(checked) {
 }
 
 // ════════════════════════════════════════════
-// AFFILIATE — load real referral link
+// AFFILIATE — real referral data from /api/affiliate
 // ════════════════════════════════════════════
 async function initAffiliate() {
-  const data = await apiCall('/api/auth/me');
-  const userId = data?.user?.id || data?.id;
-  if (userId) {
-    const refLink = 'https://viralityy.pages.dev/?ref=' + userId.slice(-8).toUpperCase();
-    const input = document.getElementById('referral-link-val') || document.querySelector('.referral-link-input');
-    if (input) input.value = refLink;
-  }
-  // Load affiliate stats if available
-  const stats = await apiCall('/api/affiliate/stats').catch(() => null);
-  if (stats) {
-    const nums = document.querySelectorAll('.aff-stat-num');
-    if (nums[0]) nums[0].textContent = stats.pendingPayout ? '$' + stats.pendingPayout.toFixed(2) : '$0.00';
-    if (nums[1]) nums[1].textContent = stats.totalSignups || 0;
-    if (nums[2]) nums[2].textContent = stats.conversions || 0;
-    if (nums[3]) nums[3].textContent = stats.totalEarned ? '$' + stats.totalEarned.toFixed(2) : '$0.00';
+  const histEl  = document.getElementById('aff-history');
+  const lbEl    = document.getElementById('aff-leaderboard');
+  const linkEl  = document.getElementById('referral-link-val');
+
+  try {
+    const data = await apiCall('/api/affiliate');
+    if (!data?.success) throw new Error('No data');
+
+    // Referral link
+    _affLinkCache = data.referralLink;
+    if (linkEl) linkEl.value = data.referralLink;
+
+    // Stat chips
+    const s = data.stats || {};
+    const setEl = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setEl('aff-total',   s.total ?? 0);
+    setEl('aff-upgrades', s.upgrades ?? 0);
+    setEl('aff-earnings', s.earnings != null ? '$' + s.earnings.toFixed(2) : '$0.00');
+    setEl('aff-convrate', s.convRate != null ? s.convRate + '%' : '0%');
+    setEl('aff-rank',     s.myRank ? '#' + s.myRank : s.total > 0 ? 'Unranked' : '—');
+
+    // Referral history
+    if (histEl) {
+      const history = data.history || [];
+      if (!history.length) {
+        histEl.innerHTML = `<div style="text-align:center;padding:1.5rem 0">
+          <p style="font-size:.8rem;font-weight:600;color:var(--text2);margin-bottom:.25rem">No referrals yet</p>
+          <p style="font-size:.73rem;color:var(--text3)">Share your link to start earning.</p>
+        </div>`;
+      } else {
+        histEl.innerHTML = history.map(r => {
+          const date = new Date(r.signedUpAt).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'2-digit' });
+          const badge = r.upgraded
+            ? `<span class="badge badge-green" style="font-size:.62rem;padding:2px 7px">${r.plan}</span>`
+            : `<span class="badge badge-amber" style="font-size:.62rem;padding:2px 7px">Trial</span>`;
+          return `<div style="display:flex;align-items:center;gap:.65rem;padding:.55rem 0;border-bottom:1px solid var(--border)">
+            <div style="width:30px;height:30px;border-radius:50%;background:var(--purple);color:#fff;font-size:.7rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${r.initials || 'U'}</div>
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">${badge}</div>
+              <p style="font-size:.69rem;color:var(--text3)">Signed up ${date}</p>
+            </div>
+            ${r.upgraded ? '<span style="font-size:.75rem;font-weight:700;color:var(--green)">+$10</span>' : '<span style="font-size:.72rem;color:var(--text3)">—</span>'}
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Leaderboard
+    if (lbEl) {
+      const lb = data.leaderboard || [];
+      if (!lb.length) {
+        lbEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">No leaderboard data yet — be the first!</p>';
+      } else {
+        const medalColors = ['#f59e0b', '#94a3b8', '#b45309'];
+        lbEl.innerHTML = lb.map((entry, i) => {
+          const medal = i < 3 ? `<span style="color:${medalColors[i]};font-weight:700;font-size:.82rem">#${entry.rank}</span>`
+                               : `<span style="color:var(--text3);font-size:.82rem">#${entry.rank}</span>`;
+          const you   = entry.isYou ? ' (You)' : '';
+          const name  = entry.isYou
+            ? `<span style="font-size:.78rem;font-weight:700;color:var(--purple)">${entry.label}${you}</span>`
+            : `<span style="font-size:.78rem;color:var(--text2)">${entry.label}</span>`;
+          const barW  = Math.max(Math.round((entry.count / (lb[0]?.count || 1)) * 100), 5);
+          return `<div style="display:flex;align-items:center;gap:.6rem;padding:.45rem 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:22px;text-align:center">${medal}</div>
+            <div style="flex:1">
+              ${name}
+              <div style="height:3px;background:var(--bg3);border-radius:2px;margin-top:4px">
+                <div style="width:${barW}%;height:100%;background:${entry.isYou ? 'var(--purple)' : 'var(--border2)'};border-radius:2px"></div>
+              </div>
+            </div>
+            <span style="font-size:.76rem;font-weight:600;color:var(--text2)">${entry.count}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+  } catch (err) {
+    console.error('[initAffiliate]', err);
+    if (histEl)  histEl.innerHTML  = '<p style="font-size:.78rem;color:var(--text3)">Could not load referral data — refresh to try again.</p>';
+    if (lbEl)    lbEl.innerHTML    = '<p style="font-size:.78rem;color:var(--text3)">Could not load leaderboard.</p>';
+    if (linkEl)  linkEl.value      = '';
   }
 }
 
