@@ -1037,21 +1037,18 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT QUALITY ── -->
 <div class="dash-page" id="dp-quality">
-  <div class="dash-topbar"><div><p class="ph">Content Quality</p><p class="ps">6 automated quality passes applied to every video before posting</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Content Quality</p><p class="ps">AI scores every script on hook strength, clarity, CTA and niche relevance before posting</p></div></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Avg quality score</p><p class="sc-value">94%</p><p class="sc-sub green">↑ 3pts this week</p></div>
-    <div class="stat-card"><p class="sc-label">Videos processed</p><p class="sc-value">47</p><p class="sc-sub">This month</p></div>
-    <div class="stat-card"><p class="sc-label">Failed QC</p><p class="sc-value">2</p><p class="sc-sub" style="color:var(--amber)">Regenerated</p></div>
+    <div class="stat-card"><p class="sc-label">Avg quality score</p><p class="sc-value" id="qual-avg">—</p><p class="sc-sub green" id="qual-avg-sub"></p></div>
+    <div class="stat-card"><p class="sc-label">Videos scored</p><p class="sc-value" id="qual-total">—</p><p class="sc-sub">Lifetime</p></div>
+    <div class="stat-card"><p class="sc-label">Failed QC (&lt;60)</p><p class="sc-value" id="qual-failed">—</p><p class="sc-sub" style="color:var(--amber)" id="qual-failed-sub"></p></div>
   </div>
-  <div class="card-block full">
-    <h4>The 6 quality passes</h4>
-    <div style="margin-top:.75rem">
-      <div class="quality-pass"><div class="qp-icon" style="background:rgba(99,102,241,.12)">🎙</div><div class="qp-info"><p class="qp-name">Pass 1 — Natural Voice</p><p class="qp-desc">Applies per-sentence speed variation, natural pauses, and pitch modulation to make AI voiceover sound human. Uses your channel's assigned ElevenLabs voice.</p></div><span class="qp-score badge badge-green">98%</span></div>
-      <div class="quality-pass"><div class="qp-icon" style="background:rgba(16,185,129,.1)">🎬</div><div class="qp-info"><p class="qp-name">Pass 2 — Fresh Footage</p><p class="qp-desc">Selects unique, non-repeated stock footage from Pexels that matches the script topic. No repeated clips across videos in the same month.</p></div><span class="qp-score badge badge-green">96%</span></div>
-      <div class="quality-pass"><div class="qp-icon" style="background:rgba(245,158,11,.1)">✂️</div><div class="qp-info"><p class="qp-name">Pass 3 — Cinematic Cuts</p><p class="qp-desc">Applies dynamic cut timing aligned to speech rhythms — faster cuts on high-energy lines, slower cuts on reflective moments.</p></div><span class="qp-score badge badge-green">91%</span></div>
-      <div class="quality-pass"><div class="qp-icon" style="background:rgba(236,72,153,.1)">🎨</div><div class="qp-info"><p class="qp-name">Pass 4 — Colour Grade</p><p class="qp-desc">Applies a unique LUT colour grade per video within your channel's palette. Prevents all videos looking identical.</p></div><span class="qp-score badge badge-green">99%</span></div>
-      <div class="quality-pass"><div class="qp-icon" style="background:rgba(139,92,246,.1)">📝</div><div class="qp-info"><p class="qp-name">Pass 5 — Subtitles</p><p class="qp-desc">Auto-generates word-by-word animated subtitles synced to the voiceover. Tested for mobile readability.</p></div><span class="qp-score badge badge-green">97%</span></div>
-      <div class="quality-pass" style="margin-bottom:0"><div class="qp-icon" style="background:rgba(20,184,166,.1)">🎵</div><div class="qp-info"><p class="qp-name">Pass 6 — Background Music</p><p class="qp-desc">Selects royalty-free background music at -18dB to -22dB under the voiceover. Mood-matched to the video topic.</p></div><span class="qp-score badge badge-green">94%</span></div>
+  <div class="card-block full" style="margin-top:12px">
+    <h4>Script quality scores</h4>
+    <div id="quality-list" style="margin-top:.75rem">
+      <div style="text-align:center;padding:2rem 1rem">
+        <p style="font-size:.78rem;color:var(--text3)">Loading scores…</p>
+      </div>
     </div>
   </div>
 </div>
@@ -1449,6 +1446,7 @@ function dashPage(id, el) {
   if (id === 'competitors') initCompetitors();
   if (id === 'affiliate')   initAffiliate();
   if (id === 'learning')    initLearning();
+  if (id === 'quality')     initQuality();
 }
 
 function loading(id, msg='Loading…') {
@@ -2730,6 +2728,99 @@ async function initLearning() {
     console.error('[initLearning] error:', err);
     if (patternsEl) patternsEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);margin-top:.5rem">Could not load data — refresh to try again</p>';
     if (chartEl)    chartEl.innerHTML    = '<p style="font-size:.72rem;color:var(--text3);align-self:center">Could not load data</p>';
+  }
+}
+
+async function initQuality() {
+  const listEl   = document.getElementById('quality-list');
+  const avgEl    = document.getElementById('qual-avg');
+  const totalEl  = document.getElementById('qual-total');
+  const failedEl = document.getElementById('qual-failed');
+  const avgSubEl = document.getElementById('qual-avg-sub');
+  const failSubEl= document.getElementById('qual-failed-sub');
+
+  try {
+    const data = await apiCall('/api/quality/scores');
+    const { scores = [], stats = {} } = data || {};
+
+    // Stat cards
+    if (avgEl)    avgEl.textContent    = stats.avg != null ? `${stats.avg}%` : '—';
+    if (totalEl)  totalEl.textContent  = stats.total ?? '—';
+    if (failedEl) failedEl.textContent = stats.failed ?? '—';
+    if (avgSubEl && stats.avg != null) {
+      const cls = stats.avg >= 80 ? 'green' : stats.avg >= 60 ? '' : 'red';
+      avgSubEl.textContent  = stats.avg >= 80 ? 'Excellent' : stats.avg >= 60 ? 'Good' : 'Needs work';
+      if (cls) avgSubEl.style.color = `var(--${cls})`;
+    }
+    if (failSubEl) failSubEl.textContent = stats.failed > 0 ? 'Below 60 threshold' : 'All passed';
+
+    if (!listEl) return;
+
+    if (!scores.length) {
+      listEl.innerHTML = `<div style="text-align:center;padding:2.5rem 1rem">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="1.5" style="margin-bottom:.75rem"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <p style="font-size:.82rem;font-weight:600;color:var(--text2);margin-bottom:.3rem">No scores yet</p>
+        <p style="font-size:.74rem;color:var(--text3)">Quality scores are generated automatically when your auto-post pipeline runs a script.</p>
+      </div>`;
+      return;
+    }
+
+    listEl.innerHTML = scores.map(s => {
+      const sc      = s.scores || {};
+      const overall = sc.overall || 0;
+      const badge   = overall >= 80 ? 'badge-green' : overall >= 60 ? 'badge-amber' : 'badge-red';
+      const badgeTxt= overall >= 80 ? 'Passed' : overall >= 60 ? 'Review' : 'Failed';
+      const date    = s.scheduledDate ? new Date(s.scheduledDate).toLocaleDateString('en-GB', { day:'numeric', month:'short' }) : (s.scoredAt ? _relTime(s.scoredAt) : '');
+
+      function bar(val) {
+        const w   = Math.max(val, 3);
+        const col = val >= 80 ? 'var(--green)' : val >= 60 ? 'var(--amber)' : '#ef4444';
+        return `<div style="flex:1;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="width:${w}%;height:100%;background:${col};border-radius:3px"></div></div>`;
+      }
+
+      return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.85rem 1rem;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.55rem">
+          <span class="badge ${badge}" style="font-size:.68rem;padding:2px 8px;flex-shrink:0">${overall}/100 — ${badgeTxt}</span>
+          <p style="font-size:.78rem;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.title || 'Untitled'}</p>
+          <span style="font-size:.7rem;color:var(--text3);flex-shrink:0">${date}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px 14px">
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+              <span style="font-size:.68rem;color:var(--text3)">Hook strength</span>
+              <span style="font-size:.68rem;font-weight:600;color:var(--text2)">${sc.hookStrength || 0}</span>
+            </div>
+            ${bar(sc.hookStrength || 0)}
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+              <span style="font-size:.68rem;color:var(--text3)">Clarity</span>
+              <span style="font-size:.68rem;font-weight:600;color:var(--text2)">${sc.clarity || 0}</span>
+            </div>
+            ${bar(sc.clarity || 0)}
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+              <span style="font-size:.68rem;color:var(--text3)">CTA effectiveness</span>
+              <span style="font-size:.68rem;font-weight:600;color:var(--text2)">${sc.ctaEffectiveness || 0}</span>
+            </div>
+            ${bar(sc.ctaEffectiveness || 0)}
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+              <span style="font-size:.68rem;color:var(--text3)">Niche relevance</span>
+              <span style="font-size:.68rem;font-weight:600;color:var(--text2)">${sc.nicheRelevance || 0}</span>
+            </div>
+            ${bar(sc.nicheRelevance || 0)}
+          </div>
+        </div>
+        ${sc.feedback ? `<p style="font-size:.7rem;color:var(--text3);margin-top:.45rem;padding-top:.45rem;border-top:1px solid var(--border)">${sc.feedback}</p>` : ''}
+      </div>`;
+    }).join('');
+
+  } catch (err) {
+    console.error('[initQuality]', err);
+    if (listEl) listEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);padding:.5rem">Could not load quality scores — refresh to try again.</p>';
   }
 }
 

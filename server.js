@@ -2721,6 +2721,33 @@ app.post('/api/channels/:channelId/pause', requireAuth, async (req, res) => {
 });
 
 // =============================================================================
+// QUALITY SCORES
+// =============================================================================
+
+// GET /api/quality/scores — returns AI-generated quality scores for this user's posted videos
+app.get('/api/quality/scores', requireAuth, async (req, res) => {
+  try {
+    const col    = agentCol('quality_scores');
+    const scores = await col
+      .find({ userId: req.user.id })
+      .sort({ scoredAt: -1 })
+      .limit(50)
+      .toArray();
+    scores.forEach(s => { s._id = s._id.toString(); });
+
+    const total  = scores.length;
+    const avg    = total ? Math.round(scores.reduce((a, s) => a + (s.scores?.overall || 0), 0) / total) : null;
+    const passed = scores.filter(s => (s.scores?.overall || 0) >= 60).length;
+    const failed = total - passed;
+
+    res.json({ success: true, scores, stats: { total, avg, passed, failed } });
+  } catch (err) {
+    console.error('[QualityScores] GET error:', err.message);
+    res.status(500).json({ error: 'Failed to load quality scores' });
+  }
+});
+
+// =============================================================================
 // CRON JOBS
 // =============================================================================
 
@@ -2769,6 +2796,40 @@ Return valid JSON with exactly these fields:
     response_format: { type: 'json_object' },
   });
   return JSON.parse(res.choices[0].message.content);
+}
+
+// Quality scorer — uses OpenAI JSON mode to score a script on 4 dimensions (0-100 each)
+async function scoreScript(title, script, nicheName, openai) {
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{
+        role: 'user',
+        content: `You are a YouTube content quality analyst. Score this ${nicheName} script on 4 dimensions (0-100 each).
+
+Video title: "${title}"
+Script: ${script.slice(0, 2000)}
+
+Return valid JSON:
+{
+  "hookStrength": <0-100, how compelling and attention-grabbing are the first 10 seconds>,
+  "clarity": <0-100, how clear and easy to follow is the content>,
+  "ctaEffectiveness": <0-100, how strong and clear is the call-to-action>,
+  "nicheRelevance": <0-100, how well does it match the ${nicheName} niche audience>,
+  "overall": <0-100, weighted average of the above>,
+  "feedback": "<one sentence of the most important improvement to make>"
+}`,
+      }],
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    });
+    const scored = JSON.parse(res.choices[0].message.content);
+    const overall = Math.round((scored.hookStrength + scored.clarity + scored.ctaEffectiveness + scored.nicheRelevance) / 4);
+    return { ...scored, overall: scored.overall || overall };
+  } catch (err) {
+    console.warn('[QualityScore] Scoring failed:', err.message);
+    return { hookStrength: 0, clarity: 0, ctaEffectiveness: 0, nicheRelevance: 0, overall: 0, feedback: '' };
+  }
 }
 
 // Step 2 — Generate voiceover via Google Cloud TTS (uses GEMINI_API_KEY)
@@ -3039,6 +3100,28 @@ async function runAutoPostPipeline() {
         console.log(`[AutoPost] Step 1/5 — Generating script via OpenAI (title: "${slot.title}", niche: "${nicheName}", type: ${slot.type})…`);
         const script = await pipelineGenerateScript(slot.title, nicheName, slot.type);
         console.log(`[AutoPost] Step 1/5 — Script ready: ${script.length} chars, ~${Math.round(script.split(' ').length / 130)} min read`);
+
+        // Quality scoring — runs after script, before voiceover; non-blocking on failure
+        try {
+          const { OpenAI: OAI } = require('openai');
+          const _oai = new OAI({ apiKey: process.env.OPENAI_API_KEY });
+          const qScore = await scoreScript(slot.title, script, nicheName, _oai);
+          await agentCol('quality_scores').insertOne({
+            userId:        calendar.userId,
+            channelId:     calendar.channelId,
+            calendarId:    calendar._id.toString(),
+            slotDay:       slot.day,
+            videoIndex:    slot.videoIndex || 1,
+            title:         slot.title,
+            type:          slot.type,
+            scheduledDate: slot.date || null,
+            scores:        qScore,
+            scoredAt:      new Date().toISOString(),
+          });
+          console.log(`[AutoPost] Quality score: ${qScore.overall}/100 — hook:${qScore.hookStrength} clarity:${qScore.clarity} cta:${qScore.ctaEffectiveness} niche:${qScore.nicheRelevance}`);
+        } catch (qErr) {
+          console.warn('[AutoPost] Quality scoring skipped:', qErr.message);
+        }
 
         // Step 2 — Voiceover
         console.log(`[AutoPost] Step 2/5 — Generating voiceover via Google TTS (userId: ${calendar.userId})…`);
