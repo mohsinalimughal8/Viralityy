@@ -1692,6 +1692,125 @@ app.get('/api/agents/competitor/videos', requireAuth, async (req, res) => {
 } // end FEATURE_COMPETITOR_WATCHER
 
 // =============================================================================
+// COMPETITORS — direct YouTube API routes (no Python dependency)
+// =============================================================================
+
+// GET /api/competitors — list all competitors for the logged-in user
+app.get('/api/competitors', requireAuth, async (req, res) => {
+  try {
+    const col  = agentCol('competitor_channels');
+    const docs = await col
+      .find({ userId: req.user.id, active: true })
+      .sort({ addedAt: -1 })
+      .toArray();
+    docs.forEach(d => { d._id = d._id.toString(); });
+    res.json({ success: true, competitors: docs, count: docs.length });
+  } catch (err) {
+    console.error('[Competitors] GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch competitors' });
+  }
+});
+
+// POST /api/competitors — add a competitor by YouTube channel URL
+// Body: { channelUrl: "https://youtube.com/@channelname" }
+app.post('/api/competitors', requireAuth, async (req, res) => {
+  try {
+    const { channelUrl } = req.body;
+    if (!channelUrl || !channelUrl.trim()) {
+      return res.status(400).json({ error: 'channelUrl is required' });
+    }
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'YOUTUBE_API_KEY not configured' });
+
+    // Parse handle (@channelname) or channel ID (UCxxxxxx) from URL
+    const raw          = channelUrl.trim();
+    const handleMatch  = raw.match(/@([\w.-]+)/);
+    const idMatch      = raw.match(/\/(UC[\w-]{22})/);
+    const bareId       = /^UC[\w-]{22}$/.test(raw) ? raw : null;
+
+    let channelParam;
+    if (handleMatch)       channelParam = { forHandle: handleMatch[1] };
+    else if (idMatch)      channelParam = { id: idMatch[1] };
+    else if (bareId)       channelParam = { id: bareId };
+    else return res.status(400).json({ error: 'Could not parse channel URL. Use https://youtube.com/@handle or a UC… channel ID.' });
+
+    // Fetch channel snippet + statistics
+    const ytParams = new URLSearchParams({ part: 'snippet,statistics', key: apiKey, ...channelParam });
+    const ytRes    = await fetch(`https://www.googleapis.com/youtube/v3/channels?${ytParams}`);
+    if (!ytRes.ok) return res.status(502).json({ error: `YouTube API error (${ytRes.status})` });
+    const ytData   = await ytRes.json();
+    const ch       = ytData.items?.[0];
+    if (!ch) return res.status(404).json({ error: 'Channel not found on YouTube — double-check the URL' });
+
+    const channelId      = ch.id;
+    const channelName    = ch.snippet?.title || 'Unknown';
+    const thumbnail      = ch.snippet?.thumbnails?.default?.url || null;
+    const subscriberCount = parseInt(ch.statistics?.subscriberCount  || '0', 10);
+    const videoCount      = parseInt(ch.statistics?.videoCount       || '0', 10);
+    const totalViews      = parseInt(ch.statistics?.viewCount        || '0', 10);
+    const avgViews        = videoCount > 0 ? Math.round(totalViews / videoCount) : 0;
+
+    // Compute upload frequency from last 10 video dates
+    let uploadFrequencyDays = null;
+    try {
+      const srchParams = new URLSearchParams({ part: 'snippet', channelId, order: 'date', type: 'video', maxResults: 10, key: apiKey });
+      const srchRes    = await fetch(`https://www.googleapis.com/youtube/v3/search?${srchParams}`);
+      if (srchRes.ok) {
+        const srchData = await srchRes.json();
+        const dates    = (srchData.items || [])
+          .map(item => new Date(item.snippet?.publishedAt).getTime())
+          .filter(Boolean)
+          .sort((a, b) => b - a);
+        if (dates.length >= 2) {
+          const gaps = [];
+          for (let i = 0; i < dates.length - 1; i++) gaps.push((dates[i] - dates[i + 1]) / 86400000);
+          uploadFrequencyDays = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
+        }
+      }
+    } catch { /* frequency stays null */ }
+
+    // Upsert into MongoDB
+    const col      = agentCol('competitor_channels');
+    const existing = await col.findOne({ userId: req.user.id, channelId });
+    const now      = new Date().toISOString();
+    if (existing) {
+      await col.updateOne(
+        { _id: existing._id },
+        { $set: { active: true, channelName, thumbnail, subscriberCount, videoCount, totalViews, avgViews, uploadFrequencyDays, updatedAt: now, lastChecked: now } }
+      );
+    } else {
+      await col.insertOne({
+        userId: req.user.id, channelId, channelName, thumbnail,
+        subscriberCount, videoCount, totalViews, avgViews, uploadFrequencyDays,
+        active: true, addedAt: now, updatedAt: now, lastChecked: now,
+      });
+    }
+
+    console.log(`[Competitors] Added "${channelName}" (${channelId}) for user ${req.user.id} — ${subscriberCount.toLocaleString()} subs, ${avgViews.toLocaleString()} avg views`);
+    res.json({ success: true, competitor: { channelId, channelName, thumbnail, subscriberCount, avgViews, uploadFrequencyDays } });
+  } catch (err) {
+    console.error('[Competitors] POST error:', err);
+    res.status(500).json({ error: err.message || 'Failed to add competitor' });
+  }
+});
+
+// DELETE /api/competitors/:channelId — remove a competitor
+app.delete('/api/competitors/:channelId', requireAuth, async (req, res) => {
+  try {
+    const col    = agentCol('competitor_channels');
+    const result = await col.updateOne(
+      { userId: req.user.id, channelId: req.params.channelId },
+      { $set: { active: false, updatedAt: new Date().toISOString() } }
+    );
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Competitor not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Competitors] DELETE error:', err);
+    res.status(500).json({ error: 'Failed to remove competitor' });
+  }
+});
+
+// =============================================================================
 // AGENT 4 — SCRIPT RESEARCH ROUTES
 // =============================================================================
 

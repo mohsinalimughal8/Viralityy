@@ -969,20 +969,32 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── COMPETITOR INTELLIGENCE ── -->
 <div class="dash-page" id="dp-competitors">
-  <div class="dash-topbar"><div><p class="ph">Competitor Watcher</p><p class="ps">Monitoring rival channels in your niche — alerts on high-engagement posts</p></div><button class="btn btn-primary btn-sm" onclick="addCompetitor()">+ Add competitor</button></div>
+  <div class="dash-topbar"><div><p class="ph">Competitor Watcher</p><p class="ps">Monitor rival channels — subscriber count, average views, and upload frequency</p></div></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Channels watched</p><p class="sc-value" id="stat-comp-channels">—</p><p class="sc-sub">In your niche</p></div>
+    <div class="stat-card"><p class="sc-label">Channels watched</p><p class="sc-value" id="stat-comp-channels">—</p><p class="sc-sub">Active</p></div>
     <div class="stat-card"><p class="sc-label">Unread alerts</p><p class="sc-value" id="stat-comp-alerts">—</p><p class="sc-sub" style="color:var(--amber)">Viral signals</p></div>
     <div class="stat-card"><p class="sc-label">Videos detected</p><p class="sc-value" id="stat-comp-videos">—</p><p class="sc-sub">Last 30 days</p></div>
   </div>
+  <div class="card-block full" style="margin-bottom:1rem">
+    <h4 style="margin-bottom:.75rem">Add competitor channel</h4>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="competitor-url-input" type="text" placeholder="https://youtube.com/@channelname  or  UCxxxxxxx channel ID"
+        style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.55rem .9rem;font-size:.82rem;color:var(--text);outline:none;transition:border-color .15s"
+        onfocus="this.style.borderColor='var(--purple)'" onblur="this.style.borderColor='var(--border)'"
+        onkeydown="if(event.key==='Enter')addCompetitor()">
+      <button class="btn btn-primary btn-sm" id="comp-add-btn" onclick="addCompetitor()">Add channel</button>
+    </div>
+    <p id="comp-add-error" style="font-size:.72rem;color:#f87171;margin-top:5px;display:none"></p>
+  </div>
   <div class="grid2">
     <div class="card-block">
-      <h4>Watched channels</h4>
-      <div id="competitor-channels-list" style="margin-top:.5rem"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading competitor channels…</p></div>
+      <h4 style="margin-bottom:.75rem">Watched channels</h4>
+      <div id="competitor-channels-list"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading…</p></div>
     </div>
     <div class="card-block">
-      <h4>Recent alerts</h4>
-      <div id="competitor-alerts" style="margin-top:.5rem"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading alerts…</p></div>
+      <h4 style="margin-bottom:.75rem">Recent alerts</h4>
+      <div id="competitor-alerts"><p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">Loading alerts…</p></div>
+    </div>
   </div>
 </div>
 
@@ -2024,38 +2036,80 @@ async function initNiches() {
 // ════════════════════════════════════════════
 // COMPETITORS — live
 // ════════════════════════════════════════════
+function _fmtCompact(n) {
+  if (!n && n !== 0) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  return n.toString();
+}
+
+function _fmtFreq(days) {
+  if (days == null) return 'Frequency unknown';
+  if (days <= 1)  return 'Posts daily';
+  if (days <= 2)  return 'Every 1–2 days';
+  if (days <= 4)  return 'Every few days';
+  if (days <= 9)  return `~${Math.round(7 / days)}×/week`;
+  if (days <= 16) return 'Weekly';
+  return `Every ~${days} days`;
+}
+
 async function initCompetitors() {
-  const [alertData, watchData] = await Promise.all([
-    apiCall('/api/agents/competitor/alerts'),
-    apiCall('/api/agents/competitor/list'),
-  ]);
-  const alerts = alertData?.alerts || [];
-  const watched = watchData?.channels || watchData?.watched || [];
-  const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-  setStat('stat-comp-channels', watched.length);
-  setStat('stat-comp-alerts',   alerts.filter(a => !a.read).length);
-  setStat('stat-comp-videos',   alertData?.total ?? alerts.length);
+  const chEl    = document.getElementById('competitor-channels-list');
   const alertEl = document.getElementById('competitor-alerts');
-  if (alertEl) {
-    alertEl.innerHTML = alerts.length ? alerts.map(a => `
-      <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:.75rem;margin-bottom:7px" data-video-title="${a.videoTitle||''}">
-        <p style="font-size:.72rem;font-weight:600;color:#fcd34d;margin-bottom:3px">🔥 ${a.type||'Alert'} — ${a.channelName||'Competitor'}</p>
-        <p style="font-size:.73rem;color:var(--text2);margin-bottom:4px">"${a.videoTitle||'—'}"</p>
-        <p style="font-size:.67rem;color:var(--text3)">EMS ${a.emsScore||'—'} · ${a.detectedAt ? new Date(a.detectedAt).toLocaleDateString() : '—'}</p>
-        <button class="act act-ok" style="margin-top:6px;font-size:.67rem;padding:4px 10px" onclick="queueResponseVideo(this)">Create response video</button>
-      </div>`).join('')
-      : '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No alerts yet — alerts appear when watched channels post high-engagement videos</p>';
-  }
-  const chEl = document.getElementById('competitor-channels-list');
-  if (chEl) {
-    chEl.innerHTML = watched.length ? watched.map(ch => `
-      <div style="display:flex;align-items:center;gap:9px;padding:.6rem 0;border-bottom:1px solid var(--border)">
-        <div style="width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff">${(ch.channelName||'?').slice(0,2).toUpperCase()}</div>
-        <div style="flex:1"><p style="font-size:.8rem;font-weight:500;color:var(--text)">${ch.channelName||ch.channelId}</p>
-        <p style="font-size:.67rem;color:var(--text3)">${ch.subscriberCount?ch.subscriberCount.toLocaleString()+' subs · ':''}Last check: ${ch.lastChecked?new Date(ch.lastChecked).toLocaleDateString():'pending'}</p></div>
-        <span class="badge badge-green">Active</span>
-      </div>`).join('')
-      : `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No competitors watched — <button class="act act-ok" style="font-size:.72rem;padding:3px 10px;margin-left:6px" onclick="addCompetitor()">+ Add channel</button></p>`;
+  try {
+    const [compData, alertData] = await Promise.all([
+      apiCall('/api/competitors'),
+      apiCall('/api/agents/competitor/alerts'),
+    ]);
+    const competitors = compData?.competitors || [];
+    const alerts      = alertData?.alerts     || [];
+    const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    setStat('stat-comp-channels', competitors.length);
+    setStat('stat-comp-alerts',   alerts.filter(a => !a.read).length);
+    setStat('stat-comp-videos',   alertData?.count ?? alerts.length);
+
+    if (chEl) {
+      if (!competitors.length) {
+        chEl.innerHTML = `<div style="padding:2rem;text-align:center;border:1px dashed var(--border2);border-radius:10px;margin-top:.25rem">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.35"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <p style="font-size:.82rem;font-weight:500;color:var(--text2);margin-bottom:3px">No competitors added yet</p>
+          <p style="font-size:.73rem;color:var(--text3)">Paste a YouTube channel URL above to start monitoring</p>
+        </div>`;
+      } else {
+        chEl.innerHTML = competitors.map(ch => `
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.9rem 1rem;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;color:#fff;flex-shrink:0">${(ch.channelName||'?').slice(0,2).toUpperCase()}</div>
+              <div style="flex:1;min-width:0">
+                <p style="font-size:.85rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.channelName||ch.channelId}</p>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+                  <span style="font-size:.67rem;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:1px 7px;color:var(--text2)">${_fmtCompact(ch.subscriberCount)} subs</span>
+                  <span style="font-size:.67rem;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:1px 7px;color:var(--text2)">${_fmtCompact(ch.avgViews)} avg views</span>
+                  <span style="font-size:.67rem;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:1px 7px;color:var(--text2)">${_fmtFreq(ch.uploadFrequencyDays)}</span>
+                </div>
+              </div>
+              <button class="act" style="font-size:.67rem;padding:3px 9px;flex-shrink:0" onclick="removeCompetitor('${ch.channelId}',this)">Remove</button>
+            </div>
+          </div>`).join('');
+      }
+    }
+
+    if (alertEl) {
+      alertEl.innerHTML = alerts.length
+        ? alerts.map(a => `
+          <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:.75rem;margin-bottom:7px" data-video-title="${a.videoTitle||''}">
+            <p style="font-size:.72rem;font-weight:600;color:#fcd34d;margin-bottom:3px">🔥 ${a.type||'Alert'} — ${a.channelName||'Competitor'}</p>
+            <p style="font-size:.73rem;color:var(--text2);margin-bottom:4px">"${a.videoTitle||'—'}"</p>
+            <p style="font-size:.67rem;color:var(--text3)">EMS ${a.emsScore||'—'} · ${a.detectedAt ? new Date(a.detectedAt).toLocaleDateString() : '—'}</p>
+            <button class="act act-ok" style="margin-top:6px;font-size:.67rem;padding:4px 10px" onclick="queueResponseVideo(this)">Create response video</button>
+          </div>`).join('')
+        : '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No alerts yet — alerts appear when watched channels post high-engagement videos</p>';
+    }
+  } catch (err) {
+    console.error('[initCompetitors]', err);
+    if (chEl)    chEl.innerHTML    = '<p style="font-size:.78rem;color:var(--text3)">Could not load competitors — refresh to try again</p>';
+    if (alertEl) alertEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">Could not load alerts</p>';
   }
 }
 
@@ -2362,16 +2416,38 @@ async function pauseChannel(el) {
 }
 
 async function addCompetitor() {
-  const url = prompt('Enter YouTube channel URL or channel ID (e.g. https://youtube.com/@channelname)');
-
-  if (!url) return;
-  toast('Adding competitor channel…', 'info');
-  const data = await apiCall('/api/agents/competitor/add', 'POST', { channelUrl: url.trim() });
-  if (data?.success || data?.channelId) {
-    toast('Competitor added — watching for new videos every 4 hours', 'success');
+  const input  = document.getElementById('competitor-url-input');
+  const errEl  = document.getElementById('comp-add-error');
+  const btn    = document.getElementById('comp-add-btn');
+  const url    = (input?.value || '').trim();
+  if (errEl) errEl.style.display = 'none';
+  if (!url) {
+    if (errEl) { errEl.textContent = 'Please enter a YouTube channel URL or channel ID'; errEl.style.display = 'block'; }
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  const data = await apiCall('/api/competitors', 'POST', { channelUrl: url });
+  if (btn) { btn.disabled = false; btn.textContent = 'Add channel'; }
+  if (data?.success) {
+    if (input) input.value = '';
+    toast(`${data.competitor?.channelName || 'Channel'} added — now monitoring`, 'success');
     await initCompetitors();
   } else {
-    toast(data?.error || 'Could not add channel — check the URL and try again', 'error');
+    const msg = data?.error || 'Could not add channel — check the URL and try again';
+    if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+    else toast(msg, 'error');
+  }
+}
+
+async function removeCompetitor(channelId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const data = await apiCall(`/api/competitors/${channelId}`, 'DELETE');
+  if (data?.success) {
+    toast('Competitor removed', 'info');
+    await initCompetitors();
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = 'Remove'; }
+    toast(data?.error || 'Could not remove competitor', 'error');
   }
 }
 
