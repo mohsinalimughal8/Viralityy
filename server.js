@@ -3210,9 +3210,9 @@ const ROYALTY_FREE_MUSIC = [
   'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
 ];
 
-// Extract 4 distinct Pexels search queries from video title + script
-function deriveFootageQueries(title, script) {
-  const combined = `${title} ${script}`.slice(0, 300).toLowerCase();
+// Extract 5 distinct Pexels search queries from video title + script
+function deriveFootageQueries(title, script, nicheName = '') {
+  const combined = `${title} ${script}`.slice(0, 400).toLowerCase();
   const stop = new Set(['the','a','an','is','are','was','were','this','that','these','those',
     'with','for','and','but','or','not','to','of','in','on','at','by','from','about',
     'how','why','what','when','where','who','will','can','do','does','did','be','been',
@@ -3223,15 +3223,33 @@ function deriveFootageQueries(title, script) {
   const kw = [];
   for (const w of words) {
     if (!stop.has(w) && !seen.has(w)) { seen.add(w); kw.push(w); }
-    if (kw.length >= 8) break;
+    if (kw.length >= 10) break;
   }
   const queries = [];
   if (kw[0] && kw[1]) queries.push(`${kw[0]} ${kw[1]}`);
   if (kw[2] && kw[3]) queries.push(`${kw[2]} ${kw[3]}`);
-  if (kw[4]) queries.push(kw[4]);
-  queries.push('lifestyle motivation');
-  while (queries.length < 4) queries.push('nature relax');
-  return queries.slice(0, 4);
+  if (kw[4] && kw[5]) queries.push(`${kw[4]} ${kw[5]}`);
+  if (kw[6]) queries.push(kw[6]);
+
+  // Niche-based fallbacks so every query is distinct and relevant
+  const nicheSlug = (nicheName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  const nicheFallbacks = nicheSlug
+    ? [`${nicheSlug} lifestyle`, `${nicheSlug} motivation`, `${nicheSlug} success`, `${nicheSlug} people`]
+    : ['lifestyle motivation', 'people working', 'city morning', 'nature relax'];
+
+  for (const fb of nicheFallbacks) {
+    if (queries.length >= 5) break;
+    if (!queries.includes(fb)) queries.push(fb);
+  }
+
+  // Last-resort generic fallbacks to guarantee 5 unique entries
+  const generic = ['productive morning','urban lifestyle','success mindset','focused work','bright outdoor'];
+  for (const g of generic) {
+    if (queries.length >= 5) break;
+    if (!queries.includes(g)) queries.push(g);
+  }
+
+  return queries.slice(0, 5);
 }
 
 // Escape text for ffmpeg drawtext filter
@@ -3246,11 +3264,11 @@ function escapeDT(str) {
     .replace(/;/g, '\\;');
 }
 
-// Step 3 — Fetch 4 portrait clips from Pexels using script-derived queries
-async function pipelineFetchMultipleFootage(title, script) {
+// Step 3 — Fetch 5 portrait clips from Pexels using script-derived queries
+async function pipelineFetchMultipleFootage(title, script, nicheName = '') {
   const apiKey = process.env.PEXELS_API_KEY;
   if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
-  const queries = deriveFootageQueries(title, script);
+  const queries = deriveFootageQueries(title, script, nicheName);
   const clips = [];
   for (const query of queries) {
     try {
@@ -3659,7 +3677,7 @@ async function runAutoPostPipeline({ forceSlotKey = null, forceUserId = null } =
 
         // Step 3 — Pexels footage (multiple clips)
         console.log(`[AutoPost] Step 3/5 — Fetching Pexels footage clips for "${slot.title.slice(0, 60)}"…`);
-        const footageClips = await pipelineFetchMultipleFootage(slot.title, script);
+        const footageClips = await pipelineFetchMultipleFootage(slot.title, script, nicheName);
         console.log(`[AutoPost] Step 3/5 — Fetched ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
 
         // Step 4 — Assemble with captions + background music
