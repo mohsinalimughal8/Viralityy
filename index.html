@@ -1879,7 +1879,6 @@ function renderQueue() {
       <div class="preview-actions">
         ${hasPreview ? `<button class="act" onclick="togglePreview('${slotId}')">▶ Preview</button>` : `<button class="act" style="opacity:.45;cursor:not-allowed" title="Video not yet generated">▶ Preview</button>`}
         <button class="act act-ok" onclick="approveVideo('${slotId}','${src}')">✓ Approve</button>
-        <button class="act" style="background:rgba(139,92,246,.18);color:#a78bfa" onclick="postNowVideo('${slotId}')">⚡ Post Now</button>
         <button class="act" onclick="skipVideo('${slotId}','${src}')">Skip</button>
       </div>
     </div>`;
@@ -1911,19 +1910,6 @@ async function approveVideo(slotId, source) {
   }
 }
 
-async function postNowVideo(slotId) {
-  const btn = document.querySelector(`#pc-${slotId} .act[onclick*="postNow"]`);
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Posting…'; }
-  const data = await apiCall(`/api/content/post-now/${slotId}`, 'POST', {});
-  if (data?.success) {
-    toast(data.message || 'Queued for posting', 'success');
-    liveQueue = liveQueue.filter(q => (q.slotId || String(q._id || q.id)) !== slotId);
-    renderQueue();
-  } else {
-    toast(data?.error || 'Failed to post', 'error');
-    if (btn) { btn.disabled = false; btn.textContent = '⚡ Post Now'; }
-  }
-}
 
 async function skipVideo(slotId, source) {
   const day = slotId.split('_')[0];
@@ -2881,9 +2867,9 @@ function openAccountSettings() {
 // AUTO-POST TOGGLE — real API call
 // ════════════════════════════════════════════
 async function handleAutoPostToggle(checked) {
-  await apiCall('/api/channels/settings', 'POST', { autoPost: checked });
+  await apiCall('/api/user/autopost', 'PATCH', { autoPost: checked });
   toast(checked
-    ? 'Auto-post enabled — videos post after 24h if not reviewed'
+    ? 'Auto-post enabled — videos post automatically at scheduled time'
     : 'Auto-post disabled — all videos require manual approval',
     'info');
 }

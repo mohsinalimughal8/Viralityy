@@ -2885,6 +2885,19 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
+// PATCH /api/user/autopost — enable or disable auto-posting for the logged-in user
+app.patch('/api/user/autopost', requireAuth, async (req, res) => {
+  try {
+    const { autoPost } = req.body;
+    if (typeof autoPost !== 'boolean') return res.status(400).json({ error: 'autoPost must be a boolean' });
+    await User.updateOne({ _id: req.user.id }, { $set: { autoPost } });
+    res.json({ success: true, autoPost });
+  } catch (err) {
+    console.error('[User] PATCH /autopost error:', err);
+    res.status(500).json({ error: 'Failed to update auto-post setting' });
+  }
+});
+
 // ── CHANNELS EXTRAS ───────────────────────────────────────────────────────────
 
 // POST /api/channels/settings — update channel auto-post settings
@@ -3807,11 +3820,56 @@ async function runScheduledPosting() {
       if (postAt > now) return false;
       return autoPostOn ? s.status === 'ready' : s.status === 'approved';
     });
-    if (!dueSlots.length) continue;
+
+    // Auto-approve overdue pending slots: if a slot is still pending past its
+    // scheduled post time, run the pipeline and post it regardless of autoPost setting.
+    const overduePending = (calendar.slots || []).filter(s =>
+      !s.posted && s.status === 'pending' &&
+      (s.scheduledPostTime || `${s.date}T18:00:00`) <= now
+    );
 
     const channel = (user.youtubeChannels || []).find(ch => ch.channelId === calendar.channelId)
                  || (user.youtubeChannels || [])[0];
+    if (!channel && !dueSlots.length && !overduePending.length) continue;
     if (!channel) { console.warn(`[Posting] No channel for calendar ${calendar._id}`); continue; }
+
+    // Fire pipeline + upload for each overdue pending slot in the background
+    if (overduePending.length > 0) {
+      console.log(`[Posting] ${overduePending.length} overdue pending slot(s) for calendar ${calendar._id} — auto-approving`);
+      const capturedCal  = calendar;
+      const capturedUser = user;
+      setImmediate(async () => {
+        for (const slot of overduePending) {
+          const freshCal  = await calCol.findOne({ _id: capturedCal._id });
+          const freshSlot = (freshCal?.slots || []).find(s => s.day === slot.day && (s.videoIndex || 1) === (slot.videoIndex || 1));
+          if (!freshSlot || freshSlot.status !== 'pending') continue;
+          await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
+          const doneCal  = await calCol.findOne({ _id: capturedCal._id });
+          const doneSlot = (doneCal?.slots || []).find(s => s.day === slot.day && (s.videoIndex || 1) === (slot.videoIndex || 1));
+          if (doneSlot?.status !== 'ready' || !doneSlot?.assembledPath || !fs.existsSync(doneSlot.assembledPath)) continue;
+          try {
+            const ytId = await pipelineUploadToYouTube(doneSlot.assembledPath, doneSlot.title, doneSlot.cachedScript || doneSlot.title, channel);
+            await calCol.updateOne(
+              { _id: doneCal._id },
+              { $set: {
+                'slots.$[s].status':         'posted',
+                'slots.$[s].posted':         true,
+                'slots.$[s].postedAt':       new Date().toISOString(),
+                'slots.$[s].youtubeVideoId': ytId,
+                'slots.$[s].pipelineStatus': 'posted',
+              }},
+              { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+            );
+            fs.unlink(doneSlot.assembledPath, () => {});
+            console.log(`[Posting] ✓ Auto-posted overdue slot "${doneSlot.title}" → https://youtu.be/${ytId}`);
+          } catch (e) {
+            console.error(`[Posting] ✗ Upload failed for overdue slot "${slot.title}": ${e.message}`);
+          }
+        }
+      });
+    }
+
+    if (!dueSlots.length) continue;
 
     for (const slot of dueSlots) {
       if (!slot.assembledPath || !fs.existsSync(slot.assembledPath)) {
