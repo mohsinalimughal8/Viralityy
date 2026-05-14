@@ -1780,6 +1780,7 @@ async function initAnalytics() {
 // ════════════════════════════════════════════
 let liveQueue = [];
 let _countdownTimer = null;
+let _todayAllPosted = false;
 
 async function initPreview() {
   const list = document.getElementById('preview-queue-list');
@@ -1789,12 +1790,17 @@ async function initPreview() {
     apiCall('/api/content/queue'),
     apiCall('/api/agents/preview/queue'),
   ]);
-  const calItems  = (calData?.items  || []).map(s => ({ ...s, slotId: s.slotId || `${s.day}_${s.videoIndex || 1}`, _source: 'calendar' }));
+  const today = new Date().toISOString().slice(0, 10);
+  const allTodayItems = (calData?.items || []).filter(s => (s.date || s.scheduledDate || '') === today);
+  _todayAllPosted = allTodayItems.length > 0 && allTodayItems.every(s => s.posted || s.status === 'posted');
+  const calItems = allTodayItems
+    .filter(s => !s.posted && s.status !== 'posted')
+    .map(s => ({ ...s, slotId: s.slotId || `${s.day}_${s.videoIndex || 1}`, _source: 'calendar' }));
   const pipeItems = (pipeData?.queue || pipeData?.videos || []).map(v => ({ ...v, _source: 'pipeline' }));
   liveQueue = [...calItems, ...pipeItems];
 
   const sub = document.getElementById('preview-queue-subtitle');
-  if (sub) sub.textContent = liveQueue.length ? `${liveQueue.length} video${liveQueue.length !== 1 ? 's' : ''} awaiting your review` : 'No videos pending review';
+  if (sub) sub.textContent = liveQueue.length ? `${liveQueue.length} video${liveQueue.length !== 1 ? 's' : ''} awaiting your review` : (_todayAllPosted ? 'All videos posted today' : 'No videos pending review');
 
   renderQueue();
   if (_countdownTimer) clearInterval(_countdownTimer);
@@ -1841,7 +1847,9 @@ function renderQueue() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
   if (!liveQueue.length) {
-    list.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">Queue is empty — no content pending review</div>';
+    list.innerHTML = _todayAllPosted
+      ? '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">All videos posted today — next batch generates at midnight</div>'
+      : '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">Queue is empty — no content pending review</div>';
     return;
   }
   list.innerHTML = liveQueue.map(q => {
@@ -2028,7 +2036,7 @@ async function initPlanner() {
   const totalVideos = slots.length;
   setStat('stat-planner-total',    totalVideos);
   setStat('stat-planner-posted',   slots.filter(s => s.status === 'posted').length);
-  setStat('stat-planner-queued',   slots.filter(s => s.status === 'queued' || s.status === 'pending' || s.status === 'planned').length);
+  setStat('stat-planner-queued',   slots.filter(s => s.status === 'generating' || s.status === 'processing').length);
   setStat('stat-planner-upcoming', slots.filter(s => (s.date || s.scheduledDate || '') >= today && s.status !== 'posted').length);
   if (!slots.length) {
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
@@ -2055,7 +2063,7 @@ async function generateCalendar() {
     const today = new Date().toISOString().slice(0, 10);
     setStat('stat-planner-total',    totalVideos);
     setStat('stat-planner-posted',   0);
-    setStat('stat-planner-queued',   slots.filter(s => s.status === 'planned').length);
+    setStat('stat-planner-queued',   slots.filter(s => s.status === 'generating' || s.status === 'processing').length);
     setStat('stat-planner-upcoming', slots.filter(s => (s.date || s.scheduledDate || '') >= today).length);
     renderCalendarGrid(slots, totalVideos);
   } else {

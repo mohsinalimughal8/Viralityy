@@ -3724,11 +3724,12 @@ async function runDailySlotGeneration(targetUserId = null) {
       if (!nicheName) { console.warn(`[DailyGen] No niche for user ${calendar.userId} — skipping`); continue; }
 
       const count  = config.shortsPerDay;
+      const yesterdayCtx = await getYesterdayPerformance(String(calendar.userId), calendar.channelId || '');
       const genRes = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content:
           `YouTube Shorts content strategist for a "${nicheName}" channel.
-Generate exactly ${count} NEW, unique Short video titles (under 60 chars each).
+${yesterdayCtx}Generate exactly ${count} NEW, unique Short video titles (under 60 chars each).
 Vary style: hook, story, tutorial, listicle, myth-bust.
 Return JSON: { "titles": [${count} strings] }` }],
         temperature: 0.9,
@@ -3941,179 +3942,56 @@ async function scoutTrendingTopics(nicheName) {
 // Weekly AI-optimised calendar regeneration — runs every Monday for all active calendars.
 // Fetches YouTube performance data, identifies top/bottom performers, then regenerates
 // the next 30 days of slots with AI-optimised prompts injecting that intelligence.
-async function runWeeklyOptimizedCalendars() {
-  console.log('[WeeklyOpt] Starting weekly AI-optimised calendar refresh...');
-  if (!process.env.OPENAI_API_KEY) {
-    console.log('[WeeklyOpt] Skipping — OPENAI_API_KEY not configured');
-    return;
-  }
+// Fetches yesterday's posted videos and their YouTube view/like counts.
+// Returns a prompt-ready context string for the daily title generation, or '' on failure.
+async function getYesterdayPerformance(userId, channelId) {
+  try {
+    const yd = new Date();
+    yd.setDate(yd.getDate() - 1);
+    const yesterday = yd.toISOString().slice(0, 10);
 
-  const { OpenAI } = require('openai');
-  const openai     = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const col        = agentCol('content_calendars');
-  const calendars  = await col.find({ status: 'active' }).toArray();
-  let refreshed    = 0;
-
-  for (const calendar of calendars) {
-    try {
-      const user = await User.findById(calendar.userId).catch(() => null);
-      if (!user) continue;
-
-      const nicheName = calendar.nicheName || '';
-      if (!nicheName) continue;
-
-      const config  = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
-      const insights = await analyzeChannelPerformance(calendar.userId, calendar.channelId, nicheName);
-
-      // Scout trending topics via YouTube Data API (last 7 days, ordered by viewCount)
-      const trendingTopics = await scoutTrendingTopics(nicheName);
-      const trendingContext = trendingTopics.length > 0
-        ? `\nTRENDING THIS WEEK in "${nicheName}":\n${trendingTopics.map((t, i) => `${i + 1}. ${t}`).join('\n')}\nGenerate video titles inspired by these trends but with fresh, unique angles — do not copy them verbatim.\n`
-        : '';
-
-      // Build performance context (same logic as POST /api/content/calendar)
-      let perfContext = '';
-      if (insights) {
-        const topList    = insights.topPerformers.map(v =>
-          `"${v.title}" — ${v.views.toLocaleString()} views, ${v.likes} likes`
-        ).join('\n');
-        const bottomList = insights.bottomPerformers.map(v =>
-          `"${v.title}" — ${v.views.toLocaleString()} views`
-        ).join('\n');
-        const tp = insights.titlePatterns;
-        const patternBlock = tp?.patterns?.length
-          ? `\nPROVEN TITLE PATTERNS — Use these structures for new titles:\n${tp.patterns.map((p, i) => `${i + 1}. ${p}`).join('\n')}\nPower words that drive clicks in this niche: ${(tp.powerWords || []).join(', ')}\nIdeal title length: ${tp.idealLength || 'under 60 chars'}\n`
-          : '';
-        perfContext = `
-PREVIOUS PERFORMANCE DATA (${insights.totalAnalyzed} videos from last 4 weeks):
-
-TOP PERFORMERS — Build on these styles and topics with completely fresh angles:
-${topList}
-
-LOW PERFORMERS — Avoid titles, formats, or concepts similar to these:
-${bottomList}
-${patternBlock}
-Strategy: Generate titles that build on what worked. Never repeat any of the above titles exactly.
-`;
+    const calCol = agentCol('content_calendars');
+    const calendars = await calCol.find({ userId: String(userId) }).toArray();
+    const postedSlots = [];
+    for (const cal of calendars) {
+      for (const s of (cal.slots || [])) {
+        if (s.posted && s.youtubeVideoId && s.date === yesterday) postedSlots.push(s);
       }
-
-      // Generate the next 7 days — one OpenAI call per day for shortsPerDay titles
-      const today = new Date();
-      const dates = Array.from({ length: 7 }, (_, i) => {
-        const d = new Date(today); d.setDate(d.getDate() + i);
-        return d.toISOString().slice(0, 10);
-      });
-
-      const allShortTitles = [];
-
-      for (let i = 0; i < 7; i++) {
-        const count    = config.shortsPerDay;
-        const usedList = allShortTitles.length
-          ? `\nAlready used — do NOT repeat:\n${allShortTitles.map((t, j) => `${j + 1}. ${t}`).join('\n')}\n`
-          : '';
-        const dayRes = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content:
-            `YouTube Shorts content strategist for a "${nicheName}" channel.
-${perfContext}${trendingContext}${usedList}
-Generate exactly ${count} NEW, completely unique Short video titles (under 60 chars each).
-Vary style: hook, story, tutorial, listicle, myth-bust. Never repeat any used concept.
-Return JSON: { "titles": [${count} strings] }` }],
-          temperature: 0.9,
-          response_format: { type: 'json_object' },
-        });
-        try {
-          const p = JSON.parse(dayRes.choices[0].message.content);
-          allShortTitles.push(...(p.titles || []).slice(0, count));
-        } catch { /* fallback titles applied during slot build */ }
-      }
-
-      // Generate Long-form titles if plan includes them (one per Monday in the 7-day window)
-      let allLongFormTitles = [];
-      const longFormDates = config.longFormPerWeek > 0
-        ? dates.filter(dt => new Date(dt).getDay() === 1) : [];
-      if (longFormDates.length > 0) {
-        const lfRes = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content:
-            `YouTube long-form content strategist for a "${nicheName}" channel.
-${perfContext}${trendingContext}
-Generate exactly ${longFormDates.length} unique Long-form video titles (60–100 chars each).
-In-depth, educational, distinct from Shorts. Build on top performers with deeper angles.
-Already used Shorts (do NOT overlap): ${allShortTitles.slice(0, 20).map((t, j) => `${j + 1}. ${t}`).join('; ')}
-Return JSON: { "titles": [${longFormDates.length} strings] }` }],
-          temperature: 0.88,
-          response_format: { type: 'json_object' },
-        });
-        try { allLongFormTitles = JSON.parse(lfRes.choices[0].message.content).titles || []; }
-        catch { /* use fallbacks */ }
-      }
-
-      // Build one slot document per video
-      let shortIdx = 0, longFormIdx = 0;
-      const slots = [];
-      for (let i = 0; i < 7; i++) {
-        const day = i + 1, date = dates[i], dow = new Date(date).getDay();
-        for (let v = 0; v < config.shortsPerDay; v++) {
-          slots.push({
-            userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
-            day, date,
-            title: allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
-            type: 'Short', videoIndex: v + 1, totalForDay: config.shortsPerDay, angle: 'short',
-            status: 'pending', posted: false,
-            scheduledPostTime: assignPostingTime(date, v + 1, config.shortsPerDay),
-          });
-          shortIdx++;
-        }
-        if (config.longFormPerWeek > 0 && dow === 1) {
-          slots.push({
-            userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
-            day, date,
-            title: allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
-            type: 'Long-form', videoIndex: 1, totalForDay: 1, angle: 'long-form',
-            status: 'pending', posted: false,
-            scheduledPostTime: assignPostingTime(date, 1, 1),
-          });
-          longFormIdx++;
-        }
-      }
-
-      const weeklyInsights = {
-        generatedAt:        new Date().toISOString(),
-        totalAnalyzed:      insights?.totalAnalyzed   || 0,
-        topPerformers:      insights?.topPerformers   || [],
-        bottomPerformers:   insights?.bottomPerformers || [],
-        titlePatterns:      insights?.titlePatterns   || null,
-        trendingTopics:     trendingTopics,
-        generationStrategy: insights
-          ? `AI-optimised: built on top ${insights.topPerformers.length} performer(s), avoided bottom ${insights.bottomPerformers.length}`
-          : 'Standard generation — no prior performance data (first week)',
-      };
-
-      // Insert each slot as an individual MongoDB document
-      const slotsCol = agentCol('calendar_slots');
-      await slotsCol.deleteMany({ userId: String(calendar.userId), date: { $in: dates }, posted: { $ne: true } });
-      await slotsCol.insertMany(slots);
-
-      // Merge into content_calendars: keep posted/future slots outside this window, replace this week
-      const existingSlots = (calendar.slots || []).filter(s => s.posted || !dates.includes(s.date));
-      const mergedSlots   = [...existingSlots, ...slots].sort((a, b) => {
-        if ((a.date || '') < (b.date || '')) return -1;
-        if ((a.date || '') > (b.date || '')) return 1;
-        return (a.videoIndex || 0) - (b.videoIndex || 0);
-      });
-
-      await col.updateOne(
-        { _id: calendar._id },
-        { $set: { slots: mergedSlots, weeklyInsights, weeklyRefreshedAt: new Date().toISOString() } }
-      );
-      refreshed++;
-      console.log(`[WeeklyOpt] Refreshed calendar for user ${calendar.userId} — ${slots.length} slots, strategy: ${weeklyInsights.generationStrategy}`);
-    } catch (err) {
-      console.error(`[WeeklyOpt] Failed for calendar ${calendar._id}:`, err.message);
     }
+    if (!postedSlots.length) return '';
+
+    const user = await User.findById(userId).catch(() => null);
+    if (!user) return '';
+    const channel = (user.youtubeChannels || []).find(ch => ch.channelId === channelId)
+                 || (user.youtubeChannels || [])[0];
+    if (!channel?.accessToken) return '';
+
+    const { google } = require('googleapis');
+    const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+    oauth2.setCredentials({ access_token: channel.accessToken, refresh_token: channel.refreshToken });
+    const yt = google.youtube({ version: 'v3', auth: oauth2 });
+
+    const videoIds = [...new Set(postedSlots.map(s => s.youtubeVideoId))].slice(0, 50);
+    const statsRes = await yt.videos.list({ part: ['statistics'], id: videoIds });
+    const statsMap = {};
+    for (const item of (statsRes.data.items || [])) statsMap[item.id] = item.statistics;
+
+    const enriched = postedSlots
+      .map(s => {
+        const st = statsMap[s.youtubeVideoId] || {};
+        return { title: s.title, views: parseInt(st.viewCount || 0), likes: parseInt(st.likeCount || 0) };
+      })
+      .filter(v => v.views > 0 || v.likes > 0)
+      .sort((a, b) => (b.views + b.likes * 10) - (a.views + a.likes * 10));
+
+    if (!enriched.length) return '';
+
+    const list = enriched.slice(0, 5).map(v => `"${v.title}" (${v.views} views, ${v.likes} likes)`).join('; ');
+    return `Yesterday's best performing topics were: ${list}. Generate today's titles in the same niche, inspired by what worked yesterday but with fresh angles.\n`;
+  } catch (err) {
+    console.error('[DailyGen] Yesterday performance fetch failed (non-fatal):', err.message);
+    return '';
   }
-  console.log(`[WeeklyOpt] Complete — ${refreshed}/${calendars.length} calendar(s) refreshed`);
 }
 
 // POST /api/content/trigger-post — development only (system is fully automated in production)
@@ -4228,16 +4106,6 @@ app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// Learning Loop — Monday 3 AM: AI-optimised calendar regeneration based on YouTube performance
-if (FEATURES.learningLoop) {
-  cron.schedule('0 3 * * 1', async () => {
-    console.log('[CRON] Weekly AI-optimised calendar regeneration running...');
-    try {
-      await runWeeklyOptimizedCalendars();
-    } catch (err) { console.error('[CRON] Weekly optimisation error:', err.message); }
-  });
-}
 
 // Daily 00:01 UTC — generate today's slots for all active users and fire production pipeline
 cron.schedule('1 0 * * *', async () => {
