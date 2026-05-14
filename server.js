@@ -1035,6 +1035,19 @@ async function discoverNiches(keyword, plan = 'combo_pro') {
   }
 }
 
+const STATIC_FALLBACK_NICHES = [
+  { niche_id: 'psychology',       name: 'Psychology & Human Behaviour',  category: 'Education',        combined_score: 92, competition: 'low',    cpm_range: '$5-$18',  why_its_trending: 'High engagement evergreen content',        verdict: 'hot', live_data_used: false },
+  { niche_id: 'finance',          name: 'Personal Finance Tips',          category: 'Finance',          combined_score: 93, competition: 'medium', cpm_range: '$12-$45', why_its_trending: 'High CPM recession-proof niche',            verdict: 'hot', live_data_used: false },
+  { niche_id: 'stoicism',         name: 'Stoicism & Philosophy',          category: 'Self Improvement', combined_score: 91, competition: 'low',    cpm_range: '$5-$18',  why_its_trending: 'Growing mindfulness audience',              verdict: 'hot', live_data_used: false },
+  { niche_id: 'ai_tools',         name: 'AI Tools & Productivity',        category: 'Technology',       combined_score: 95, competition: 'medium', cpm_range: '$10-$35', why_its_trending: 'Fastest growing YouTube category',         verdict: 'hot', live_data_used: false },
+  { niche_id: 'health',           name: 'Health & Longevity',             category: 'Wellness',         combined_score: 90, competition: 'medium', cpm_range: '$7-$25',  why_its_trending: 'Post-pandemic health awareness',            verdict: 'hot', live_data_used: false },
+  { niche_id: 'mindfulness',      name: 'Mindfulness & Meditation',       category: 'Wellness',         combined_score: 91, competition: 'low',    cpm_range: '$6-$22',  why_its_trending: 'Mental health awareness growing',           verdict: 'hot', live_data_used: false },
+  { niche_id: 'entrepreneurship', name: 'Entrepreneurship & Startups',    category: 'Business',         combined_score: 92, competition: 'medium', cpm_range: '$10-$38', why_its_trending: 'Creator economy boom',                     verdict: 'hot', live_data_used: false },
+  { niche_id: 'science',          name: 'Science & Space Facts',          category: 'Education',        combined_score: 90, competition: 'low',    cpm_range: '$5-$15',  why_its_trending: 'Curiosity-driven viral content',            verdict: 'hot', live_data_used: false },
+  { niche_id: 'true_crime',       name: 'True Crime & Mysteries',         category: 'Entertainment',    combined_score: 91, competition: 'medium', cpm_range: '$5-$18',  why_its_trending: 'Consistently top YouTube category',        verdict: 'hot', live_data_used: false },
+  { niche_id: 'language',         name: 'Language Learning',              category: 'Education',        combined_score: 90, competition: 'low',    cpm_range: '$6-$20',  why_its_trending: 'Global audience appeal',                   verdict: 'hot', live_data_used: false },
+];
+
 // ── Top niches across all seed categories — cached 6h in MongoDB
 async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
   const cacheCol  = agentCol('niche_cache');
@@ -1074,19 +1087,7 @@ async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
   // Static fallback — returned when YouTube/OpenAI keys are missing or discovery fails
   if (!top.length) {
     console.warn('[Niche] discoverTopNiches: all seeds returned empty — using static fallback niches');
-    const staticNiches = [
-      { niche_id: 'psychology',      name: 'Psychology & Human Behaviour',  category: 'Education',       combined_score: 92, competition: 'low',    cpm_range: '$5-$18',  why_its_trending: 'High engagement evergreen content',       verdict: 'hot', live_data_used: false },
-      { niche_id: 'finance',         name: 'Personal Finance Tips',          category: 'Finance',         combined_score: 93, competition: 'medium', cpm_range: '$12-$45', why_its_trending: 'High CPM recession-proof niche',           verdict: 'hot', live_data_used: false },
-      { niche_id: 'stoicism',        name: 'Stoicism & Philosophy',          category: 'Self Improvement', combined_score: 91, competition: 'low',    cpm_range: '$5-$18',  why_its_trending: 'Growing mindfulness audience',             verdict: 'hot', live_data_used: false },
-      { niche_id: 'ai_tools',        name: 'AI Tools & Productivity',        category: 'Technology',      combined_score: 95, competition: 'medium', cpm_range: '$10-$35', why_its_trending: 'Fastest growing YouTube category',        verdict: 'hot', live_data_used: false },
-      { niche_id: 'health',          name: 'Health & Longevity',             category: 'Wellness',        combined_score: 90, competition: 'medium', cpm_range: '$7-$25',  why_its_trending: 'Post-pandemic health awareness',           verdict: 'hot', live_data_used: false },
-      { niche_id: 'mindfulness',     name: 'Mindfulness & Meditation',       category: 'Wellness',        combined_score: 91, competition: 'low',    cpm_range: '$6-$22',  why_its_trending: 'Mental health awareness growing',          verdict: 'hot', live_data_used: false },
-      { niche_id: 'entrepreneurship',name: 'Entrepreneurship & Startups',    category: 'Business',        combined_score: 92, competition: 'medium', cpm_range: '$10-$38', why_its_trending: 'Creator economy boom',                    verdict: 'hot', live_data_used: false },
-      { niche_id: 'science',         name: 'Science & Space Facts',          category: 'Education',       combined_score: 90, competition: 'low',    cpm_range: '$5-$15',  why_its_trending: 'Curiosity-driven viral content',           verdict: 'hot', live_data_used: false },
-      { niche_id: 'true_crime',      name: 'True Crime & Mysteries',         category: 'Entertainment',   combined_score: 91, competition: 'medium', cpm_range: '$5-$18',  why_its_trending: 'Consistently top YouTube category',       verdict: 'hot', live_data_used: false },
-      { niche_id: 'language',        name: 'Language Learning',              category: 'Education',       combined_score: 90, competition: 'low',    cpm_range: '$6-$20',  why_its_trending: 'Global audience appeal',                  verdict: 'hot', live_data_used: false },
-    ];
-    return { niches: staticNiches, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
+    return { niches: STATIC_FALLBACK_NICHES, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
   }
 
   const cachedAt = new Date().toISOString();
@@ -1148,19 +1149,34 @@ app.post('/api/niches/search', requireAuth, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const kw      = keyword.trim().toLowerCase();
-    const plan    = bodyPlan || user.plan || 'shorts_starter';
-    const cacheCol = agentCol('niche_cache');
-    const cacheKey = `search_${slugify(kw)}_${new Date().toISOString().slice(0, 10)}`;
-
-    // 1-hour search cache
+    const kw           = keyword.trim().toLowerCase();
+    const plan         = bodyPlan || user.plan || 'shorts_starter';
+    const cacheCol     = agentCol('niche_cache');
     const cacheHourKey = `search_${slugify(kw)}_${new Date().toISOString().slice(0, 13)}`;
+
+    // Instant fallback: filter static niches by keyword match
+    const fallbackMatches = STATIC_FALLBACK_NICHES.filter(n =>
+      (n.name     || '').toLowerCase().includes(kw) ||
+      (n.category || '').toLowerCase().includes(kw) ||
+      (n.niche_id || '').toLowerCase().includes(kw)
+    );
+
+    // 1-hour cache check
     const cached = await cacheCol.findOne({ cacheKey: cacheHourKey }).catch(() => null);
     if (cached?.niches?.length) {
       return res.json({ success: true, niches: cached.niches, result: cached.niches[0] || null, count: cached.niches.length, fromCache: true });
     }
 
-    const niches = await discoverNiches(kw, plan);
+    // Race real-time discovery against 10s timeout — always return something
+    let niches = [];
+    try {
+      niches = await Promise.race([
+        discoverNiches(kw, plan),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('10s timeout')), 10_000)),
+      ]);
+    } catch (e) {
+      console.warn(`[Niche] search("${kw}") timed out or failed — returning fallback: ${e.message}`);
+    }
 
     if (niches.length) {
       await cacheCol.updateOne(
@@ -1170,7 +1186,11 @@ app.post('/api/niches/search', requireAuth, async (req, res) => {
       ).catch(() => {});
     }
 
-    res.json({ success: true, niches, result: niches[0] || null, count: niches.length, fromCache: false });
+    const result = niches.length ? niches
+      : fallbackMatches.length   ? fallbackMatches
+      :                            STATIC_FALLBACK_NICHES.slice(0, 5);
+
+    res.json({ success: true, niches: result, result: result[0] || null, count: result.length, fromCache: false, fallback: !niches.length });
   } catch (err) {
     console.error('[Niche] /api/niches/search error:', err);
     res.status(500).json({ error: 'Failed to search niche' });

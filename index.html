@@ -409,24 +409,21 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .ne2-mode-btns{display:flex;background:var(--bg3);border-radius:9px;padding:3px;gap:2px;margin-bottom:1rem;width:fit-content}
 .ne2-mode-btn{padding:5px 13px;border-radius:7px;font-size:.74rem;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--text2);transition:all .12s}
 .ne2-mode-btn.active{background:var(--green);color:#fff}
-.ne2-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;margin-bottom:9px;overflow:hidden;transition:border-color .14s}
+.ne2-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;margin-bottom:5px;display:flex;align-items:center;gap:10px;padding:9px 11px;transition:border-color .14s;overflow:hidden}
 .ne2-card:hover{border-color:var(--border2)}
 .ne2-card.hot{border-left:3px solid var(--green)}
 .ne2-card.moderate{border-left:3px solid var(--amber)}
-.ne2-card.weak{border-left:3px solid rgba(107,114,128,.4)}
-.ne2-card-inner{padding:.9rem 1.1rem}
-.ne2-top{display:flex;align-items:flex-start;gap:10px;margin-bottom:7px}
-.ne2-label{font-size:.85rem;font-weight:600;color:var(--text)}
-.ne2-cat{font-size:.63rem;color:var(--text3);margin-top:2px}
-.ne2-score{font-size:1.5rem;font-weight:500;color:var(--text);line-height:1}
-.ne2-vbadge{font-size:.6rem;font-weight:700;padding:2px 7px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:3px;text-align:center}
-.vb-hot{background:rgba(16,185,129,.12);color:#6ee7b7}
-.vb-mod{background:rgba(245,158,11,.12);color:#fcd34d}
-.vb-weak{background:rgba(107,114,128,.1);color:#9ca3af}
-.ne2-bar{height:3px;background:rgba(255,255,255,.05);border-radius:2px;margin-bottom:8px;overflow:hidden}
-.ne2-bar-fill{height:100%;border-radius:2px}
-.ne2-meta{display:flex;gap:12px;flex-wrap:wrap;font-size:.68rem;color:var(--text3)}
-.ne2-meta span{color:var(--text);font-weight:600}
+.nc-left{flex:0 0 38%;min-width:0}
+.nc-mid{flex:0 0 36%;display:flex;gap:5px;align-items:stretch}
+.nc-right{flex:0 0 26%;display:flex;flex-direction:column;align-items:center;gap:3px}
+.nc-name{font-size:.8rem;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.25;margin:0}
+.nc-cat{font-size:.58rem;color:var(--text3);margin:.1rem 0 .15rem}
+.nc-why{font-size:.6rem;color:var(--text3);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0}
+.nc-stat{background:var(--bg2);border-radius:5px;padding:4px 5px;flex:1;text-align:center;min-width:0}
+.nc-stat-label{font-size:.52rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.nc-stat-val{font-size:.65rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nc-score-num{font-size:1.05rem;font-weight:800;color:var(--text);line-height:1}
+.nc-tier{font-size:.55rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#6ee7b7}
 
 /* Signup niche cards */
 .signup-niche-card{background:var(--bg3);border:1.5px solid var(--border);border-radius:10px;padding:.8rem 1rem;cursor:pointer;transition:all .14s;display:flex;align-items:center;gap:10px}
@@ -2464,33 +2461,53 @@ async function runNicheSearch() {
 function renderNicheCard(n) {
   const score      = n.combined_score || n.score || 0;
   const scoreTier  = score >= 95 ? 'Elite' : score >= 90 ? 'Strong' : 'Good';
-  const barColor   = score >= 90 ? '#1D9E75' : '#f59e0b';
   const cpmL       = n.cpm_l || n.cpmLow || 0;
   const cpmH       = n.cpm_h || n.cpmHigh || 0;
-  const cpmRange   = n.cpm_range || (cpmL && cpmH ? '$' + cpmL + '–$' + cpmH : null);
+  const cpmRange   = n.cpm_range || (cpmL && cpmH ? '$' + cpmL + '–$' + cpmH : '—');
   const nicheId    = n.niche_id || n.id || n.nicheId || '';
   const nicheLabel = n.label || n.name || nicheId;
   const comp       = (n.competition || n.comp || '').toLowerCase();
   const compColor  = comp === 'low' ? '#1D9E75' : comp === 'high' ? '#ef4444' : '#f59e0b';
+  const compLabel  = comp ? (comp.charAt(0).toUpperCase() + comp.slice(1)) : '—';
   const why        = n.why_its_trending || '';
+  const trend      = score >= 93 ? 'Hot' : score >= 90 ? 'Rising' : 'Stable';
+  const trendColor = score >= 93 ? '#f87171' : score >= 90 ? '#1D9E75' : '#f59e0b';
+  // SVG ring: r=18, cx=22, cy=22
+  const r = 18, circ = +(2 * Math.PI * r).toFixed(2);
+  const offset = +(circ * (1 - Math.min(score, 100) / 100)).toFixed(2);
   return `<div class="ne2-card hot">
-    <div class="ne2-card-inner">
-      <div class="ne2-top">
-        <div style="flex:1"><p class="ne2-label">${nicheLabel}</p><p class="ne2-cat">${n.cat||n.category||''}</p></div>
-        <div style="text-align:right">
-          <p class="ne2-score">${Math.round(score)}</p>
-          <span class="ne2-vbadge vb-hot">${scoreTier}</span>
+    <div class="nc-left">
+      <p class="nc-name" title="${nicheLabel}">${nicheLabel}</p>
+      <p class="nc-cat">${n.cat||n.category||''}</p>
+      ${why ? `<p class="nc-why" title="${why}">${why}</p>` : ''}
+    </div>
+    <div class="nc-mid">
+      <div class="nc-stat">
+        <div class="nc-stat-label">CPM</div>
+        <div class="nc-stat-val" style="color:#6ee7b7">${cpmRange}</div>
+      </div>
+      <div class="nc-stat">
+        <div class="nc-stat-label">Competition</div>
+        <div class="nc-stat-val" style="color:${compColor}">${compLabel}</div>
+      </div>
+      <div class="nc-stat">
+        <div class="nc-stat-label">Trend</div>
+        <div class="nc-stat-val" style="color:${trendColor}">${trend}</div>
+      </div>
+    </div>
+    <div class="nc-right">
+      <div style="position:relative;width:44px;height:44px">
+        <svg width="44" height="44" style="transform:rotate(-90deg)">
+          <circle cx="22" cy="22" r="${r}" fill="none" stroke="rgba(255,255,255,.06)" stroke-width="4"/>
+          <circle cx="22" cy="22" r="${r}" fill="none" stroke="#1D9E75" stroke-width="4"
+            stroke-dasharray="${circ}" stroke-dashoffset="${offset}" stroke-linecap="round"/>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
+          <span class="nc-score-num">${Math.round(score)}</span>
         </div>
       </div>
-      <div class="ne2-bar"><div class="ne2-bar-fill" style="width:${Math.min(score,100)}%;background:${barColor}"></div></div>
-      <div class="ne2-meta">
-        ${cpmRange ? `<span>CPM <span>${cpmRange}</span></span>` : ''}
-        ${comp ? `<span style="color:${compColor};font-weight:600;text-transform:capitalize">${comp} competition</span>` : ''}
-      </div>
-      ${why ? `<p style="font-size:.68rem;color:var(--text3);margin:.45rem 0 .3rem;line-height:1.45">${why}</p>` : ''}
-      <div style="display:flex;gap:7px;margin-top:.65rem">
-        <button class="act act-ok" style="font-size:.68rem;padding:4px 11px" onclick="selectNiche('${nicheId}','${nicheLabel.replace(/'/g,"\\'")}')">Use this niche</button>
-      </div>
+      <span class="nc-tier">${scoreTier}</span>
+      <button class="act act-ok" style="font-size:.6rem;padding:3px 8px;margin-top:1px" onclick="selectNiche('${nicheId}','${nicheLabel.replace(/'/g,"\\'")}')">Use niche</button>
     </div>
   </div>`;
 }
