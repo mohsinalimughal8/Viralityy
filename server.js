@@ -160,6 +160,7 @@ const userSchema = new mongoose.Schema({
   affiliateCode:   { type: String, unique: true, sparse: true },
   referredBy:      { type: String },
   autoPost:        { type: Boolean, default: true },
+  timezone:        { type: String },
   createdAt:       { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -3011,6 +3012,19 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   } catch (err) {
     console.error('[Auth] forgot-password error:', err);
     res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// PATCH /api/user/timezone — save the user's detected IANA timezone
+app.patch('/api/user/timezone', requireAuth, async (req, res) => {
+  try {
+    const { timezone } = req.body;
+    if (!timezone || typeof timezone !== 'string') return res.status(400).json({ error: 'timezone must be a non-empty string' });
+    await User.updateOne({ _id: req.user.id }, { $set: { timezone } });
+    res.json({ success: true, timezone });
+  } catch (err) {
+    console.error('[User] PATCH /timezone error:', err);
+    res.status(500).json({ error: 'Failed to update timezone' });
   }
 });
 
