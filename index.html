@@ -1964,9 +1964,23 @@ function renderCalendarGrid(slots, totalVideos) {
   const days = [...new Set(slots.map(s => s.day))].sort((a, b) => a - b);
   const totalVids = totalVideos || slots.length;
 
+  // Count videos in the next 7 days for the week summary
+  const todayStr  = new Date().toISOString().slice(0, 10);
+  const weekEnd   = new Date(); weekEnd.setDate(weekEnd.getDate() + 7);
+  const weekEndStr = weekEnd.toISOString().slice(0, 10);
+  const weekCount  = slots.filter(s => s.date >= todayStr && s.date < weekEndStr).length;
+
   const dayHeaders = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d =>
     `<div style="font-size:.6rem;font-weight:700;color:var(--text3);text-align:center;padding:.3rem 0;text-transform:uppercase;letter-spacing:.06em">${d}</div>`
   ).join('');
+
+  const fmtTime = t => {
+    if (!t) return '';
+    const m = t.match(/T(\d{2}):(\d{2})/);
+    if (!m) return '';
+    const h = parseInt(m[1]), min = m[2], ampm = h >= 12 ? 'PM' : 'AM';
+    return `${h % 12 || 12}:${min} ${ampm}`;
+  };
 
   const SHOW = 3;
   const cells = days.map(day => {
@@ -1978,12 +1992,14 @@ function renderCalendarGrid(slots, totalVideos) {
     const hidden = items.length > SHOW ? items.length - SHOW : 0;
 
     const renderItem = (s, hide) => {
-      const isLong = s.type === 'Long-form';
-      const badge  = isLong
+      const isLong  = s.type === 'Long-form';
+      const badge   = isLong
         ? `<span style="flex-shrink:0;font-size:.49rem;font-weight:700;color:#f59e0b;background:rgba(245,158,11,.13);border-radius:3px;padding:1px 4px">LF</span>`
         : `<span style="flex-shrink:0;font-size:.49rem;font-weight:700;color:#a5b4fc;background:rgba(99,102,241,.13);border-radius:3px;padding:1px 4px">S</span>`;
-      return `<div class="${hide ? 'cal-hidden' : ''}" style="display:${hide ? 'none' : 'flex'};align-items:flex-start;gap:3px;margin-bottom:2px" title="${s.title.replace(/"/g,'&quot;')}">
-        ${badge}<span style="font-size:.58rem;color:var(--text);line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${s.title}</span>
+      const timeStr = fmtTime(s.scheduledPostTime);
+      return `<div class="${hide ? 'cal-hidden' : ''}" style="display:${hide ? 'none' : 'flex'};flex-direction:column;gap:1px;margin-bottom:3px;padding:2px 3px;background:var(--bg2);border-radius:4px" title="${(s.title||'').replace(/"/g,'&quot;')}">
+        <div style="display:flex;align-items:center;gap:3px">${badge}${timeStr ? `<span style="font-size:.46rem;color:var(--text3)">${timeStr}</span>` : ''}</div>
+        <span style="font-size:.58rem;color:var(--text);line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${s.title}</span>
       </div>`;
     };
 
@@ -2000,7 +2016,7 @@ function renderCalendarGrid(slots, totalVideos) {
   }).join('');
 
   el.innerHTML = `
-    <p style="font-size:.72rem;color:var(--text3);margin-bottom:.6rem">${totalVids} videos planned this month</p>
+    <p style="font-size:.72rem;color:var(--text3);margin-bottom:.6rem">${totalVids} videos total · <span style="color:var(--purple);font-weight:600">${weekCount} this week</span></p>
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px">${dayHeaders}</div>
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">${cells}</div>`;
 }

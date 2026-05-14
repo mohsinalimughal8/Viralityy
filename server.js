@@ -1332,7 +1332,8 @@ Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
           videoIndex:        v + 1,
           totalForDay:       config.shortsPerDay,
           angle:             'short',
-          status:            'planned',
+          status:            'pending',
+          posted:            false,
           scheduledPostTime: assignPostingTime(date, v + 1, config.shortsPerDay),
         });
         shortIdx++;
@@ -1346,7 +1347,8 @@ Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
           videoIndex:        1,
           totalForDay:       1,
           angle:             'long-form',
-          status:            'planned',
+          status:            'pending',
+          posted:            false,
           scheduledPostTime: assignPostingTime(date, 1, 1),
         });
         longFormIdx++;
@@ -1370,6 +1372,13 @@ Return JSON: { "titles": [${lfDupeIdx.length} strings] }` }],
       { $set: { userId: req.user.id, channelId: channelId || '', nicheName, plan: user.plan, slots, status: 'active', generatedAt: new Date().toISOString(), weeklyInsights } },
       { upsert: true }
     );
+
+    // Write each slot as an individual document so the post pipeline can consume them
+    const slotsCol = await agentCol('calendar_slots');
+    await slotsCol.deleteMany({ userId: req.user.id, posted: { $ne: true } });
+    if (slots.length) {
+      await slotsCol.insertMany(slots.map(s => ({ ...s, userId: req.user.id, channelId: channelId || '', nicheName })));
+    }
 
     res.json({ success: true, slots, count: slots.length, totalVideos: slots.length, plan: user.plan, weeklyInsights });
 
@@ -3794,41 +3803,40 @@ Strategy: Generate titles that build on what worked. Never repeat any of the abo
 `;
       }
 
-      // Generate 30 new days of Shorts titles in 5-day batches
+      // Generate the next 7 days — one OpenAI call per day for shortsPerDay titles
       const today = new Date();
-      const dates = Array.from({ length: 30 }, (_, i) => {
+      const dates = Array.from({ length: 7 }, (_, i) => {
         const d = new Date(today); d.setDate(d.getDate() + i);
         return d.toISOString().slice(0, 10);
       });
-      const BATCH = 5;
+
       const allShortTitles = [];
 
-      for (let batchStart = 0; batchStart < 30; batchStart += BATCH) {
-        const batchDays  = Math.min(BATCH, 30 - batchStart);
-        const batchCount = batchDays * config.shortsPerDay;
-        const usedList   = allShortTitles.length
-          ? `\nAlready used — do NOT repeat:\n${allShortTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')}\n`
+      for (let i = 0; i < 7; i++) {
+        const count    = config.shortsPerDay;
+        const usedList = allShortTitles.length
+          ? `\nAlready used — do NOT repeat:\n${allShortTitles.map((t, j) => `${j + 1}. ${t}`).join('\n')}\n`
           : '';
-        const batchRes = await openai.chat.completions.create({
+        const dayRes = await openai.chat.completions.create({
           model: 'gpt-4o-mini',
           messages: [{ role: 'user', content:
             `YouTube Shorts content strategist for a "${nicheName}" channel.
 ${perfContext}${trendingContext}${usedList}
-Generate exactly ${batchCount} NEW, completely unique Short video titles (under 60 chars each).
+Generate exactly ${count} NEW, completely unique Short video titles (under 60 chars each).
 Vary style: hook, story, tutorial, listicle, myth-bust. Never repeat any used concept.
-Return JSON: { "titles": [${batchCount} strings] }` }],
+Return JSON: { "titles": [${count} strings] }` }],
           temperature: 0.9,
           response_format: { type: 'json_object' },
         });
         try {
-          const p = JSON.parse(batchRes.choices[0].message.content);
-          allShortTitles.push(...(p.titles || []));
+          const p = JSON.parse(dayRes.choices[0].message.content);
+          allShortTitles.push(...(p.titles || []).slice(0, count));
         } catch { /* fallback titles applied during slot build */ }
       }
 
-      // Generate Long-form titles if plan includes them
+      // Generate Long-form titles if plan includes them (one per Monday in the 7-day window)
       let allLongFormTitles = [];
-      const longFormDates   = config.longFormPerWeek > 0
+      const longFormDates = config.longFormPerWeek > 0
         ? dates.filter(dt => new Date(dt).getDay() === 1) : [];
       if (longFormDates.length > 0) {
         const lfRes = await openai.chat.completions.create({
@@ -3838,7 +3846,7 @@ Return JSON: { "titles": [${batchCount} strings] }` }],
 ${perfContext}${trendingContext}
 Generate exactly ${longFormDates.length} unique Long-form video titles (60–100 chars each).
 In-depth, educational, distinct from Shorts. Build on top performers with deeper angles.
-Already used Shorts (do NOT overlap): ${allShortTitles.slice(0, 20).map((t, i) => `${i + 1}. ${t}`).join('; ')}
+Already used Shorts (do NOT overlap): ${allShortTitles.slice(0, 20).map((t, j) => `${j + 1}. ${t}`).join('; ')}
 Return JSON: { "titles": [${longFormDates.length} strings] }` }],
           temperature: 0.88,
           response_format: { type: 'json_object' },
@@ -3847,21 +3855,31 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
         catch { /* use fallbacks */ }
       }
 
-      // Build slots
+      // Build one slot document per video
       let shortIdx = 0, longFormIdx = 0;
       const slots = [];
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 7; i++) {
         const day = i + 1, date = dates[i], dow = new Date(date).getDay();
         for (let v = 0; v < config.shortsPerDay; v++) {
-          slots.push({ day, date, title: allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
-            type: 'Short', videoIndex: v + 1, totalForDay: config.shortsPerDay, angle: 'short', status: 'planned',
-            scheduledPostTime: assignPostingTime(date, v + 1, config.shortsPerDay) });
+          slots.push({
+            userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
+            day, date,
+            title: allShortTitles[shortIdx] || `${nicheName} Short — Day ${day} #${v + 1}`,
+            type: 'Short', videoIndex: v + 1, totalForDay: config.shortsPerDay, angle: 'short',
+            status: 'pending', posted: false,
+            scheduledPostTime: assignPostingTime(date, v + 1, config.shortsPerDay),
+          });
           shortIdx++;
         }
         if (config.longFormPerWeek > 0 && dow === 1) {
-          slots.push({ day, date, title: allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
-            type: 'Long-form', videoIndex: 1, totalForDay: 1, angle: 'long-form', status: 'planned',
-            scheduledPostTime: assignPostingTime(date, 1, 1) });
+          slots.push({
+            userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
+            day, date,
+            title: allLongFormTitles[longFormIdx] || `Deep Dive ${longFormIdx + 1}: ${nicheName}`,
+            type: 'Long-form', videoIndex: 1, totalForDay: 1, angle: 'long-form',
+            status: 'pending', posted: false,
+            scheduledPostTime: assignPostingTime(date, 1, 1),
+          });
           longFormIdx++;
         }
       }
@@ -3878,9 +3896,22 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
           : 'Standard generation — no prior performance data (first week)',
       };
 
+      // Insert each slot as an individual MongoDB document
+      const slotsCol = agentCol('calendar_slots');
+      await slotsCol.deleteMany({ userId: String(calendar.userId), date: { $in: dates }, posted: { $ne: true } });
+      await slotsCol.insertMany(slots);
+
+      // Merge into content_calendars: keep posted/future slots outside this window, replace this week
+      const existingSlots = (calendar.slots || []).filter(s => s.posted || !dates.includes(s.date));
+      const mergedSlots   = [...existingSlots, ...slots].sort((a, b) => {
+        if ((a.date || '') < (b.date || '')) return -1;
+        if ((a.date || '') > (b.date || '')) return 1;
+        return (a.videoIndex || 0) - (b.videoIndex || 0);
+      });
+
       await col.updateOne(
         { _id: calendar._id },
-        { $set: { slots, generatedAt: new Date().toISOString(), weeklyInsights, weeklyRefreshedAt: new Date().toISOString() } }
+        { $set: { slots: mergedSlots, weeklyInsights, weeklyRefreshedAt: new Date().toISOString() } }
       );
       refreshed++;
       console.log(`[WeeklyOpt] Refreshed calendar for user ${calendar.userId} — ${slots.length} slots, strategy: ${weeklyInsights.generationStrategy}`);
