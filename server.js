@@ -3724,7 +3724,16 @@ async function pipelineGenerateVoiceover(script, userId) {
       lastErr = err;
       logAPIUsage('gemini_tts', 'voiceover', userId, 0, 0, false);
       console.warn(`[Voiceover] Attempt ${attempt}/3 failed: ${err.message}`);
-      if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+      if (attempt < 3) {
+        const is429 = err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED') ||
+                      err.message?.includes('quota') || err.status === 429;
+        if (is429) {
+          console.warn('[Voiceover] Rate limit (429) — waiting 60s before retry');
+          await new Promise(r => setTimeout(r, 60000));
+        } else {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
     }
   }
   throw new Error(`Voiceover failed after 3 attempts: ${lastErr.message}`);
@@ -4252,6 +4261,9 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
       { $set: { [`slots.$[s].voiceoverGenerated`]: true, [`slots.$[s].pipelineStatus`]: 'voiceover-done' } },
       { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
     ).catch(() => {});
+    // Rate-limit guard: wait 60s after each voiceover so sequential slots don't hit Gemini quota
+    console.log('[Pipeline] Waiting 60s after voiceover to avoid Gemini rate limits…');
+    await new Promise(r => setTimeout(r, 60000));
 
     // 3/3 Footage — fetch clip URLs and save to MongoDB (no /tmp files here)
     console.log(`[Pipeline] 3/3 Footage — "${slot.title}"`);
