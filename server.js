@@ -1178,20 +1178,21 @@ app.get('/api/content/calendar/today', requireAuth, async (req, res) => {
     const userId   = String(req.user.id);
     const slotsCol = agentCol('calendar_slots');
 
-    let slots = await slotsCol
-      .find({ userId, date: today })
-      .sort({ videoIndex: 1 })
-      .toArray();
+    let [slots, allTimePosted] = await Promise.all([
+      slotsCol.find({ userId, date: today }).sort({ videoIndex: 1 }).toArray(),
+      slotsCol.countDocuments({ userId, posted: true }),
+    ]);
 
     if (slots.length) {
       slots.forEach(s => { if (s._id) s._id = s._id.toString(); });
       return res.json({
-        success:     true,
+        success:       true,
         slots,
         today,
-        fromCache:   true,
-        generatedAt: slots[0]?.generatedAt || today,
-        count:       slots.length,
+        fromCache:     true,
+        generatedAt:   slots[0]?.generatedAt || today,
+        count:         slots.length,
+        allTimePosted,
       });
     }
 
@@ -1206,12 +1207,13 @@ app.get('/api/content/calendar/today', requireAuth, async (req, res) => {
     slots.forEach(s => { if (s._id) s._id = s._id.toString(); });
 
     res.json({
-      success:     true,
+      success:       true,
       slots,
       today,
-      fromCache:   false,
-      generatedAt: slots[0]?.generatedAt || new Date().toISOString(),
-      count:       slots.length,
+      fromCache:     false,
+      generatedAt:   slots[0]?.generatedAt || new Date().toISOString(),
+      count:         slots.length,
+      allTimePosted,
     });
   } catch (err) {
     console.error('[CalToday] Error:', err.message);

@@ -982,15 +982,14 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT PLANNER ── -->
 <div class="dash-page" id="dp-planner">
-  <div class="dash-topbar"><div><p class="ph">Content Planner</p><p class="ps">Today's scheduled videos — generated once per day, loaded from cache</p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-sm" style="background:var(--bg3);border:1px solid var(--border2);color:var(--text2)" onclick="initPlanner()">Refresh</button><button onclick="showInfoModal('Content Calendar','Today\'s videos generated each morning by AI. Topics are chosen based on yesterday\'s performance. Loads instantly from cache — never regenerates on page open.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
+  <div class="dash-topbar"><div><p class="ph">Content Calendar</p><p class="ps" id="planner-date-subtitle">Today's videos</p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><div style="display:flex;gap:8px;align-items:center"><button onclick="showInfoModal('Content Calendar','Today\'s videos generated each morning by AI. Topics are chosen based on yesterday\'s performance. Loads instantly from cache — never regenerates on page open.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
   <div class="stats-row">
-    <div class="stat-card"><p class="sc-label">Today's videos</p><p class="sc-value" id="stat-planner-total">—</p><p class="sc-sub">Scheduled</p></div>
+    <div class="stat-card"><p class="sc-label">Today's Videos</p><p class="sc-value" id="stat-planner-total">—</p><p class="sc-sub">Scheduled</p></div>
     <div class="stat-card"><p class="sc-label">Posted</p><p class="sc-value" id="stat-planner-posted">—</p><p class="sc-sub green">On schedule</p></div>
     <div class="stat-card"><p class="sc-label">Pending</p><p class="sc-value" id="stat-planner-queued">—</p><p class="sc-sub" style="color:var(--amber)">Awaiting post</p></div>
-    <div class="stat-card"><p class="sc-label">All-time posted</p><p class="sc-value" id="stat-planner-upcoming">—</p><p class="sc-sub">Total videos</p></div>
+    <div class="stat-card"><p class="sc-label">All-time Posted</p><p class="sc-value" id="stat-planner-alltime">—</p><p class="sc-sub">Total videos</p></div>
   </div>
   <div class="card-block full">
-    <h4 style="margin-bottom:.85rem" id="planner-date-heading">Today's calendar</h4>
     <div id="planner-slots"></div>
   </div>
 </div>
@@ -2242,81 +2241,35 @@ async function skipVideo(slotId, source) {
 }
 
 // ════════════════════════════════════════════
-// CONTENT PLANNER — live from /api/agents/planner/calendar
+// CONTENT PLANNER — today-only vertical list
 // ════════════════════════════════════════════
-const STATUS_COLOR = {queued:'var(--green)',generating:'var(--amber)',planned:'var(--purple)',posted:'var(--text3)'};
-const STATUS_ICON  = {queued:'✓ Queued',generating:'⏳ Generating',planned:'📋 Planned',posted:'✓ Posted'};
-const ANGLE_COLOR = { hook:'#6366f1', story:'#10b981', tutorial:'#f59e0b', listicle:'#3b82f6', 'myth-bust':'#ec4899', short:'#8b5cf6', planned:'#6b7280' };
 
-let _calExpandedDays = new Set();
-function toggleCalDay(day) {
-  _calExpandedDays.has(day) ? _calExpandedDays.delete(day) : _calExpandedDays.add(day);
-  const card = document.getElementById(`cal-day-${day}`);
-  if (!card) return;
-  card.querySelectorAll('.cal-hidden').forEach(el => el.style.display = _calExpandedDays.has(day) ? 'flex' : 'none');
-  const btn = card.querySelector('.cal-expand-btn');
-  if (btn) btn.textContent = _calExpandedDays.has(day) ? 'Show less' : btn.dataset.label;
-}
-
-function renderCalendarGrid(slots, totalVideos) {
+function renderDayList(slots) {
   const el = document.getElementById('planner-slots');
-  if (!el || !slots?.length) return;
-  _calExpandedDays.clear();
-
-  const byDay = {};
-  slots.forEach(s => { (byDay[s.day] = byDay[s.day] || []).push(s); });
-  const days = [...new Set(slots.map(s => s.day))].sort((a, b) => a - b);
-  const totalVids = totalVideos || slots.length;
-
-  // Count videos in the next 7 days for the week summary
-  const todayStr  = new Date().toISOString().slice(0, 10);
-  const weekEnd   = new Date(); weekEnd.setDate(weekEnd.getDate() + 7);
-  const weekEndStr = weekEnd.toISOString().slice(0, 10);
-  const weekCount  = slots.filter(s => s.date >= todayStr && s.date < weekEndStr).length;
-
-  const dayHeaders = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d =>
-    `<div style="font-size:.6rem;font-weight:700;color:var(--text3);text-align:center;padding:.3rem 0;text-transform:uppercase;letter-spacing:.06em">${d}</div>`
-  ).join('');
-
-  const fmtTime = t => t ? formatTime(t) : '';
-
-  const SHOW = 3;
-  const cells = days.map(day => {
-    const items  = byDay[day] || [];
-    const first  = items[0];
-    const d      = first?.date ? new Date(first.date) : null;
-    const dayNum = d ? d.getDate() : day;
-    const mon    = d ? d.toLocaleString('en-GB', { month: 'short', timeZone: userTZ }) : '';
-    const hidden = items.length > SHOW ? items.length - SHOW : 0;
-
-    const renderItem = (s, hide) => {
-      const isLong  = s.type === 'Long-form';
-      const badge   = isLong
-        ? `<span style="flex-shrink:0;font-size:.49rem;font-weight:700;color:#f59e0b;background:rgba(245,158,11,.13);border-radius:3px;padding:1px 4px">LF</span>`
-        : `<span style="flex-shrink:0;font-size:.49rem;font-weight:700;color:#a5b4fc;background:rgba(99,102,241,.13);border-radius:3px;padding:1px 4px">S</span>`;
-      const timeStr = fmtTime(s.scheduledPostTime);
-      return `<div class="${hide ? 'cal-hidden' : ''}" style="display:${hide ? 'none' : 'flex'};flex-direction:column;gap:1px;margin-bottom:3px;padding:2px 3px;background:var(--bg2);border-radius:4px" title="${(s.title||'').replace(/"/g,'&quot;')}">
-        <div style="display:flex;align-items:center;gap:3px">${badge}${timeStr ? `<span style="font-size:.46rem;color:var(--text3)">${timeStr}</span>` : ''}</div>
-        <span style="font-size:.58rem;color:var(--text);line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${s.title}</span>
-      </div>`;
-    };
-
-    const visibleHtml = items.slice(0, SHOW).map(s => renderItem(s, false)).join('');
-    const hiddenHtml  = hidden > 0 ? items.slice(SHOW).map(s => renderItem(s, true)).join('') : '';
-    const expandBtn   = hidden > 0
-      ? `<button class="cal-expand-btn" data-label="+${hidden} more" onclick="toggleCalDay(${day})" style="margin-top:3px;font-size:.52rem;color:var(--purple);background:none;border:none;cursor:pointer;padding:0;text-align:left">+${hidden} more</button>`
-      : '';
-
-    return `<div id="cal-day-${day}" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.45rem .4rem;min-height:80px;display:flex;flex-direction:column">
-      <span style="font-size:.57rem;color:var(--text3);font-weight:700;margin-bottom:3px">${dayNum}${mon ? ' ' + mon : ''}</span>
-      ${visibleHtml}${hiddenHtml}${expandBtn}
+  if (!el) return;
+  if (!slots?.length) {
+    el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No slots scheduled for today.</div>';
+    return;
+  }
+  el.innerHTML = slots.map(s => {
+    const isLong    = s.type === 'Long-form';
+    const badge     = isLong
+      ? `<span style="flex-shrink:0;font-size:.62rem;font-weight:700;color:#f59e0b;background:rgba(245,158,11,.13);border-radius:3px;padding:2px 6px;letter-spacing:.02em">LF</span>`
+      : `<span style="flex-shrink:0;font-size:.62rem;font-weight:700;color:#a5b4fc;background:rgba(99,102,241,.13);border-radius:3px;padding:2px 6px;letter-spacing:.02em">S</span>`;
+    const timeStr   = s.scheduledPostTime ? formatTime(s.scheduledPostTime) : '—';
+    const isPosted  = s.posted || s.status === 'posted';
+    const isPending = !isPosted;
+    const statusTxt = isPosted ? 'Posted' : (s.status === 'generating' ? 'Processing' : 'Queued');
+    const statusBg  = isPosted ? 'rgba(16,185,129,.12)' : 'rgba(245,158,11,.12)';
+    const statusClr = isPosted ? 'var(--green)' : 'var(--amber)';
+    const statusEl  = `<span style="flex-shrink:0;font-size:.62rem;font-weight:600;color:${statusClr};background:${statusBg};border-radius:4px;padding:2px 9px">${statusTxt}</span>`;
+    return `<div style="display:flex;align-items:center;gap:.75rem;padding:.7rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:5px">
+      <span style="flex-shrink:0;width:44px;font-size:.72rem;font-weight:600;color:var(--text2);font-variant-numeric:tabular-nums">${timeStr}</span>
+      ${badge}
+      <span style="flex:1;font-size:.82rem;color:var(--text);overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${(s.title||'').replace(/"/g,'&quot;')}">${s.title || 'Untitled'}</span>
+      ${statusEl}
     </div>`;
   }).join('');
-
-  el.innerHTML = `
-    <p style="font-size:.72rem;color:var(--text3);margin-bottom:.6rem">${totalVids} videos total · <span style="color:var(--purple);font-weight:600">${weekCount} this week</span></p>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px">${dayHeaders}</div>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">${cells}</div>`;
 }
 
 async function initPlanner() {
@@ -2324,39 +2277,35 @@ async function initPlanner() {
   if (!el) return;
   el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3);font-size:.82rem">Loading today\'s calendar…</div>';
 
-  const data = await apiCall('/api/content/calendar/today');
+  const data  = await apiCall('/api/content/calendar/today');
   const slots = data?.slots || [];
   const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val ?? '—'; };
 
-  // Update date heading and generated-at status line
-  const heading = document.getElementById('planner-date-heading');
-  const today = new Date().toISOString().slice(0, 10);
-  if (heading) {
-    const dateLabel = new Date(today + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', timeZone:'UTC' });
-    heading.textContent = `${dateLabel} — today's calendar`;
+  // Subtitle: "Today's videos — Thursday, 14 May 2026"
+  const subtitleEl = document.getElementById('planner-date-subtitle');
+  if (subtitleEl) {
+    const today     = new Date().toISOString().slice(0, 10);
+    const dateLabel = new Date(today + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', year:'numeric', timeZone:'UTC' });
+    subtitleEl.textContent = `Today's videos — ${dateLabel}`;
   }
+
+  // "Generated at … · loaded from cache"
   const statusEl = document.getElementById('planner-trending-status');
   if (statusEl && data?.generatedAt) {
     statusEl.textContent = `Generated at ${formatTime(data.generatedAt)} · ${data.fromCache ? 'loaded from cache' : 'just generated'}`;
     statusEl.style.display = 'block';
   }
 
-  setStat('stat-planner-total',    slots.length || 0);
-  setStat('stat-planner-posted',   slots.filter(s => s.posted || s.status === 'posted').length);
-  setStat('stat-planner-queued',   slots.filter(s => !s.posted && s.status !== 'posted').length);
-
-  // All-time posted count — fetch separately (lightweight)
-  apiCall('/api/agents/planner/calendar').then(r => {
-    setStat('stat-planner-upcoming', r?.videosPosted ?? '—');
-  }).catch(() => {});
+  setStat('stat-planner-total',  slots.length || 0);
+  setStat('stat-planner-posted', slots.filter(s => s.posted || s.status === 'posted').length);
+  setStat('stat-planner-queued', slots.filter(s => !s.posted && s.status !== 'posted').length);
+  setStat('stat-planner-alltime', data?.allTimePosted ?? '—');
 
   if (!slots.length) {
-    el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
-      Today's content is being generated — check back in a moment, or click Refresh.
-    </div>`;
+    el.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">Today\'s content is being generated — check back in a moment.</div>';
     return;
   }
-  renderCalendarGrid(slots, slots.length);
+  renderDayList(slots);
 }
 
 // generateCalendar kept for the manual 30-day plan flow (POST /api/content/calendar).
