@@ -3677,16 +3677,60 @@ Return valid JSON:
 
 // Step 2 — Generate voiceover via Gemini 2.5 Flash TTS
 // Returns path to a WAV file ready for the ffmpeg assembly step.
+// Groups word-level TTS timepoints into 3-4 word caption segments
+function buildCaptionsFromTimepoints(words, timepoints) {
+  const markTimes = {};
+  for (const tp of timepoints) {
+    const idx = parseInt(String(tp.markName || '').replace(/^w/, ''), 10);
+    if (!isNaN(idx)) markTimes[idx] = Number(tp.timeSeconds);
+  }
+  const timed = [];
+  for (let i = 0; i < words.length; i++) {
+    if (markTimes[i] !== undefined) timed.push({ word: words[i], start: markTimes[i] });
+  }
+  if (timed.length === 0) return [];
+  for (let i = 0; i < timed.length - 1; i++) timed[i].end = timed[i + 1].start;
+  timed[timed.length - 1].end = timed[timed.length - 1].start + 0.4;
+  const segments = [];
+  for (let i = 0; i < timed.length; i += 4) {
+    const group = timed.slice(i, i + 4);
+    segments.push({
+      text:  group.map(w => w.word).join(' '),
+      start: parseFloat(group[0].start.toFixed(2)),
+      end:   parseFloat(group[group.length - 1].end.toFixed(2)),
+    });
+  }
+  return segments;
+}
+
+// Returns actual audio duration in seconds via ffprobe (fallback: 30)
+function getAudioDurationSec(audioPath) {
+  return new Promise(resolve => {
+    exec(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
+      (err, stdout) => { resolve(parseFloat(stdout) || 30); }
+    );
+  });
+}
+
+// Returns { audioPath, captions } — captions use word-level TTS timestamps when available,
+// falling back to audio-duration-based even distribution (never character-count estimation).
 async function pipelineGenerateVoiceover(script, userId) {
   const apiKey = process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not configured — add it in Railway env vars');
 
   const textToSpeech = require('@google-cloud/text-to-speech');
   const client = new textToSpeech.TextToSpeechClient({ apiKey });
+
+  // Wrap each word in an SSML <mark> so TTS returns per-word timepoints
+  const escSSML = w => w.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const words = script.slice(0, 5000).split(/\s+/).filter(Boolean);
+  const ssml  = '<speak>' + words.map((w, i) => `<mark name="w${i}"/>${escSSML(w)}`).join(' ') + '</speak>';
+
   const request = {
-    input: { text: script.slice(0, 5000) },
+    input: { ssml },
     voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
-    audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0 },
+    audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0, enableWordTimeOffsets: true },
   };
 
   let lastErr;
@@ -3695,8 +3739,18 @@ async function pipelineGenerateVoiceover(script, userId) {
       const [response] = await client.synthesizeSpeech(request);
       const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.mp3`;
       require('fs').writeFileSync(audioPath, response.audioContent, 'binary');
-      console.log(`[Voiceover] ✓ ${audioPath} — ${Math.round(response.audioContent.length / 1024)} KB (attempt ${attempt}/3)`);
-      return audioPath;
+
+      const timepoints = Array.isArray(response.timepoints) ? response.timepoints : [];
+      let captions;
+      if (timepoints.length >= 3) {
+        captions = buildCaptionsFromTimepoints(words, timepoints);
+        console.log(`[Voiceover] ✓ ${audioPath} — ${timepoints.length} word marks → ${captions.length} caption segments`);
+      } else {
+        const dur = await getAudioDurationSec(audioPath);
+        captions  = buildFallbackCaptions(script.slice(0, 5000), dur);
+        console.log(`[Voiceover] ✓ ${audioPath} — no timepoints, fallback ${dur.toFixed(1)}s → ${captions.length} segments`);
+      }
+      return { audioPath, captions };
     } catch (err) {
       lastErr = err;
       console.warn(`[Voiceover] Attempt ${attempt}/3 failed: ${err.message}`);
@@ -4178,18 +4232,19 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
       { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
     ).catch(() => {});
 
-    // 2/3 Voiceover — validate API works, then discard temp file (regenerated at posting time)
+    // 2/3 Voiceover — validate API and capture word-timestamp captions; discard audio (regenerated at posting time)
     console.log(`[Pipeline] 2/3 Voiceover — "${slot.title}"`);
-    audioPath = await pipelineGenerateVoiceover(script, String(calendar.userId));
-    require('fs').unlink(audioPath, () => {});
-    audioPath = null;
+    const voResult = await pipelineGenerateVoiceover(script, String(calendar.userId));
+    require('fs').unlink(voResult.audioPath, () => {});
+    // audioPath stays null — file already cleaned up; word-timestamp captions saved below
+    const voUpdate = { [`slots.$[s].voiceoverGenerated`]: true, [`slots.$[s].pipelineStatus`]: 'voiceover-done' };
+    if (voResult.captions.length > 0) voUpdate[`slots.$[s].scriptCaptions`] = voResult.captions;
     await col.updateOne(
       { _id: calendar._id },
-      { $set: { [`slots.$[s].voiceoverGenerated`]: true, [`slots.$[s].pipelineStatus`]: 'voiceover-done' } },
+      { $set: voUpdate },
       { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
     ).catch(() => {});
-    // Rate-limit guard: wait 60s after each voiceover so sequential slots don't hit Gemini quota
-    console.log('[Pipeline] Waiting 60s after voiceover to avoid Gemini rate limits…');
+    console.log('[Pipeline] Waiting 60s after voiceover before next pipeline step…');
     await new Promise(r => setTimeout(r, 60000));
 
     // 3/3 Footage — fetch clip URLs and save to MongoDB (no /tmp files here)
@@ -4241,9 +4296,10 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
     const scriptText = slot.scriptText || slot.cachedScript;
     if (!scriptText) throw new Error('No cached script text — run the pipeline first');
 
-    // Regenerate voiceover from cached script (temp file, discarded after upload)
+    // Regenerate voiceover from cached script — returns fresh word-timestamp captions
     console.log(`[AssembleUpload] 1/3 Voiceover for "${slot.title}"`);
-    audioPath = await pipelineGenerateVoiceover(scriptText, String(calendar.userId));
+    const voResult = await pipelineGenerateVoiceover(scriptText, String(calendar.userId));
+    audioPath = voResult.audioPath;
 
     // Use cached footage URLs or re-fetch if missing
     let footageClips;
@@ -4259,7 +4315,10 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
       footageClips = await pipelineFetchMultipleFootage(slot.title, scriptText, nicheName);
     }
 
-    let captions = Array.isArray(slot.scriptCaptions) ? slot.scriptCaptions : [];
+    // Use fresh word-timestamp captions; fall back to MongoDB-cached ones, then duration-based estimate
+    let captions = voResult.captions.length > 0
+      ? voResult.captions
+      : (Array.isArray(slot.scriptCaptions) ? slot.scriptCaptions : []);
     if (isShort && captions.length === 0) captions = buildFallbackCaptions(scriptText, footageClips.length * 6);
 
     // Assemble
