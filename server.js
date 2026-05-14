@@ -134,6 +134,7 @@ const userSchema = new mongoose.Schema({
   nicheChangesYear: { type: Number, default: () => new Date().getFullYear() },
   affiliateCode:   { type: String, unique: true, sparse: true },
   referredBy:      { type: String },
+  autoPost:        { type: Boolean, default: true },
   createdAt:       { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -3572,167 +3573,282 @@ async function analyzeChannelPerformance(userId, channelId, nicheName) {
 
 // Main pipeline runner — processes all due approved slots across all users.
 // Pass forceSlotKey = "day_videoIndex" to bypass the time check for one specific slot (post-now).
-async function runAutoPostPipeline({ forceSlotKey = null, forceUserId = null } = {}) {
-  if (!process.env.OPENAI_API_KEY) {
-    console.log('[AutoPost] Skipping — OPENAI_API_KEY not configured');
-    return;
+// =============================================================================
+// AUTOMATED PRODUCTION PIPELINE
+// =============================================================================
+
+// Core pipeline for a single slot: script → voiceover → footage → assembly.
+// Saves assembledPath + cachedScript to the slot doc, marks status "ready".
+// Throws on any step failure — caller handles retries.
+async function runProductionPipelineForSlot(calendar, slot, user, col) {
+  const nicheName  = calendar.nicheName || user.nicheName || '';
+  const slotKey    = `day${slot.day}_vi${slot.videoIndex || 1}`;
+  const outputPath = `/tmp/vly_ready_${String(calendar.userId)}_${slotKey}.mp4`;
+  let   audioPath  = null;
+
+  await col.updateOne(
+    { _id: calendar._id },
+    { $set: { [`slots.$[s].pipelineStatus`]: 'generating', [`slots.$[s].pipelineStartedAt`]: new Date().toISOString() } },
+    { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+  ).catch(() => {});
+
+  try {
+    console.log(`[Pipeline] 1/4 Script — "${slot.title}" (${nicheName})`);
+    const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type);
+    const script     = scriptData.script;
+    console.log(`[Pipeline] 1/4 Done — ${scriptData.wordCount} words, ${scriptData.captions.length} captions`);
+
+    agentCol('scripts').updateOne(
+      { userId: calendar.userId, slotDay: slot.day, videoIndex: slot.videoIndex || 1 },
+      { $set: {
+        userId: calendar.userId, calendarId: calendar._id.toString(),
+        slotDay: slot.day, videoIndex: slot.videoIndex || 1,
+        title: scriptData.title, hook: scriptData.hook, loopEnding: scriptData.loopEnding,
+        captions: scriptData.captions, hashtags: scriptData.hashtags,
+        wordCount: scriptData.wordCount, fullScript: script, updatedAt: new Date().toISOString(),
+      }},
+      { upsert: true }
+    ).catch(() => {});
+
+    console.log(`[Pipeline] 2/4 Voiceover — "${slot.title}"`);
+    audioPath = await pipelineGenerateVoiceover(script, String(calendar.userId));
+
+    console.log(`[Pipeline] 3/4 Footage — "${slot.title}"`);
+    const footageClips = await pipelineFetchMultipleFootage(slot.title, script, nicheName);
+    console.log(`[Pipeline] 3/4 Done — ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
+
+    console.log(`[Pipeline] 4/4 Assembly → ${outputPath}`);
+    await pipelineAssembleVideo(footageClips, audioPath, outputPath, scriptData.captions);
+
+    const previewPath = `/tmp/vly_prev_${calendar.userId}_${slot.day}_${slot.videoIndex || 1}.mp4`;
+    require('fs').copyFile(outputPath, previewPath, () => {});
+
+    await col.updateOne(
+      { _id: calendar._id },
+      { $set: {
+        [`slots.$[s].status`]:          'ready',
+        [`slots.$[s].pipelineStatus`]:  'ready',
+        [`slots.$[s].assembledPath`]:   outputPath,
+        [`slots.$[s].cachedScript`]:    script.slice(0, 2000),
+        [`slots.$[s].previewPath`]:     previewPath,
+        [`slots.$[s].previewReadyAt`]:  new Date().toISOString(),
+        [`slots.$[s].pipelineError`]:   null,
+      }},
+      { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+    );
+    console.log(`[Pipeline] ✓ Ready: "${slot.title}"`);
+    return outputPath;
+  } catch (err) {
+    if (audioPath) require('fs').unlink(audioPath, () => {});
+    throw err;
   }
-  const col = agentCol('content_calendars');
-  const now = new Date().toISOString();
-  console.log(`[AutoPost] Scanning active calendars for due approved slots (now: ${now.slice(0, 16)})…`);
-  const query = forceUserId ? { status: 'active', userId: forceUserId } : { status: 'active' };
-  const calendars = await col.find(query).toArray();
-  console.log(`[AutoPost] ${calendars.length} active calendar(s) found`);
-  let processed = 0;
+}
 
-  for (const calendar of calendars) {
-    const dueSlots = (calendar.slots || []).filter(s => {
-      if (s.posted) return false;
-      const slotKey = `${s.day}_${s.videoIndex || 1}`;
-      if (forceSlotKey && slotKey === forceSlotKey) return true; // force-run bypass
-      if (s.status !== 'approved') return false;
-      const postAt = s.scheduledPostTime || `${s.date || s.scheduledDate || ''}T18:00:00`;
-      return postAt <= now;
-    });
-    if (!dueSlots.length) {
-      console.log(`[AutoPost] Calendar ${calendar._id} — no due approved slots, skipping`);
-      continue;
-    }
-    console.log(`[AutoPost] Calendar ${calendar._id} (${calendar.nicheName || 'unknown niche'}) — ${dueSlots.length} due slot(s) found: ${dueSlots.map(s => `"${s.title}"`).join(', ')}`);
-
-    const user = await User.findById(calendar.userId).catch(() => null);
-    if (!user) { console.warn(`[AutoPost] User ${calendar.userId} not found, skipping calendar ${calendar._id}`); continue; }
-    const channel = (user.youtubeChannels || []).find(ch => ch.channelId === calendar.channelId)
-                 || (user.youtubeChannels || [])[0];
-    if (!channel) { console.warn(`[AutoPost] No YouTube channel found for calendar ${calendar._id} (channelId: ${calendar.channelId})`); continue; }
-    console.log(`[AutoPost] Using channel "${channel.channelName}" (${channel.channelId})`);
-
-    for (const slot of dueSlots) {
-      const slotKey    = `day${slot.day}_vi${slot.videoIndex || 1}`;
-      const outputPath = `/tmp/vly_video_${calendar._id}_${slotKey}_${Date.now()}.mp4`;
-      let   audioPath  = null;
-      console.log(`[AutoPost] ── Starting slot: "${slot.title}" | type: ${slot.type} | date: ${slot.date || slot.scheduledDate} | channel: ${channel.channelName}`);
-
-      // Mark in-progress
-      await col.updateOne(
-        { _id: calendar._id },
-        { $set: { [`slots.$[s].pipelineStatus`]: 'generating' } },
-        { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
-      ).catch(() => {});
-
-      try {
-        // Step 1 — Script generation (viral-optimised)
-        const nicheName = calendar.nicheName || user.nicheName || '';
-        console.log(`[AutoPost] Step 1/5 — Generating script via OpenAI (title: "${slot.title}", niche: "${nicheName}", type: ${slot.type})…`);
-        const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type);
-        const script     = scriptData.script;
-        console.log(`[AutoPost] Step 1/5 — Script ready: ${scriptData.wordCount} words | hook: "${(scriptData.hook || '').slice(0, 60)}" | ${scriptData.captions.length} caption segments | ${scriptData.hashtags.length} hashtags`);
-
-        // Persist captions + hashtags to scripts collection (non-blocking)
-        agentCol('scripts').updateOne(
-          { userId: calendar.userId, slotDay: slot.day, videoIndex: slot.videoIndex || 1 },
-          { $set: {
-            userId:        calendar.userId,
-            calendarId:    calendar._id.toString(),
-            slotDay:       slot.day,
-            videoIndex:    slot.videoIndex || 1,
-            title:         scriptData.title,
-            hook:          scriptData.hook,
-            loopEnding:    scriptData.loopEnding,
-            captions:      scriptData.captions,
-            hashtags:      scriptData.hashtags,
-            wordCount:     scriptData.wordCount,
-            fullScript:    script,
-            updatedAt:     new Date().toISOString(),
-          }},
-          { upsert: true }
-        ).catch(e => console.warn('[Script] MongoDB save failed:', e.message));
-
-        // Quality scoring — runs after script, before voiceover; non-blocking on failure
-        try {
-          const { OpenAI: OAI } = require('openai');
-          const _oai = new OAI({ apiKey: process.env.OPENAI_API_KEY });
-          const qScore = await scoreScript(slot.title, script, nicheName, _oai);
-          await agentCol('quality_scores').insertOne({
-            userId:        calendar.userId,
-            channelId:     calendar.channelId,
-            calendarId:    calendar._id.toString(),
-            slotDay:       slot.day,
-            videoIndex:    slot.videoIndex || 1,
-            title:         slot.title,
-            type:          slot.type,
-            scheduledDate: slot.date || null,
-            scores:        qScore,
-            scoredAt:      new Date().toISOString(),
-          });
-          console.log(`[AutoPost] Quality score: ${qScore.overall}/100 — hook:${qScore.hookStrength} clarity:${qScore.clarity} cta:${qScore.ctaEffectiveness} niche:${qScore.nicheRelevance}`);
-        } catch (qErr) {
-          console.warn('[AutoPost] Quality scoring skipped:', qErr.message);
-        }
-
-        // Step 2 — Voiceover
-        console.log(`[AutoPost] Step 2/5 — Generating voiceover via Google TTS (userId: ${calendar.userId})…`);
-        audioPath = await pipelineGenerateVoiceover(script, String(calendar.userId));
-        console.log(`[AutoPost] Step 2/5 — Voiceover saved: ${audioPath}`);
-
-        // Step 3 — Pexels footage (multiple clips)
-        console.log(`[AutoPost] Step 3/5 — Fetching Pexels footage clips for "${slot.title.slice(0, 60)}"…`);
-        const footageClips = await pipelineFetchMultipleFootage(slot.title, script, nicheName);
-        console.log(`[AutoPost] Step 3/5 — Fetched ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
-
-        // Step 4 — Assemble with captions + background music
-        console.log(`[AutoPost] Step 4/5 — Assembling video → ${outputPath}`);
-        await pipelineAssembleVideo(footageClips, audioPath, outputPath, scriptData.captions);
-        console.log(`[AutoPost] Step 4/5 — Video assembled: ${outputPath}`);
-
-        // Save a preview copy so the user can watch it before it goes live
-        const previewPath = `/tmp/vly_prev_${calendar.userId}_${slot.day}_${slot.videoIndex || 1}.mp4`;
-        require('fs').copyFile(outputPath, previewPath, () => {});
-        col.updateOne(
-          { _id: calendar._id },
-          { $set: { 'slots.$[s].previewPath': previewPath, 'slots.$[s].previewReadyAt': new Date().toISOString() } },
-          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
-        ).catch(() => {});
-
-        // Step 5 — YouTube upload
-        console.log(`[AutoPost] Step 5/5 — Uploading to YouTube channel "${channel.channelName}" (${channel.channelId})…`);
-        const ytId = await pipelineUploadToYouTube(outputPath, slot.title, script, channel);
-        console.log(`[AutoPost] Step 5/5 — Upload complete → https://youtu.be/${ytId}`);
-
-        // Mark posted
-        const postedAt = new Date().toISOString();
+// Retries runProductionPipelineForSlot up to maxRetries times with 5-minute delays.
+// Marks the slot "failed" after all attempts are exhausted — never throws.
+async function runProductionPipelineWithRetry(calendar, slot, user, col, maxRetries = 3) {
+  const delayMs = ms => new Promise(r => setTimeout(r, ms));
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await runProductionPipelineForSlot(calendar, slot, user, col);
+    } catch (err) {
+      lastErr = err;
+      console.error(`[Pipeline] ✗ Attempt ${attempt}/${maxRetries} failed for "${slot.title}": ${err.message}`);
+      if (attempt < maxRetries) {
         await col.updateOne(
           { _id: calendar._id },
           { $set: {
-            'slots.$[s].status':          'posted',
-            'slots.$[s].posted':          true,
-            'slots.$[s].postedAt':        postedAt,
-            'slots.$[s].youtubeVideoId':  ytId,
-            'slots.$[s].pipelineStatus':  'posted',
-          }},
-          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
-        );
-        processed++;
-        console.log(`[AutoPost] ✓ Marked as posted — "${slot.title}" | youtubeVideoId: ${ytId} | postedAt: ${postedAt}`);
-
-      } catch (err) {
-        console.error(`[AutoPost] ✗ Failed "${slot.title}" at step — ${err.message}`);
-        console.error(`[AutoPost] Stack: ${err.stack?.split('\n').slice(0, 3).join(' | ')}`);
-        await col.updateOne(
-          { _id: calendar._id },
-          { $set: {
-            'slots.$[s].pipelineStatus': 'failed',
-            'slots.$[s].pipelineError':  err.message.slice(0, 500),
+            [`slots.$[s].retryCount`]:    (slot.retryCount || 0) + attempt,
+            [`slots.$[s].lastFailedAt`]:  new Date().toISOString(),
+            [`slots.$[s].pipelineError`]: err.message.slice(0, 300),
           }},
           { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
         ).catch(() => {});
-      } finally {
-        if (audioPath) require('fs').unlink(audioPath, () => {});
-        require('fs').unlink(outputPath, () => {});
+        console.log(`[Pipeline] Retrying "${slot.title}" in 5 min (${maxRetries - attempt} retries left)…`);
+        await delayMs(5 * 60 * 1000);
       }
     }
   }
-  console.log(`[AutoPost] Cycle complete — ${processed} video(s) posted this run`);
+  await col.updateOne(
+    { _id: calendar._id },
+    { $set: {
+      [`slots.$[s].status`]:         'failed',
+      [`slots.$[s].pipelineStatus`]: 'failed',
+      [`slots.$[s].pipelineError`]:  lastErr.message.slice(0, 500),
+      [`slots.$[s].failedAt`]:       new Date().toISOString(),
+    }},
+    { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+  ).catch(() => {});
+  console.error(`[Pipeline] ✗✗ Permanently failed "${slot.title}" after ${maxRetries} attempts — skipping`);
+}
+
+// Generates today's video slots for every active user who has a niche + plan + channel,
+// then immediately fires the production pipeline for each slot in the background.
+// Idempotent: skips users who already have today's slots. Called by the 00:01 cron and startup check.
+async function runDailySlotGeneration(targetUserId = null) {
+  if (!process.env.OPENAI_API_KEY) {
+    console.log('[DailyGen] Skipping — OPENAI_API_KEY not configured'); return;
+  }
+  const today    = new Date().toISOString().slice(0, 10);
+  const calCol   = agentCol('content_calendars');
+  const slotsCol = agentCol('calendar_slots');
+  const { OpenAI } = require('openai');
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const calQuery  = targetUserId ? { status: 'active', userId: targetUserId } : { status: 'active' };
+  const calendars = await calCol.find(calQuery).toArray();
+  let generated = 0;
+
+  for (const calendar of calendars) {
+    try {
+      if ((calendar.slots || []).some(s => s.date === today)) {
+        console.log(`[DailyGen] Slots for ${today} already exist (calendar ${calendar._id}) — skipping`); continue;
+      }
+      const user = await User.findById(calendar.userId).catch(() => null);
+      if (!user) continue;
+      const config    = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
+      const nicheName = calendar.nicheName || user.nicheName || '';
+      if (!nicheName) { console.warn(`[DailyGen] No niche for user ${calendar.userId} — skipping`); continue; }
+
+      const count  = config.shortsPerDay;
+      const genRes = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content:
+          `YouTube Shorts content strategist for a "${nicheName}" channel.
+Generate exactly ${count} NEW, unique Short video titles (under 60 chars each).
+Vary style: hook, story, tutorial, listicle, myth-bust.
+Return JSON: { "titles": [${count} strings] }` }],
+        temperature: 0.9,
+        response_format: { type: 'json_object' },
+      });
+      let titles = [];
+      try { titles = JSON.parse(genRes.choices[0].message.content).titles || []; } catch {}
+
+      const newSlots = [];
+      for (let v = 0; v < count; v++) {
+        newSlots.push({
+          userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
+          day: 1, date: today,
+          title: titles[v] || `${nicheName} Short #${v + 1}`,
+          type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
+          status: 'pending', posted: false, retryCount: 0,
+          scheduledPostTime: assignPostingTime(today, v + 1, count),
+        });
+      }
+
+      if (config.longFormPerWeek > 0 && new Date(today).getDay() === 1) {
+        const lfRes = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content:
+            `YouTube long-form content strategist for a "${nicheName}" channel.
+Generate 1 unique Long-form video title (60–100 chars). In-depth, educational.
+Return JSON: { "title": "string" }` }],
+          temperature: 0.88,
+          response_format: { type: 'json_object' },
+        });
+        let lfTitle = `Deep Dive: ${nicheName}`;
+        try { lfTitle = JSON.parse(lfRes.choices[0].message.content).title || lfTitle; } catch {}
+        newSlots.push({
+          userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
+          day: 1, date: today, title: lfTitle,
+          type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
+          status: 'pending', posted: false, retryCount: 0,
+          scheduledPostTime: assignPostingTime(today, 1, 1),
+        });
+      }
+
+      await slotsCol.deleteMany({ userId: String(calendar.userId), date: today, posted: { $ne: true } });
+      if (newSlots.length) await slotsCol.insertMany(newSlots);
+
+      const kept   = (calendar.slots || []).filter(s => s.date !== today || s.posted);
+      const merged = [...kept, ...newSlots].sort((a, b) =>
+        (a.date || '') < (b.date || '') ? -1 : (a.date || '') > (b.date || '') ? 1 : (a.videoIndex || 0) - (b.videoIndex || 0)
+      );
+      await calCol.updateOne({ _id: calendar._id }, { $set: { slots: merged } });
+      generated++;
+      console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${calendar.userId} | plan: ${user.plan}`);
+
+      // Fire production pipeline in background — non-blocking, one slot at a time
+      const capturedCal   = { ...calendar, slots: merged };
+      const capturedUser  = user;
+      const capturedSlots = [...newSlots];
+      setImmediate(async () => {
+        for (const s of capturedSlots) {
+          const freshCal  = await calCol.findOne({ _id: capturedCal._id });
+          const freshSlot = (freshCal?.slots || []).find(x => x.date === today && x.videoIndex === s.videoIndex);
+          if (!freshSlot || freshSlot.posted || freshSlot.status === 'ready') continue;
+          await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
+        }
+      });
+    } catch (err) {
+      console.error(`[DailyGen] Failed for calendar ${calendar._id}:`, err.message);
+    }
+  }
+  console.log(`[DailyGen] Complete — ${generated} calendar(s) had slots generated for ${today}`);
+}
+
+// Posts all due "ready" slots (autoPost users) or "approved" slots (manual-approval users).
+// Only uploads pre-assembled videos — never re-generates. Runs every 5 minutes.
+async function runScheduledPosting() {
+  const now    = new Date().toISOString();
+  const calCol = agentCol('content_calendars');
+  const fs     = require('fs');
+  const calendars = await calCol.find({ status: 'active' }).toArray();
+  let posted = 0;
+
+  for (const calendar of calendars) {
+    const user = await User.findById(calendar.userId).catch(() => null);
+    if (!user) continue;
+    const autoPostOn = user.autoPost !== false;
+
+    const dueSlots = (calendar.slots || []).filter(s => {
+      if (s.posted || s.status === 'posted') return false;
+      const postAt = s.scheduledPostTime || `${s.date}T18:00:00`;
+      if (postAt > now) return false;
+      return autoPostOn ? s.status === 'ready' : s.status === 'approved';
+    });
+    if (!dueSlots.length) continue;
+
+    const channel = (user.youtubeChannels || []).find(ch => ch.channelId === calendar.channelId)
+                 || (user.youtubeChannels || [])[0];
+    if (!channel) { console.warn(`[Posting] No channel for calendar ${calendar._id}`); continue; }
+
+    for (const slot of dueSlots) {
+      if (!slot.assembledPath || !fs.existsSync(slot.assembledPath)) {
+        console.warn(`[Posting] Assembled video missing for "${slot.title}" — skipping slot`); continue;
+      }
+      try {
+        const description = slot.cachedScript || slot.title;
+        const ytId = await pipelineUploadToYouTube(slot.assembledPath, slot.title, description, channel);
+        const postedAt = new Date().toISOString();
+        await calCol.updateOne(
+          { _id: calendar._id },
+          { $set: {
+            'slots.$[s].status':         'posted',
+            'slots.$[s].posted':         true,
+            'slots.$[s].postedAt':       postedAt,
+            'slots.$[s].youtubeVideoId': ytId,
+            'slots.$[s].pipelineStatus': 'posted',
+          }},
+          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+        );
+        posted++;
+        fs.unlink(slot.assembledPath, () => {});
+        console.log(`[Posting] ✓ "${slot.title}" → https://youtu.be/${ytId}`);
+      } catch (err) {
+        console.error(`[Posting] ✗ Upload failed for "${slot.title}": ${err.message}`);
+        await calCol.updateOne(
+          { _id: calendar._id },
+          { $set: {
+            'slots.$[s].pipelineStatus': 'upload-failed',
+            'slots.$[s].pipelineError':  err.message.slice(0, 300),
+          }},
+          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+        ).catch(() => {});
+      }
+    }
+  }
+  if (posted > 0) console.log(`[Posting] Cycle complete — ${posted} video(s) posted`);
 }
 
 // Topic Scout — searches YouTube for trending videos in a niche (last 7 days, ordered by viewCount).
@@ -3940,27 +4056,24 @@ Return JSON: { "titles": [${longFormDates.length} strings] }` }],
   console.log(`[WeeklyOpt] Complete — ${refreshed}/${calendars.length} calendar(s) refreshed`);
 }
 
-// POST /api/content/trigger-post — dev-only manual trigger for the auto-post pipeline.
-// Immediately runs the pipeline for the next approved due slot without waiting for cron.
+// POST /api/content/trigger-post — development only (system is fully automated in production)
 app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
-  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_TRIGGER_POST !== 'true') {
-    return res.status(403).json({ error: 'Manual trigger disabled in production. Set ALLOW_TRIGGER_POST=true to enable.' });
+  if (process.env.NODE_ENV !== 'development') {
+    return res.status(403).json({ error: 'Manual trigger disabled — system runs fully automated' });
   }
-  console.log(`[AutoPost] Manual trigger fired by user ${req.user.id}`);
+  console.log(`[Dev] Daily generation trigger by user ${req.user.id}`);
   try {
-    await runAutoPostPipeline({ forceUserId: String(req.user.id) });
-    res.json({ success: true, message: 'Pipeline run complete — check server logs for details' });
+    await runDailySlotGeneration(String(req.user.id));
+    res.json({ success: true, message: 'Daily slot generation triggered — check server logs' });
   } catch (err) {
-    console.error('[AutoPost] Manual trigger error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Hourly auto-posting scheduler — posts any slot whose scheduledPostTime has passed
-cron.schedule('0 * * * *', async () => {
-  console.log('[AutoPost] Hourly check running...');
-  try { await runAutoPostPipeline(); }
-  catch (err) { console.error('[AutoPost] Scheduler error:', err.message); }
+// Every 5 minutes — post any ready+due slots (autoPost users) or approved+due slots (manual users)
+cron.schedule('*/5 * * * *', async () => {
+  try { await runScheduledPosting(); }
+  catch (err) { console.error('[CRON] Posting error:', err.message); }
 });
 
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
@@ -3992,35 +4105,64 @@ app.get('/api/content/preview/:slotId', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/content/post-now/:slotId — immediately post a specific slot, bypassing scheduled time
+// POST /api/content/post-now/:slotId — immediately post a specific slot, bypassing scheduled time.
+// If the slot is already "ready", uploads straight away. Otherwise runs the full pipeline first.
 app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
   try {
     const [dayStr, viStr] = req.params.slotId.split('_');
     const day = parseInt(dayStr), vi = parseInt(viStr) || 1;
     if (!day) return res.status(400).json({ error: 'Invalid slotId — expected day_videoIndex' });
 
-    // Approve the slot so the pipeline will pick it up
-    const col = agentCol('content_calendars');
-    const cal = await col.findOne({ userId: req.user.id, status: 'active' });
+    const col  = agentCol('content_calendars');
+    const cal  = await col.findOne({ userId: req.user.id, status: 'active' });
     if (!cal) return res.status(404).json({ error: 'No active calendar found' });
     const slot = (cal.slots || []).find(s => s.day === day && (s.videoIndex || 1) === vi);
     if (!slot) return res.status(404).json({ error: `Slot day=${day} videoIndex=${vi} not found` });
     if (slot.posted) return res.status(400).json({ error: 'Slot already posted' });
 
-    await col.updateOne(
-      { _id: cal._id },
-      { $set: { 'slots.$[s].status': 'approved', 'slots.$[s].approvedAt': new Date().toISOString() } },
-      { arrayFilters: [{ 's.day': day, 's.videoIndex': vi }] }
-    );
+    res.json({ success: true, message: `"${slot.title}" queued for immediate posting — check back shortly` });
 
-    // Fire pipeline asynchronously for just this slot
-    const slotKey = `${day}_${vi}`;
     setImmediate(async () => {
-      try { await runAutoPostPipeline({ forceSlotKey: slotKey, forceUserId: String(req.user.id) }); }
-      catch (e) { console.error(`[PostNow] Pipeline failed for ${slotKey}:`, e.message); }
-    });
+      try {
+        const fs   = require('fs');
+        const user = await User.findById(req.user.id);
+        if (!user) return;
+        const channel = (user.youtubeChannels || []).find(ch => ch.channelId === cal.channelId)
+                     || user.youtubeChannels?.[0];
+        if (!channel) { console.warn(`[PostNow] No channel for user ${req.user.id}`); return; }
 
-    res.json({ success: true, message: `"${slot.title}" queued for immediate posting — check back in a few minutes` });
+        let targetCal  = await col.findOne({ _id: cal._id });
+        let targetSlot = (targetCal.slots || []).find(s => s.day === day && (s.videoIndex || 1) === vi);
+
+        // Run pipeline if not already ready
+        if (targetSlot.status !== 'ready' || !targetSlot.assembledPath || !fs.existsSync(targetSlot.assembledPath)) {
+          await runProductionPipelineWithRetry(targetCal, targetSlot, user, col);
+          targetCal  = await col.findOne({ _id: cal._id });
+          targetSlot = (targetCal.slots || []).find(s => s.day === day && (s.videoIndex || 1) === vi);
+        }
+        if (targetSlot.status !== 'ready' || !targetSlot.assembledPath) {
+          console.error(`[PostNow] Pipeline did not produce a ready video for "${slot.title}"`); return;
+        }
+
+        const description = targetSlot.cachedScript || targetSlot.title;
+        const ytId = await pipelineUploadToYouTube(targetSlot.assembledPath, targetSlot.title, description, channel);
+        await col.updateOne(
+          { _id: targetCal._id },
+          { $set: {
+            'slots.$[s].status':         'posted',
+            'slots.$[s].posted':         true,
+            'slots.$[s].postedAt':       new Date().toISOString(),
+            'slots.$[s].youtubeVideoId': ytId,
+            'slots.$[s].pipelineStatus': 'posted',
+          }},
+          { arrayFilters: [{ 's.day': day, 's.videoIndex': vi }] }
+        );
+        fs.unlink(targetSlot.assembledPath, () => {});
+        console.log(`[PostNow] ✓ Immediately posted "${targetSlot.title}" → https://youtu.be/${ytId}`);
+      } catch (e) {
+        console.error(`[PostNow] Failed for "${slot.title}":`, e.message);
+      }
+    });
   } catch (err) {
     console.error('[PostNow] Error:', err.message);
     res.status(500).json({ error: err.message });
@@ -4036,6 +4178,13 @@ if (FEATURES.learningLoop) {
     } catch (err) { console.error('[CRON] Weekly optimisation error:', err.message); }
   });
 }
+
+// Daily 00:01 UTC — generate today's slots for all active users and fire production pipeline
+cron.schedule('1 0 * * *', async () => {
+  console.log('[CRON] Daily slot generation starting…');
+  try { await runDailySlotGeneration(); }
+  catch (err) { console.error('[CRON] Daily generation error:', err.message); }
+});
 
 // Analytics Collection — ACTIVE (free: YouTube Data API free quota)
 if (FEATURES.analyticsCollection) {
@@ -4066,6 +4215,29 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Viralityy server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+
+  // Startup check: if the daily cron was missed (e.g. server restart after midnight),
+  // generate today's slots for any active calendar that doesn't have them yet.
+  setImmediate(async () => {
+    try {
+      const today     = new Date().toISOString().slice(0, 10);
+      const calCol    = agentCol('content_calendars');
+      const calendars = await calCol.find({ status: 'active' }).toArray();
+      const missing   = calendars.filter(c => !(c.slots || []).some(s => s.date === today));
+      if (missing.length > 0) {
+        console.log(`[Startup] ${missing.length} calendar(s) missing today's slots — generating now`);
+        for (const cal of missing) {
+          await runDailySlotGeneration(String(cal.userId)).catch(e =>
+            console.error(`[Startup] Generation failed for calendar ${cal._id}:`, e.message)
+          );
+        }
+      } else {
+        console.log(`[Startup] All active calendars have today's slots`);
+      }
+    } catch (e) {
+      console.error('[Startup] Slot check failed:', e.message);
+    }
+  });
 });
 
 module.exports = app;
