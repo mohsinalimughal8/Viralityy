@@ -66,6 +66,18 @@ const active  = Object.entries(FEATURES).filter(([,v])=>v).map(([k])=>k);
 console.log('[Features] Active:', active.join(', ') || 'none');
 console.log('[Features] Shelved (enable via env var):', shelved.join(', ') || 'none');
 
+// =============================================================================
+// API COST CONSTANTS (USD per unit)
+// =============================================================================
+const API_COSTS = {
+  openai_input:        0.000003,   // per input token (gpt-4o-mini)
+  openai_output:       0.000015,   // per output token (gpt-4o-mini)
+  gemini_tts:          0.000001,   // per character
+  youtube_upload:      1600,       // quota units per upload
+  youtube_analytics:   10,         // quota units per analytics report call
+  youtube_daily_quota: 10000,      // total daily quota units
+};
+
 // ─── Scientific posting times based on YouTube Shorts algorithm research ───
 // Optimal daily posting windows; slots distributed across these based on daily video count.
 const POSTING_TIMES_BY_COUNT = {
@@ -341,6 +353,36 @@ function requireAuth(req, res, next) {
 
 function hashIp(ip) {
   return crypto.createHmac('sha256', process.env.IP_SALT || 'default_salt').update(ip || '').digest('hex');
+}
+
+// Admin JWT middleware — separate secret from user JWT; returns 403 with no details on failure
+function requireAdmin(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const decoded = jwt.verify(token, process.env.ADMIN_PASSWORD || 'admin_secret_unset');
+    if (!decoded.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    req.adminUser = decoded;
+    return next();
+  } catch {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+}
+
+// Fire-and-forget API usage logger — never throws, never blocks the caller.
+async function logAPIUsage(service, action, userId, tokens, cost, success) {
+  try {
+    const col = agentCol('apiUsage');
+    await col.insertOne({
+      service,
+      action,
+      userId:         userId ? String(userId) : null,
+      tokensUsed:     tokens  || 0,
+      estimatedCost:  cost    || 0,
+      success:        !!success,
+      timestamp:      new Date().toISOString(),
+    });
+  } catch { /* non-fatal — never crash the caller */ }
 }
 
 const PLAN_CONFIG = {
@@ -2821,8 +2863,9 @@ async function fetchLiveAnalytics(userId) {
       dailyViews        = analyticsData.rows.map(r => ({ date: r[0], views: parseInt(r[1] || 0) }));
       watchTimeMinutes  = analyticsData.rows.reduce((a, r) => a + parseInt(r[2] || 0), 0);
       subscribersGained = analyticsData.rows.reduce((a, r) => a + parseInt(r[3] || 0), 0);
+      logAPIUsage('youtube', 'analytics_report', String(userId), API_COSTS.youtube_analytics, 0, true);
     }
-  } catch (_) { /* Analytics API scope unavailable — graceful degradation */ }
+  } catch (_) { logAPIUsage('youtube', 'analytics_report', String(userId), API_COSTS.youtube_analytics, 0, false); }
 
   const totalViews = parseInt(chanStats.viewCount       || 0);
   const totalSubs  = parseInt(chanStats.subscriberCount || 0);
@@ -3158,6 +3201,10 @@ async function pipelineGenerateScript(title, nicheName, type) {
       messages: [{ role: 'user', content: `Write a 3–5 minute YouTube script for: "${title}".\nNiche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.\nStart with a strong hook. End with a clear call-to-action.` }],
       temperature: 0.8,
     });
+    const inTok  = completion.usage?.prompt_tokens    || 0;
+    const outTok = completion.usage?.completion_tokens || 0;
+    logAPIUsage('openai', 'script_longform', null, inTok + outTok,
+      inTok * API_COSTS.openai_input + outTok * API_COSTS.openai_output, true);
     const script = completion.choices[0].message.content.trim();
     return { title, script, hook: '', loopEnding: '', captions: [], hashtags: [], wordCount: script.split(/\s+/).length };
   }
@@ -3200,10 +3247,15 @@ Return valid JSON only — no prose, no markdown:
       });
       const parsed    = JSON.parse(res.choices[0].message.content);
       const wordCount = (parsed.script || '').split(/\s+/).filter(Boolean).length;
+      const inTok2    = res.usage?.prompt_tokens    || 0;
+      const outTok2   = res.usage?.completion_tokens || 0;
+      logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
+        inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, wordCount <= 100);
       console.log(`[Script] Attempt ${attempt}/3 — ${wordCount} words`);
       if (wordCount <= 100) { best = { ...parsed, wordCount }; break; }
       console.warn(`[Script] ${wordCount} words exceeds 100 — regenerating`);
     } catch (err) {
+      logAPIUsage('openai', 'script_short', null, 0, 0, false);
       console.warn(`[Script] Attempt ${attempt}/3 failed: ${err.message}`);
     }
   }
@@ -3320,11 +3372,15 @@ async function pipelineGenerateVoiceover(script, userId) {
       const wavBuf   = mimeType.includes('wav') ? rawBuf : _pcmToWav(rawBuf, 24000, 1, 16);
       const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.wav`;
       require('fs').writeFileSync(audioPath, wavBuf);
+      const charCount = prompt.length;
+      logAPIUsage('gemini_tts', 'voiceover', userId, charCount,
+        charCount * API_COSTS.gemini_tts, true);
       console.log(`[Voiceover] ✓ ${audioPath} — ${Math.round(wavBuf.length / 1024)} KB (attempt ${attempt}/3)`);
       return audioPath;
 
     } catch (err) {
       lastErr = err;
+      logAPIUsage('gemini_tts', 'voiceover', userId, 0, 0, false);
       console.warn(`[Voiceover] Attempt ${attempt}/3 failed: ${err.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
     }
@@ -3440,8 +3496,10 @@ async function pipelineFetchMultipleFootage(title, script, nicheName = '') {
       const file = (video.video_files || []).find(f => f.quality === 'hd') || (video.video_files || [])[0];
       if (!file?.link) continue;
       clips.push({ url: file.link, duration: video.duration, query });
+      logAPIUsage('pexels', 'video_search', null, 1, 0, true);
       console.log(`[Footage] Clip for "${query}": ${video.duration}s`);
     } catch (e) {
+      logAPIUsage('pexels', 'video_search', null, 1, 0, false);
       console.warn(`[Footage] Failed for "${query}":`, e.message);
     }
   }
@@ -3629,14 +3687,24 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel) {
   };
 
   try {
-    return await tryUpload(channel.accessToken);
+    const videoId = await tryUpload(channel.accessToken);
+    logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, true);
+    return videoId;
   } catch (err) {
     if (err.code === 401 || err.status === 401 || /invalid_grant|token/.test(err.message)) {
       console.log(`[Pipeline] Token expired for ${channel.channelId} — refreshing`);
       const newToken = await pipelineRefreshToken(channel);
       channel.accessToken = newToken;
-      return await tryUpload(newToken);
+      try {
+        const videoId = await tryUpload(newToken);
+        logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, true);
+        return videoId;
+      } catch (retryErr) {
+        logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, false);
+        throw retryErr;
+      }
     }
+    logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, false);
     throw err;
   }
 }
@@ -3910,6 +3978,10 @@ Return JSON: { "titles": [${count} strings] }` }],
         temperature: 0.9,
         response_format: { type: 'json_object' },
       });
+      const dg_in  = genRes.usage?.prompt_tokens    || 0;
+      const dg_out = genRes.usage?.completion_tokens || 0;
+      logAPIUsage('openai', 'daily_title_gen', String(calendar.userId), dg_in + dg_out,
+        dg_in * API_COSTS.openai_input + dg_out * API_COSTS.openai_output, true);
       let titles = [];
       try { titles = JSON.parse(genRes.choices[0].message.content).titles || []; } catch {}
 
@@ -3935,6 +4007,10 @@ Return JSON: { "title": "string" }` }],
           temperature: 0.88,
           response_format: { type: 'json_object' },
         });
+        const lf_in  = lfRes.usage?.prompt_tokens    || 0;
+        const lf_out = lfRes.usage?.completion_tokens || 0;
+        logAPIUsage('openai', 'daily_lf_title_gen', String(calendar.userId), lf_in + lf_out,
+          lf_in * API_COSTS.openai_input + lf_out * API_COSTS.openai_output, true);
         let lfTitle = `Deep Dive: ${nicheName}`;
         try { lfTitle = JSON.parse(lfRes.choices[0].message.content).title || lfTitle; } catch {}
         newSlots.push({
@@ -4180,6 +4256,276 @@ app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
     res.json({ success: true, message: 'Daily slot generation triggered — check server logs' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// ADMIN ROUTES — all protected by requireAdmin
+// Secret admin JWT is signed with ADMIN_PASSWORD (separate from user JWT_SECRET).
+// Access via POST /api/admin/auth first, then pass the returned token as Bearer.
+// =============================================================================
+
+// POST /api/admin/auth — exchange ADMIN_PASSWORD for a short-lived admin JWT
+app.post('/api/admin/auth', async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    const adminPass  = process.env.ADMIN_PASSWORD;
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminPass) return res.status(503).json({ error: 'Admin not configured' });
+
+    // Verify the token from the regular user session to confirm identity
+    const userToken = req.headers.authorization?.split(' ')[1];
+    let callerEmail = null;
+    if (userToken) {
+      try { callerEmail = (jwt.verify(userToken, process.env.JWT_SECRET) || {}).email; } catch {}
+      if (!callerEmail) {
+        try {
+          const uid = jwt.verify(userToken, process.env.JWT_SECRET).userId;
+          const u   = await User.findById(uid).select('email').lean();
+          callerEmail = u?.email;
+        } catch {}
+      }
+    }
+    if (adminEmail && callerEmail !== adminEmail) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (password !== adminPass) return res.status(403).json({ error: 'Forbidden' });
+
+    const adminJwt = jwt.sign({ isAdmin: true, email: callerEmail }, adminPass, { expiresIn: '8h' });
+    res.json({ success: true, token: adminJwt, expiresIn: '8h' });
+  } catch (err) {
+    console.error('[Admin] Auth error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// GET /api/admin/overview — high-level platform snapshot
+app.get('/api/admin/overview', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const monthStart = new Date().toISOString().slice(0, 7) + '-01';
+    const todayStart = new Date(today + 'T00:00:00.000Z');
+
+    const usageCol  = agentCol('apiUsage');
+    const slotsCol  = agentCol('calendar_slots');
+
+    const [
+      totalUsers,
+      activeToday,
+      videosPostedToday,
+      costTodayDocs,
+      costMonthDocs,
+    ] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ updatedAt: { $gte: todayStart } }),
+      slotsCol.countDocuments({ posted: true, date: today }),
+      usageCol.aggregate([
+        { $match: { timestamp: { $gte: today + 'T00:00:00.000Z' } } },
+        { $group: { _id: null, total: { $sum: '$estimatedCost' } } },
+      ]).toArray(),
+      usageCol.aggregate([
+        { $match: { timestamp: { $gte: monthStart + 'T00:00:00.000Z' } } },
+        { $group: { _id: null, total: { $sum: '$estimatedCost' } } },
+      ]).toArray(),
+    ]);
+
+    const totalCostToday      = costTodayDocs[0]?.total || 0;
+    const totalCostThisMonth  = costMonthDocs[0]?.total || 0;
+
+    const planBreakdown = await User.aggregate([
+      { $group: { _id: '$plan', count: { $sum: 1 } } },
+    ]);
+    const perPlanBreakdown = Object.fromEntries(planBreakdown.map(p => [p._id, p.count]));
+
+    res.json({
+      success: true,
+      totalUsers,
+      activeToday,
+      videosPostedToday,
+      totalCostToday:     parseFloat(totalCostToday.toFixed(6)),
+      totalCostThisMonth: parseFloat(totalCostThisMonth.toFixed(6)),
+      perPlanBreakdown,
+    });
+  } catch (err) {
+    console.error('[Admin] Overview error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// GET /api/admin/api-usage — last 24 h grouped by service
+app.get('/api/admin/api-usage', requireAdmin, async (req, res) => {
+  try {
+    const since   = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const usageCol = agentCol('apiUsage');
+    const rows = await usageCol.aggregate([
+      { $match: { timestamp: { $gte: since } } },
+      { $group: {
+        _id:          '$service',
+        calls:        { $sum: 1 },
+        tokensUsed:   { $sum: '$tokensUsed' },
+        totalCost:    { $sum: '$estimatedCost' },
+        successCount: { $sum: { $cond: ['$success', 1, 0] } },
+      }},
+      { $sort: { totalCost: -1 } },
+    ]).toArray();
+
+    const result = rows.map(r => ({
+      service:     r._id,
+      calls:       r.calls,
+      tokensUsed:  r.tokensUsed,
+      totalCost:   parseFloat(r.totalCost.toFixed(6)),
+      successRate: r.calls > 0 ? parseFloat((r.successCount / r.calls).toFixed(4)) : 0,
+    }));
+
+    res.json({ success: true, since, usage: result });
+  } catch (err) {
+    console.error('[Admin] API usage error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// GET /api/admin/youtube-quota — daily quota consumption estimate
+app.get('/api/admin/youtube-quota', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const usageCol = agentCol('apiUsage');
+    const rows = await usageCol.aggregate([
+      { $match: { service: 'youtube', timestamp: { $gte: today + 'T00:00:00.000Z' } } },
+      { $group: { _id: null, used: { $sum: '$tokensUsed' } } },
+    ]).toArray();
+
+    const used        = rows[0]?.used || 0;
+    const limit       = API_COSTS.youtube_daily_quota;
+    const remaining   = Math.max(0, limit - used);
+    const percentUsed = parseFloat(((used / limit) * 100).toFixed(2));
+
+    // Reset at midnight UTC
+    const now    = new Date();
+    const resetAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+      .toISOString();
+
+    res.json({ success: true, used, limit, remaining, percentUsed, resetAt });
+  } catch (err) {
+    console.error('[Admin] YouTube quota error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// GET /api/admin/users — all users with cost + activity summary, sorted by monthly cost desc
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const monthStart = new Date().toISOString().slice(0, 7) + '-01T00:00:00.000Z';
+    const usageCol   = agentCol('apiUsage');
+    const slotsCol   = agentCol('calendar_slots');
+
+    const [users, costByUser] = await Promise.all([
+      User.find().select('email plan createdAt updatedAt youtubeChannels').lean(),
+      usageCol.aggregate([
+        { $match: { timestamp: { $gte: monthStart }, userId: { $ne: null } } },
+        { $group: { _id: '$userId', cost: { $sum: '$estimatedCost' } } },
+      ]).toArray(),
+    ]);
+
+    const costMap = Object.fromEntries(costByUser.map(c => [c._id, c.cost]));
+
+    const userRows = await Promise.all(users.map(async u => {
+      const videosPosted = await slotsCol.countDocuments({ userId: String(u._id), posted: true }).catch(() => 0);
+      return {
+        email:             u.email,
+        plan:              u.plan,
+        videosPosted,
+        apiCostThisMonth:  parseFloat((costMap[String(u._id)] || 0).toFixed(6)),
+        lastActive:        u.updatedAt || u.createdAt,
+        channelsCount:     (u.youtubeChannels || []).length,
+      };
+    }));
+
+    userRows.sort((a, b) => b.apiCostThisMonth - a.apiCostThisMonth);
+    res.json({ success: true, count: userRows.length, users: userRows });
+  } catch (err) {
+    console.error('[Admin] Users error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// GET /api/admin/alerts — active threshold alerts
+app.get('/api/admin/alerts', requireAdmin, async (req, res) => {
+  try {
+    const today     = new Date().toISOString().slice(0, 10);
+    const usageCol  = agentCol('apiUsage');
+    const alerts    = [];
+
+    // Per-service cost today
+    const costRows = await usageCol.aggregate([
+      { $match: { timestamp: { $gte: today + 'T00:00:00.000Z' } } },
+      { $group: { _id: '$service', totalCost: { $sum: '$estimatedCost' }, calls: { $sum: 1 }, successCount: { $sum: { $cond: ['$success', 1, 0] } } } },
+    ]).toArray();
+
+    for (const row of costRows) {
+      if (row.totalCost > 10) {
+        alerts.push({ type: 'cost', severity: 'high', service: row._id,
+          message: `${row._id} cost today: $${row.totalCost.toFixed(4)} (threshold: $10)` });
+      }
+      const failRate = row.calls > 0 ? (row.calls - row.successCount) / row.calls : 0;
+      if (failRate > 0.1) {
+        alerts.push({ type: 'failure_rate', severity: 'medium', service: row._id,
+          message: `${row._id} failure rate: ${(failRate * 100).toFixed(1)}% (threshold: 10%)` });
+      }
+    }
+
+    // YouTube quota
+    const ytRow = costRows.find(r => r._id === 'youtube');
+    const ytUsed = ytRow ? await usageCol.aggregate([
+      { $match: { service: 'youtube', timestamp: { $gte: today + 'T00:00:00.000Z' } } },
+      { $group: { _id: null, used: { $sum: '$tokensUsed' } } },
+    ]).toArray().then(r => r[0]?.used || 0) : 0;
+    const quotaPct = (ytUsed / API_COSTS.youtube_daily_quota) * 100;
+    if (quotaPct > 80) {
+      alerts.push({ type: 'quota', severity: 'high', service: 'youtube',
+        message: `YouTube quota at ${quotaPct.toFixed(1)}% (${ytUsed}/${API_COSTS.youtube_daily_quota} units)` });
+    }
+
+    res.json({ success: true, alertCount: alerts.length, alerts });
+  } catch (err) {
+    console.error('[Admin] Alerts error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// GET /api/admin/pipeline-stats — today's pipeline performance summary
+app.get('/api/admin/pipeline-stats', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const slotsCol = agentCol('calendar_slots');
+    const usageCol = agentCol('apiUsage');
+
+    const [todaySlots, failedSlots, pipelineCalls] = await Promise.all([
+      slotsCol.find({ date: today }).toArray(),
+      slotsCol.countDocuments({ date: today, pipelineStatus: 'failed' }),
+      usageCol.find({
+        service: 'openai', action: 'script_short',
+        timestamp: { $gte: today + 'T00:00:00.000Z' },
+      }).toArray(),
+    ]);
+
+    const videosGeneratedToday = todaySlots.filter(s => s.pipelineStatus === 'ready' || s.status === 'ready').length;
+    const videosPostedToday    = todaySlots.filter(s => s.posted).length;
+    const totalAttempted       = pipelineCalls.length;
+    const successfulCalls      = pipelineCalls.filter(c => c.success).length;
+    const successRate          = totalAttempted > 0
+      ? parseFloat((successfulCalls / totalAttempted).toFixed(4)) : null;
+
+    res.json({
+      success: true,
+      videosGeneratedToday,
+      videosPostedToday,
+      failureCount:    failedSlots,
+      avgGenerationTimeMs: null, // tracked via pipelineStartedAt/previewReadyAt — reserved for future
+      successRate,
+    });
+  } catch (err) {
+    console.error('[Admin] Pipeline stats error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
   }
 });
 
