@@ -52,7 +52,7 @@ const FEATURES = {
   analyticsCollection: true,
 
   // ── Now active ───────────────────────────────────────────────────────────
-  voiceover: true,   // Google Cloud TTS via GEMINI_API_KEY
+  voiceover: true,   // Google Cloud TTS via GOOGLE_TTS_API_KEY
   preview:   true,   // Preview Engine — approval queue before posting
 
   // ── Shelved — requires paid subscriptions at scale ────────────────────────
@@ -3678,90 +3678,32 @@ Return valid JSON:
 // Step 2 — Generate voiceover via Gemini 2.5 Flash TTS
 // Returns path to a WAV file ready for the ffmpeg assembly step.
 async function pipelineGenerateVoiceover(script, userId) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured for Gemini TTS');
+  const apiKey = process.env.GOOGLE_TTS_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not configured — add it in Railway env vars');
 
-  const { GoogleGenerativeAI } = require('@google/generative-ai');
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-tts' });
-
-  const prompt = [
-    'Speak in an engaging, clear, and energetic YouTube narrator style. Keep pace natural and enthusiastic.',
-    '',
-    script.slice(0, 5000),
-  ].join('\n');
+  const textToSpeech = require('@google-cloud/text-to-speech');
+  const client = new textToSpeech.TextToSpeechClient({ apiKey });
+  const request = {
+    input: { text: script.slice(0, 5000) },
+    voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
+    audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0 },
+  };
 
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-          },
-        },
-      });
-
-      const part = result.response.candidates?.[0]?.content?.parts?.[0];
-      if (!part?.inlineData?.data) {
-        const blockReason = result.response.promptFeedback?.blockReason;
-        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini TTS returned no audio data');
-      }
-
-      const rawBuf   = Buffer.from(part.inlineData.data, 'base64');
-      const mimeType = part.inlineData.mimeType || '';
-      // Gemini returns raw PCM (audio/pcm) — wrap in WAV container; pass through if already WAV
-      const wavBuf   = mimeType.includes('wav') ? rawBuf : _pcmToWav(rawBuf, 24000, 1, 16);
-      const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.wav`;
-      require('fs').writeFileSync(audioPath, wavBuf);
-      const charCount = prompt.length;
-      logAPIUsage('gemini_tts', 'voiceover', userId, charCount,
-        charCount * API_COSTS.gemini_tts, true);
-      console.log(`[Voiceover] ✓ ${audioPath} — ${Math.round(wavBuf.length / 1024)} KB (attempt ${attempt}/3)`);
+      const [response] = await client.synthesizeSpeech(request);
+      const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.mp3`;
+      require('fs').writeFileSync(audioPath, response.audioContent, 'binary');
+      console.log(`[Voiceover] ✓ ${audioPath} — ${Math.round(response.audioContent.length / 1024)} KB (attempt ${attempt}/3)`);
       return audioPath;
-
     } catch (err) {
       lastErr = err;
-      logAPIUsage('gemini_tts', 'voiceover', userId, 0, 0, false);
       console.warn(`[Voiceover] Attempt ${attempt}/3 failed: ${err.message}`);
-      if (attempt < 3) {
-        const is429 = err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED') ||
-                      err.message?.includes('quota') || err.status === 429;
-        if (is429) {
-          console.warn('[Voiceover] Rate limit (429) — waiting 60s before retry');
-          await new Promise(r => setTimeout(r, 60000));
-        } else {
-          await new Promise(r => setTimeout(r, 2000));
-        }
-      }
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
     }
   }
   throw new Error(`Voiceover failed after 3 attempts: ${lastErr.message}`);
-}
-
-// Wraps raw signed-16-bit PCM data in a standard WAV container
-function _pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
-  const blockAlign = numChannels * (bitsPerSample / 8);
-  const byteRate   = sampleRate * blockAlign;
-  const dataSize   = pcmData.length;
-  const buf        = Buffer.alloc(44 + dataSize);
-  buf.write('RIFF', 0);                          // ChunkID
-  buf.writeUInt32LE(36 + dataSize, 4);           // ChunkSize
-  buf.write('WAVE', 8);                          // Format
-  buf.write('fmt ', 12);                         // Subchunk1ID
-  buf.writeUInt32LE(16, 16);                     // Subchunk1Size (PCM)
-  buf.writeUInt16LE(1, 20);                      // AudioFormat 1 = PCM
-  buf.writeUInt16LE(numChannels, 22);
-  buf.writeUInt32LE(sampleRate, 24);
-  buf.writeUInt32LE(byteRate, 28);
-  buf.writeUInt16LE(blockAlign, 32);
-  buf.writeUInt16LE(bitsPerSample, 34);
-  buf.write('data', 36);                         // Subchunk2ID
-  buf.writeUInt32LE(dataSize, 40);               // Subchunk2Size
-  pcmData.copy(buf, 44);
-  return buf;
 }
 
 // Royalty-free ambient/upbeat tracks for background music (mixed at 15%)
@@ -3863,35 +3805,23 @@ function buildFallbackCaptions(scriptText, totalDuration) {
   }));
 }
 
-// Converts seconds to SRT timestamp format: HH:MM:SS,mmm
-function toSRTTime(totalSeconds) {
-  const s  = Math.max(0, Number(totalSeconds) || 0);
-  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
-  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-  const ss = String(Math.floor(s % 60)).padStart(2, '0');
-  const ms = String(Math.round((s % 1) * 1000)).padStart(3, '0');
-  return `${hh}:${mm}:${ss},${ms}`;
-}
-
-// Writes captions array to a valid SRT file — no shell escaping needed inside SRT
-function generateSRTFile(captions, runId) {
-  const fs    = require('fs');
-  const lines = [];
-  captions.forEach((c, i) => {
-    const startSec = Number(c.start || 0);
-    const endSec   = Math.min(Number(c.end || startSec + 3), 3599);
-    lines.push(String(i + 1));
-    lines.push(`${toSRTTime(startSec)} --> ${toSRTTime(endSec)}`);
-    lines.push(String(c.text || '').trim());
-    lines.push('');
-  });
-  const srtPath = `/tmp/vly_subs_${runId}.srt`;
-  fs.writeFileSync(srtPath, lines.join('\n'), 'utf8');
+function generateSRTFile(captions, slotId) {
+  const toSRTTime = (seconds) => {
+    const h  = Math.floor(seconds / 3600);
+    const m  = Math.floor((seconds % 3600) / 60);
+    const s  = Math.floor(seconds % 60);
+    const ms = Math.round((seconds % 1) * 1000);
+    return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+','+String(ms).padStart(3,'0');
+  };
+  const srtContent = captions.map((c, i) =>
+    `${i+1}\n${toSRTTime(c.start)} --> ${toSRTTime(c.end)}\n${c.text}\n`
+  ).join('\n');
+  const srtPath = `/tmp/vly_subs_${slotId}.srt`;
+  require('fs').writeFileSync(srtPath, srtContent, 'utf8');
   return srtPath;
 }
 
 // Step 4 — Assemble: concat clips, burn-in SRT subtitles (Shorts only), mix voiceover + background music
-// Uses -filter_complex_script to avoid command-line length limits.
 // If the subtitles filter fails (e.g. libass not available), retries without subtitles.
 async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true) {
   const fs   = require('fs');
@@ -3947,15 +3877,13 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     console.log(`[Assembly] SRT written: ${srtPath} (${captions.length} segments)`);
   }
 
-  // Helper: write filter to file and run ffmpeg, resolves on success, rejects on failure
+  // Helper: run ffmpeg with inline filter_complex string
   const runFFmpeg = (filterStr, label) => new Promise((res, rej) => {
-    const filterFile = `/tmp/vly_filter_${runId}_${label}.txt`;
-    fs.writeFileSync(filterFile, filterStr);
     const args = ['-y'];
     for (const p of clipPaths) args.push('-i', p);
     args.push('-i', audioPath);
     if (hasMus) args.push('-i', musicPath);
-    args.push('-filter_complex_script', filterFile);
+    args.push('-filter_complex', filterStr);
     args.push('-map', '[vout]', '-map', '[aout]');
     args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
     args.push('-c:a', 'aac', '-b:a', '128k');
@@ -3967,13 +3895,12 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     const stderrLines = [];
     ff.stderr.on('data', d => stderrLines.push(...d.toString().split('\n')));
     ff.on('close', code => {
-      fs.unlink(filterFile, () => {});
       if (code !== 0) {
         const tail = stderrLines.filter(l => l.trim()).slice(-5).join('\n');
         rej(new Error(`ffmpeg [${label}] failed (exit ${code}):\n${tail}`));
       } else res();
     });
-    ff.on('error', err => { fs.unlink(filterFile, () => {}); rej(new Error(`ffmpeg spawn error: ${err.message}`)); });
+    ff.on('error', err => rej(new Error(`ffmpeg spawn error: ${err.message}`)));
   });
 
   const cleanup = () => {
@@ -3985,7 +3912,7 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   try {
     // First attempt: with SRT subtitles filter (Shorts only)
     if (srtPath) {
-      const subsFilter = `[vcat]subtitles='${srtPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'[vout]`;
+      const subsFilter = `[vcat]subtitles='${srtPath}':force_style='FontSize=18\\,PrimaryColour=&Hffffff\\,OutlineColour=&H000000\\,Outline=2\\,Alignment=2'[vout]`;
       const filterWithSubs = [...baseParts, subsFilter, audioFilter].join(';');
       try {
         await runFFmpeg(filterWithSubs, 'subs');
