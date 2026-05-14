@@ -674,7 +674,9 @@ class NicheEngine:
             for s in scored:
                 l1_max   = W_CPM + W_OPPORTUNITY + EVERGREEN_BONUS
                 raw_sc   = s["_cpm_score"] + s["_opp_score"] + s["_ev_bonus"]
-                combined = round(min(raw_sc / l1_max * 100, 100), 1)
+                raw_combined = round(min(raw_sc / l1_max * 100, 100), 1)
+                _norm        = ((raw_combined - 40) / (100 - 40)) * 40 + 60
+                combined     = round(max(60.0, min(100.0, _norm)), 1)
                 if combined < min_score:
                     continue
                 verdict, verdict_label = self._verdict(combined)
@@ -1079,8 +1081,10 @@ class NicheEngine:
         # Normalise raw 0-100 score to display range 60-100.
         # Raw scores of 40+ map linearly to 60-100; anything below 40 floors at 60.
         # This means genuinely top niches naturally land at 90+.
-        normalised = ((combined - 40) / (100 - 40)) * 40 + 60
+        _raw_score = combined
+        normalised = ((_raw_score - 40) / (100 - 40)) * 40 + 60
         combined   = round(max(60.0, min(100.0, normalised)), 1)
+        import sys; print(f"[DEBUG score] {keyword!r:30s}  raw={_raw_score:.1f}  →  normalised={combined:.1f}", file=sys.stderr)
 
         verdict, verdict_label = self._verdict(combined)
 
