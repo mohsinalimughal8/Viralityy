@@ -3911,9 +3911,30 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
   parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
 
-  // Captions: Shorts only — pick every other segment, max 5 total
+  // Captions: Shorts only — all segments, last extended to end of video
   if (isShort && captions.length > 0) {
-    const capSegs = captions.filter((_, i) => i % 2 === 0).slice(0, 5);
+    // If >15 segments, normalize any over-long caption texts to max 4 words each
+    let capSegs = [...captions];
+    if (capSegs.length > 15) {
+      const expanded = [];
+      for (const c of capSegs) {
+        const words = (c.text || '').trim().split(/\s+/).filter(Boolean);
+        if (words.length <= 4) { expanded.push(c); continue; }
+        const dur    = (Number(c.end || 0) - Number(c.start || 0)) || 2;
+        const chunks = Math.ceil(words.length / 4);
+        for (let ci = 0; ci < chunks; ci++) {
+          expanded.push({
+            text:  words.slice(ci * 4, (ci + 1) * 4).join(' '),
+            start: Number(c.start || 0) + (ci / chunks) * dur,
+            end:   Number(c.start || 0) + ((ci + 1) / chunks) * dur,
+          });
+        }
+      }
+      capSegs = expanded;
+    }
+    // Extend last segment to end of video — no captionless moments
+    capSegs[capSegs.length - 1] = { ...capSegs[capSegs.length - 1], end: 999 };
+
     let lastV = 'vcat';
     for (let i = 0; i < capSegs.length; i++) {
       const c     = capSegs[i];
