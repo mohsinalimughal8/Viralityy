@@ -162,6 +162,19 @@ async function runStartupSlotCheck() {
           ).catch(() => {});
         }
       }
+
+      // Recovery 6: reset today's failed slots → pending for one more retry
+      const failedToday = todaySlots.filter(s => s.status === 'failed' && !s.posted);
+      if (failedToday.length) {
+        console.log(`[Startup Recovery] Resetting ${failedToday.length} failed slot(s) → pending for retry (user ${user._id})`);
+        for (const s of failedToday) {
+          await calCol.updateOne(
+            { _id: cal._id },
+            { $set: { 'slots.$[s].status': 'pending', 'slots.$[s].pipelineStatus': 'retry-on-startup', 'slots.$[s].pipelineError': null } },
+            { arrayFilters: [{ 's.day': s.day, 's.videoIndex': s.videoIndex || 1 }] }
+          ).catch(() => {});
+        }
+      }
     }
 
     // Recovery 3: generate today's slots for calendars that are missing them
@@ -215,11 +228,15 @@ async function runStartupSlotCheck() {
     for (const cal of pipelineCals) {
       const user = await User.findById(cal.userId).catch(() => null);
       if (!user) continue;
-      const pendingSlots = (cal.slots || []).filter(s =>
-        s.date === today && s.status === 'pending' && !s.posted
-      );
+      const pendingSlots = (cal.slots || []).filter(s => {
+        if (s.date !== today || s.posted) return false;
+        if (s.status === 'pending') return true;
+        // "approved" with no assembled file — needs pipeline before it can post
+        if (s.status === 'approved' && (!s.assembledPath || !require('fs').existsSync(s.assembledPath))) return true;
+        return false;
+      });
       if (!pendingSlots.length) continue;
-      console.log(`[Startup Recovery] Found ${pendingSlots.length} pending slot(s) for user ${user._id} — running pipeline now`);
+      console.log(`[Startup Recovery] Found ${pendingSlots.length} pending/unassembled slot(s) for user ${user._id} — running pipeline now`);
       const capturedCal  = cal;
       const capturedUser = user;
       setImmediate(async () => {
@@ -4209,6 +4226,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
       { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
     );
     console.log(`[Pipeline] ✓ Ready: "${slot.title}"`);
+    console.log(`[Pipeline] Slot ready: ${slot.title} — saved to ${outputPath}`);
     return outputPath;
   } catch (err) {
     if (audioPath) require('fs').unlink(audioPath, () => {});
@@ -4435,7 +4453,7 @@ async function runScheduledPosting() {
       if (s.date !== today) return false; // today only — skip past and future dates
       const postAt = s.scheduledPostTime || `${s.date}T18:00:00`;
       if (postAt > now) return false;
-      return autoPostOn ? s.status === 'ready' : s.status === 'approved';
+      return s.status === 'ready' || s.status === 'approved';
     });
 
     // Auto-approve overdue pending slots: if a slot is still pending past its
