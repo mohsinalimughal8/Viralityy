@@ -828,7 +828,16 @@ app.get('/api/niches/recommend', requireAuth, async (req, res) => {
       'entrepreneurship', 'weight loss', 'relationships', 'life hacks', 'crypto',
     ];
 
-    const allNiches = await searchNichesParallel(KEYWORDS, plan);
+    let allNiches = await searchNichesParallel(KEYWORDS, plan);
+
+    // Fallback: if live search failed (no YouTube API or motor), use Layer 1 static rankings.
+    // These return combined_score 60-74 — niches won't hit the >=90 filter but the
+    // page won't be blank, and scores improve once the YouTube API key is configured.
+    if (!allNiches.length) {
+      console.warn('[NicheV2] search returned empty — falling back to Layer 1 recommend()');
+      allNiches = nicheEngine.recommend(plan, 10);
+    }
+
     const niches = allNiches.slice(0, 10);
     res.json({ success: true, niches, count: niches.length });
   } catch (err) {
@@ -994,7 +1003,14 @@ app.post('/api/niches/search', requireAuth, async (req, res) => {
       || [`${kw} tips`, `${kw} for beginners`, `best ${kw}`, `${kw} facts`];
 
     const keywords = [kw, ...related.slice(0, 4)];
-    const niches   = await searchNichesParallel(keywords, plan);
+    let niches = await searchNichesParallel(keywords, plan);
+
+    // Fallback: if search failed, return static Layer 1 results for this keyword category
+    if (!niches.length) {
+      console.warn(`[NicheV2] search("${kw}") empty — falling back to Layer 1 recommend()`);
+      niches = nicheEngine.recommend(plan, 5);
+    }
+
     res.json({ success: true, niches, result: niches[0] || null, count: niches.length });
   } catch (err) {
     console.error('[NicheV2] /api/niches/search error:', err);

@@ -39,15 +39,13 @@ USAGE:
   results = engine.recommend(plan="combo_pro", count=10)
 
   # Full mode — both layers
-  engine = NicheEngine(youtube_api_key="AIza...", mongo_uri="mongodb+srv://...")
+  engine = NicheEngine(youtube_api_key="AIza...")
   result  = await engine.analyse("psychology facts", plan="combo_pro")
   results = await engine.analyse_batch(["stoicism", "ai tools"], plan="shorts_pro")
 
 REQUIREMENTS:
   Already in requirements.txt:
     google-api-python-client==2.108.0
-    motor==3.3.2
-    pymongo==4.6.1
     requests==2.31.0
 """
 
@@ -66,12 +64,6 @@ try:
     HAS_YT = True
 except ImportError:
     HAS_YT = False
-
-try:
-    from motor.motor_asyncio import AsyncIOMotorClient
-    HAS_MOTOR = True
-except ImportError:
-    HAS_MOTOR = False
 
 logging.basicConfig(level=logging.INFO, format='[NicheV2] %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
@@ -484,11 +476,10 @@ class NicheEngine:
     only — all existing integrations continue to work unchanged.
     """
 
-    def __init__(self, youtube_api_key: str = None, mongo_uri: str = None):
+    def __init__(self, youtube_api_key: str = None):
         self.api_key   = youtube_api_key or os.environ.get("YOUTUBE_API_KEY")
-        self.mongo_uri = mongo_uri or os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
-        self._db       = None
         self._yt       = None
+        self._cache    = {}   # in-memory TTL cache: key → {"data": ..., "expires_at": ISO str}
 
         # Pre-compute normalisation denominators from static data
         self.max_cpm   = max(n["cpm_high"] for n in NICHE_DATA.values())
@@ -496,17 +487,23 @@ class NicheEngine:
         log.info(f"NicheEngine v2 ready — live mode: {'ON' if self.api_key else 'OFF (Layer 1 only)'}")
 
     # -----------------------------------------------------------------------
-    # DATABASE
+    # IN-MEMORY CACHE (replaces MongoDB motor cache — no extra deps needed)
     # -----------------------------------------------------------------------
 
-    async def _get_db(self):
-        if self._db:
-            return self._db
-        if not HAS_MOTOR:
-            raise RuntimeError("motor not installed — pip install motor")
-        client = AsyncIOMotorClient(self.mongo_uri)
-        self._db = client["viralityy"]
-        return self._db
+    def _get_cached(self, keyword: str, plan: str) -> Optional[dict]:
+        key = f"{keyword}::{plan}"
+        entry = self._cache.get(key)
+        if not entry:
+            return None
+        if entry["expires_at"] < datetime.now(timezone.utc).isoformat():
+            del self._cache[key]
+            return None
+        return entry["data"]
+
+    def _cache_result(self, keyword: str, plan: str, result: dict):
+        key = f"{keyword}::{plan}"
+        expires = (datetime.now(timezone.utc) + timedelta(hours=CACHE_TTL_HOURS)).isoformat()
+        self._cache[key] = {"data": result, "expires_at": expires}
 
     # -----------------------------------------------------------------------
     # YOUTUBE CLIENT
@@ -530,13 +527,34 @@ class NicheEngine:
     def recommend(self, plan: str, count: int = 10, category: str = None) -> list:
         """
         Synchronous ranked niche list for a plan — Layer 1 only.
-        Drop-in replacement for the original engine.recommend().
+        Returns combined_score (normalised 60-100) compatible with the frontend.
         """
         content_type = PLAN_CONTENT_TYPE.get(plan, "combo")
         candidates   = self._filter_by_plan(content_type, category)
         scored       = [self._layer1_score(nid, data) for nid, data in candidates]
         scored.sort(key=lambda x: x["total_score"], reverse=True)
-        return scored[:count]
+
+        # Apply same 60-100 normalisation as analyse() so frontend filter works
+        l1_max = W_CPM + W_OPPORTUNITY + EVERGREEN_BONUS
+        result = []
+        for n in scored[:count]:
+            raw_sc   = n["_cpm_score"] + n["_opp_score"] + n["_ev_bonus"]
+            raw      = round(min(raw_sc / l1_max * 100, 100), 1)
+            norm     = ((raw - 40) / (100 - 40)) * 40 + 60
+            cs       = round(max(60.0, min(100.0, norm)), 1)
+            verdict, verdict_label = self._verdict(cs)
+            result.append({
+                **n,
+                "combined_score":  cs,
+                "trend_boost":     0,
+                "live_data_used":  False,
+                "verdict":         verdict,
+                "verdict_label":   verdict_label,
+                "niche_id":        n["id"],
+                "keyword":         n["label"].lower(),
+                "name":            n["label"],
+            })
+        return result
 
     def get_niche_detail(self, niche_id: str) -> dict:
         """Full static detail for one niche. Backwards-compatible."""
@@ -579,11 +597,10 @@ class NicheEngine:
         Returns a complete niche report dict.
         """
         keyword = keyword.strip().lower()
-        db      = await self._get_db()
 
         # ── Cache check ──────────────────────────────────────────────────
         if not force_refresh:
-            cached = await self._get_cached(db, keyword, plan)
+            cached = self._get_cached(keyword, plan)
             if cached:
                 log.info(f"Cache hit: '{keyword}'")
                 cached["source"] = "cache"
@@ -605,7 +622,7 @@ class NicheEngine:
         result = self._merge(keyword, plan, static, live)
 
         # ── Cache and return ─────────────────────────────────────────────
-        await self._cache_result(db, keyword, plan, result)
+        self._cache_result(keyword, plan, result)
         result["source"] = "live"
         return result
 
@@ -646,9 +663,8 @@ class NicheEngine:
           }
         """
         # Check cache first (keyed on plan + "discovery")
-        db = await self._get_db()
         if not force_refresh:
-            cached = await self._get_cached(db, f"__discovery__{plan}", plan)
+            cached = self._get_cached(f"__discovery__{plan}", plan)
             if cached:
                 cached["source"] = "cache"
                 return cached
@@ -728,7 +744,7 @@ class NicheEngine:
                                timedelta(hours=CACHE_TTL_HOURS)).isoformat(),
         }
 
-        await self._cache_result(db, f"__discovery__{plan}", plan, output)
+        self._cache_result(f"__discovery__{plan}", plan, output)
         output["source"] = "live"
         return output
 
@@ -923,11 +939,12 @@ class NicheEngine:
         cutoff = now - timedelta(days=RECENCY_DAYS)
 
         views_list, likes_list, comments_list, ratios_list = [], [], [], []
-        recent_count = 0
-        short_count  = 0
-        all_titles   = []
-        all_tags     = []
-        top_videos   = []
+        recent_count    = 0
+        short_count     = 0
+        trending_count  = 0  # recent (last 30 days) videos with >100k views
+        all_titles      = []
+        all_tags        = []
+        top_videos      = []
 
         for v in videos_raw:
             vid      = v["id"]
@@ -950,11 +967,13 @@ class NicheEngine:
             ratio = (likes + comments) / max(views, 1)
             ratios_list.append(ratio)
 
-            # Recency
+            # Recency + trend boost (recent viral = published in last 30 days AND >100k views)
             try:
                 pub_dt = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
                 if pub_dt >= cutoff:
                     recent_count += 1
+                    if views >= 100_000:
+                        trending_count += 1
             except Exception:
                 pass
 
@@ -1002,6 +1021,7 @@ class NicheEngine:
             "avg_engagement":   round(avg_engagement, 5),
             "recency_pct":      round(recency_pct, 3),
             "shortform_pct":    round(shortform_pct, 3),
+            "trending_count":   trending_count,
             "top_videos":       top_videos[:5],
             "top_title_words":  top_words,
             "top_tags":         top_tags,
@@ -1048,9 +1068,13 @@ class NicheEngine:
             # Short-form score (10 pts) — 100% short-form = full points
             sf_score   = live["shortform_pct"] * W_SHORTFORM
 
+            # Trend boost (0-10 pts) — recent viral videos (>100k views, last 30 days)
+            # 5+ such videos = max 10 pts; scales linearly below that
+            trend_boost = round(min(live.get("trending_count", 0) / 5, 1.0) * 10, 1)
+
             combined = (
                 cpm_score + opp_score + ev_bonus +
-                view_score + eng_score + rec_score + sf_score
+                view_score + eng_score + rec_score + sf_score + trend_boost
             )
             combined = round(min(combined, 100), 1)
 
@@ -1061,12 +1085,14 @@ class NicheEngine:
                 "live_engagement":round(eng_score, 1),
                 "recency":        round(rec_score, 1),
                 "short_form_fit": round(sf_score, 1),
+                "trend_boost":    trend_boost,
                 "evergreen_bonus":ev_bonus,
             }
         else:
             # Layer 1 only — scale 50-pt max up to 100 proportionally
             l1_max   = W_CPM + W_OPPORTUNITY + EVERGREEN_BONUS
             combined = round(min((cpm_score + opp_score + ev_bonus) / l1_max * 100, 100), 1)
+            trend_boost = 0
             score_breakdown = {
                 "cpm":            round(cpm_score, 1),
                 "opportunity":    round(opp_score, 1),
@@ -1075,16 +1101,16 @@ class NicheEngine:
                 "live_engagement":None,
                 "recency":        None,
                 "short_form_fit": None,
+                "trend_boost":    0,
             }
             view_score = eng_score = rec_score = sf_score = None
 
         # Normalise raw 0-100 score to display range 60-100.
         # Raw scores of 40+ map linearly to 60-100; anything below 40 floors at 60.
-        # This means genuinely top niches naturally land at 90+.
+        # Genuinely top niches (raw >85) land at 90+ after normalisation.
         _raw_score = combined
         normalised = ((_raw_score - 40) / (100 - 40)) * 40 + 60
         combined   = round(max(60.0, min(100.0, normalised)), 1)
-        import sys; print(f"[DEBUG score] {keyword!r:30s}  raw={_raw_score:.1f}  →  normalised={combined:.1f}", file=sys.stderr)
 
         verdict, verdict_label = self._verdict(combined)
 
@@ -1121,6 +1147,7 @@ class NicheEngine:
 
             # Score
             "combined_score":   combined,
+            "trend_boost":      trend_boost,
             "verdict":          verdict,
             "verdict_label":    verdict_label,
             "score_breakdown":  score_breakdown,
@@ -1166,50 +1193,8 @@ class NicheEngine:
             return "WEAK",     "❌ WEAK — skip or try a sub-niche"
 
     # =======================================================================
-    # CACHE (MongoDB)
+    # CACHE helpers are defined near __init__ (in-memory dict — no MongoDB)
     # =======================================================================
-
-    async def _get_cached(self, db, keyword: str, plan: str) -> Optional[dict]:
-        try:
-            now = datetime.now(timezone.utc).isoformat()
-            doc = await db.niche_cache.find_one({
-                "keyword": keyword,
-                "plan":    plan,
-                "expires_at": {"$gt": now},
-            })
-            if doc:
-                doc.pop("_id", None)
-                return doc
-        except Exception as e:
-            log.warning(f"Cache read error: {e}")
-        return None
-
-    async def _cache_result(self, db, keyword: str, plan: str, result: dict):
-        try:
-            delete_at = datetime.now(timezone.utc) + timedelta(days=CACHE_TTL_DAYS)
-            await db.niche_cache.update_one(
-                {"keyword": keyword, "plan": plan},
-                {"$set": {**result, "delete_at": delete_at}},
-                upsert=True,
-            )
-        except Exception as e:
-            log.warning(f"Cache write error: {e}")
-
-    async def ensure_cache_ttl_index(self):
-        """
-        Run once at startup to create TTL index for auto-deletion after 7 days.
-        Safe to call multiple times.
-        """
-        try:
-            db = await self._get_db()
-            await db.niche_cache.create_index(
-                "delete_at",
-                expireAfterSeconds=0,
-                name="idx_niche_cache_ttl",
-            )
-            log.info("TTL index on niche_cache confirmed")
-        except Exception as e:
-            log.warning(f"TTL index setup error: {e}")
 
     # =======================================================================
     # STATIC HELPERS (preserved from v1)
