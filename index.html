@@ -862,9 +862,10 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="dash-page active" id="dp-overview">
   <div class="dash-topbar">
     <div><p class="dash-title">Dashboard</p><p class="dash-subtitle">Psychology & Human Behaviour · Starter plan · Trial ends in 6 days</p></div>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;align-items:center">
       <button class="btn btn-ghost btn-sm" onclick="refreshAnalytics()">Refresh</button>
       <button class="btn btn-primary btn-sm" onclick="dashPage('planner',document.querySelector(\'[onclick*=\"planner\"]\'))">Generate calendar</button>
+      <button onclick="showInfoModal('Dashboard','Your command centre. Shows live stats from your connected YouTube channels including views, subscribers and videos posted. Updates every 30 minutes.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
     </div>
   </div>
   <div class="stats-row">
@@ -894,7 +895,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CHANNELS ── -->
 <div class="dash-page" id="dp-channels">
-  <div class="dash-topbar"><div><p class="ph">My Channels</p><p class="ps">Manage your connected YouTube channels and platform toggles</p></div><button class="btn btn-primary btn-sm" onclick="connectYouTubeChannel()">+ Add channel</button></div>
+  <div class="dash-topbar"><div><p class="ph">My Channels</p><p class="ps">Manage your connected YouTube channels and platform toggles</p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="connectYouTubeChannel()">+ Add channel</button><button onclick="showInfoModal('My Channels','Manage your connected YouTube channels. Each channel runs its own automated content pipeline based on your selected niche and plan.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
   <div id="channels-list"><p style="font-size:.78rem;color:var(--text3)">Loading channels…</p></div>
   <div style="background:var(--bg3);border:1px dashed var(--border2);border-radius:10px;padding:2rem;text-align:center;color:var(--text3);font-size:.82rem;cursor:pointer" onclick="connectYouTubeChannel()">
     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
@@ -912,7 +913,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── NICHE FINDER ── -->
 <div class="dash-page" id="dp-niches">
-  <div class="dash-topbar"><div><p class="ph">Niche Engine <span style="font-size:.8rem;color:var(--green);font-weight:500">v2</span></p><p class="ps">CPM-aware scoring + live YouTube trend validation</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Niche Engine <span style="font-size:.8rem;color:var(--green);font-weight:500">v2</span></p><p class="ps">CPM-aware scoring + live YouTube trend validation</p></div><button onclick="showInfoModal('Niche Finder','Discover high-growth content niches scored by AI. Select a niche to tell the pipeline what kind of content to create for your channel.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div>
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:1rem;flex-wrap:wrap">
     <div style="display:flex;background:var(--bg3);border-radius:9px;padding:3px;gap:2px">
       <button class="ne2-mode-btn active" id="ne-mode-discover" onclick="setNicheMode('discover',this)">Discover</button>
@@ -938,7 +939,10 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <!-- ── ANALYTICS ── -->
 <div class="dash-page" id="dp-analytics">
   <div class="dash-topbar"><div><p class="ph">Analytics</p><p class="ps" id="anal-subtitle">Last 30 days</p></div>
-    <button class="btn btn-ghost btn-sm" onclick="refreshAnalytics()">Refresh</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-ghost btn-sm" onclick="refreshAnalytics()">Refresh</button>
+      <button onclick="showInfoModal('Analytics','Live performance data pulled directly from YouTube Analytics. Shows views, watch time and subscriber growth.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
+    </div>
   </div>
 
   <!-- Loading state -->
@@ -978,7 +982,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT PLANNER ── -->
 <div class="dash-page" id="dp-planner">
-  <div class="dash-topbar"><div><p class="ph">Content Planner</p><p class="ps">AI-generated 30-day video calendar for your niche</p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><button class="btn btn-primary btn-sm" onclick="generateCalendar()">Regenerate calendar</button></div>
+  <div class="dash-topbar"><div><p class="ph">Content Planner</p><p class="ps">AI-generated 30-day video calendar for your niche</p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="generateCalendar()">Regenerate calendar</button><button onclick="showInfoModal('Content Calendar','Your daily content schedule generated by AI each morning. Topics are chosen based on what performed best yesterday.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Total slots</p><p class="sc-value" id="stat-planner-total">—</p><p class="sc-sub">This calendar</p></div>
     <div class="stat-card"><p class="sc-label">Posted</p><p class="sc-value" id="stat-planner-posted">—</p><p class="sc-sub green">On schedule</p></div>
@@ -994,7 +998,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── COMPETITOR INTELLIGENCE ── -->
 <div class="dash-page" id="dp-competitors">
-  <div class="dash-topbar"><div><p class="ph">Competitor Watcher</p><p class="ps">Monitor rival channels — subscriber count, average views, and upload frequency</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Competitor Watcher</p><p class="ps">Monitor rival channels — subscriber count, average views, and upload frequency</p></div><button onclick="showInfoModal('Competitors','Track top channels in your niche. The AI monitors their performance to inform your content strategy.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Channels watched</p><p class="sc-value" id="stat-comp-channels">—</p><p class="sc-sub">Active</p></div>
     <div class="stat-card"><p class="sc-label">Unread alerts</p><p class="sc-value" id="stat-comp-alerts">—</p><p class="sc-sub" style="color:var(--amber)">Viral signals</p></div>
@@ -1025,7 +1029,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── SCRIPT RESEARCH ── -->
 <div class="dash-page" id="dp-research">
-  <div class="dash-topbar"><div><p class="ph">Script Briefs</p><p class="ps" id="research-subtitle">Today's scripts</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Script Briefs</p><p class="ps" id="research-subtitle">Today's scripts</p></div><button onclick="showInfoModal('Script Briefs','AI-generated scripts for today\'s videos. Each script is optimised with a strong hook, rapid value points and a loop ending.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Scripts ready</p><p class="sc-value" id="stat-scripts-ready">—</p><p class="sc-sub green">Generated</p></div>
     <div class="stat-card"><p class="sc-label">Shorts</p><p class="sc-value" id="stat-scripts-shorts">—</p><p class="sc-sub">In queue</p></div>
@@ -1039,7 +1043,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── AI OPTIMISATION ── -->
 <div class="dash-page" id="dp-learning">
-  <div class="dash-topbar"><div><p class="ph">AI Optimisation</p><p class="ps">What Viralityy has learned about your audience this week</p></div><span id="opt-badge" style="font-size:.7rem;color:var(--text3);background:var(--bg3);border-radius:20px;padding:3px 10px;border:1px solid var(--border)">Updated every Monday</span></div>
+  <div class="dash-topbar"><div><p class="ph">AI Optimisation</p><p class="ps">What Viralityy has learned about your audience this week</p></div><div style="display:flex;gap:8px;align-items:center"><span id="opt-badge" style="font-size:.7rem;color:var(--text3);background:var(--bg3);border-radius:20px;padding:3px 10px;border:1px solid var(--border)">Updated every Monday</span><button onclick="showInfoModal('AI Optimisation','The AI analyses your posted videos every day to find patterns in what gets the most views. Uses this data to improve tomorrow\'s content topics.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Last optimised</p><p class="sc-value" id="opt-last">—</p><p class="sc-sub green">Weekly cycle</p></div>
     <div class="stat-card"><p class="sc-label">Videos analysed</p><p class="sc-value" id="opt-count">—</p><p class="sc-sub">Last 4 weeks</p></div>
@@ -1062,7 +1066,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT QUALITY ── -->
 <div class="dash-page" id="dp-quality">
-  <div class="dash-topbar"><div><p class="ph">Content Quality</p><p class="ps" id="quality-subtitle">Today's quality scores</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Content Quality</p><p class="ps" id="quality-subtitle">Today's quality scores</p></div><button onclick="showInfoModal('Content Quality','Quality scores for today\'s videos before they post. Scored on hook strength, clarity, CTA and niche relevance.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Avg quality score</p><p class="sc-value" id="qual-avg">—</p><p class="sc-sub green" id="qual-avg-sub"></p></div>
     <div class="stat-card"><p class="sc-label">Videos scored</p><p class="sc-value" id="qual-total">—</p><p class="sc-sub">Lifetime</p></div>
@@ -1083,6 +1087,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="dash-topbar"><div><p class="ph">Preview Queue</p><p class="ps" id="preview-queue-subtitle">Loading…</p></div>
     <div style="display:flex;gap:8px;align-items:center">
       <div class="toggle-wrap-sm"><span style="font-size:.76rem;color:var(--text2);margin-right:6px">Auto-post</span><label class="toggle-sm"><input type="checkbox" id="auto-post-toggle" onchange="handleAutoPostToggle(this.checked)"><span class="toggle-sm-sl"></span></label></div>
+      <button onclick="showInfoModal('Preview Queue','Today\'s videos ready to post. Review them before their scheduled time or leave Auto-post on to let the system handle it.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
     </div>
   </div>
   <div id="preview-queue-list"></div>
@@ -1090,7 +1095,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── AFFILIATE ── -->
 <div class="dash-page" id="dp-affiliate">
-  <div class="dash-topbar"><div><p class="ph">Affiliate Programme</p><p class="ps">Earn $10 for every user you refer who upgrades to a paid plan</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Affiliate Programme</p><p class="ps">Earn $10 for every user you refer who upgrades to a paid plan</p></div><button onclick="showInfoModal('Affiliate','Earn money by referring users to Viralityy. Share your referral link and earn commission on every upgrade.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div>
 
   <!-- Stats row -->
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.1rem">
@@ -2254,6 +2259,26 @@ function renderNicheCard(n) {
 
 function closeNicheModal() {
   document.getElementById('vly-overlay').style.display = 'none';
+}
+
+function showInfoModal(title, description) {
+  let overlay = document.getElementById('info-modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'info-modal-overlay';
+    overlay.className = 'vly-overlay';
+    overlay.style.display = 'none';
+    overlay.innerHTML = `<div class="vly-modal" onclick="event.stopPropagation()" style="max-width:400px">
+      <h3 id="info-modal-title" style="margin-bottom:.6rem"></h3>
+      <p id="info-modal-desc" style="line-height:1.65;margin-bottom:0;font-size:.78rem;color:var(--text2)"></p>
+      <div class="vly-modal-footer"><button class="vly-modal-close" onclick="document.getElementById('info-modal-overlay').style.display='none'">Got it</button></div>
+    </div>`;
+    overlay.addEventListener('click', () => { overlay.style.display = 'none'; });
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('info-modal-title').textContent = title;
+  document.getElementById('info-modal-desc').textContent  = description;
+  overlay.style.display = 'flex';
 }
 
 let _promoSelectedPlan = 'shorts_pro';
