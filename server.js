@@ -3306,8 +3306,25 @@ async function pipelineFetchMultipleFootage(title, script, nicheName = '') {
   return clips;
 }
 
-// Step 4 — Assemble: concat clips, overlay captions + voiceover, mix background music at 15%
-async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = []) {
+// Build caption segments from raw script text when the script generator didn't produce them.
+// Splits into 4-word chunks and distributes timestamps evenly across totalDuration seconds.
+function buildFallbackCaptions(scriptText, totalDuration) {
+  const words  = String(scriptText || '').trim().split(/\s+/).filter(Boolean);
+  const chunks = [];
+  for (let i = 0; i < words.length; i += 4) chunks.push(words.slice(i, i + 4).join(' '));
+  if (!chunks.length) return [];
+  const segDur = totalDuration / chunks.length;
+  return chunks.map((text, i) => ({
+    text,
+    start: parseFloat((i * segDur).toFixed(2)),
+    end:   parseFloat(((i + 1) * segDur).toFixed(2)),
+  }));
+}
+
+// Step 4 — Assemble: concat clips, overlay captions (Shorts only) + voiceover, mix background music at 15%
+// isShort=true  → drawtext captions baked in at y=h*0.78
+// isShort=false → no caption overlays (Long-form)
+async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true) {
   const fs   = require('fs');
   const path = require('path');
   const runId = Date.now();
@@ -3351,23 +3368,29 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
   parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
 
-  // Chain drawtext filters for each caption segment
-  const capSegs = captions.slice(0, 20);
-  let lastV = 'vcat';
-  for (let i = 0; i < capSegs.length; i++) {
-    const c     = capSegs[i];
-    const txt   = escapeDT(c.text || '');
-    const st    = Number(c.start || 0).toFixed(2);
-    const en    = Number(c.end   || (Number(c.start || 0) + 3)).toFixed(2);
-    const nextV = i < capSegs.length - 1 ? `vcap${i}` : 'vout';
-    parts.push(
-      `[${lastV}]drawtext=text='${txt}':fontsize=52:fontcolor=white:` +
-      `borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.80:` +
-      `enable='between(t,${st},${en})'[${nextV}]`
-    );
-    lastV = nextV;
+  // Captions: Shorts only — chain one drawtext filter per segment
+  if (isShort && captions.length > 0) {
+    const capSegs = captions.slice(0, 20);
+    let lastV = 'vcat';
+    for (let i = 0; i < capSegs.length; i++) {
+      const c     = capSegs[i];
+      const txt   = escapeDT(c.text || '');
+      const st    = Number(c.start || 0).toFixed(2);
+      const en    = Number(c.end   || (Number(c.start || 0) + 3)).toFixed(2);
+      const nextV = i < capSegs.length - 1 ? `vcap${i}` : 'vout';
+      parts.push(
+        `[${lastV}]drawtext=text='${txt}':fontsize=48:fontcolor=white:` +
+        `box=1:boxcolor=black@0.5:boxborderw=8:x=(w-text_w)/2:y=h*0.78:` +
+        `enable='between(t,${st},${en})'[${nextV}]`
+      );
+      lastV = nextV;
+    }
+    console.log(`[Assembly] drawtext: ${captions.length} caption segment(s) baked in (Short)`);
+  } else {
+    // Long-form or no captions — pass video through unchanged
+    parts.push(`[vcat]null[vout]`);
+    if (!isShort) console.log('[Assembly] drawtext: skipped (Long-form)');
   }
-  if (capSegs.length === 0) parts.push(`[vcat]null[vout]`);
 
   // Audio: mix voiceover (100%) with optional background music (15%)
   const voiceIdx = n;
@@ -3400,6 +3423,8 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     '-shortest',
     `"${outputPath}"`,
   ].filter(Boolean).join(' ');
+
+  console.log(`[Assembly] ffmpeg cmd: ${cmd}`);
 
   return new Promise((resolve, reject) => {
     exec(cmd, { timeout: 600000 }, (err, _stdout, stderr) => {
@@ -3631,7 +3656,14 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     console.log(`[Pipeline] 3/4 Done — ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
 
     console.log(`[Pipeline] 4/4 Assembly → ${outputPath}`);
-    await pipelineAssembleVideo(footageClips, audioPath, outputPath, scriptData.captions);
+    const isShort = (slot.type || 'Short').toLowerCase() !== 'long-form';
+    const totalDur = footageClips.length * 6;
+    let captions = scriptData.captions || [];
+    if (isShort && captions.length === 0) {
+      captions = buildFallbackCaptions(scriptData.script, totalDur);
+      console.log(`[Pipeline] No caption segments in script — built ${captions.length} fallback segment(s) from script text`);
+    }
+    await pipelineAssembleVideo(footageClips, audioPath, outputPath, captions, isShort);
 
     const previewPath = `/tmp/vly_prev_${calendar.userId}_${slot.day}_${slot.videoIndex || 1}.mp4`;
     require('fs').copyFile(outputPath, previewPath, () => {});
