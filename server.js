@@ -97,13 +97,38 @@ process.on('unhandledRejection', (err) => {
   // Do NOT exit — let Railway healthcheck keep passing
 });
 
+async function runStartupSlotCheck() {
+  try {
+    const today     = new Date().toISOString().slice(0, 10);
+    const calCol    = agentCol('content_calendars');
+    const calendars = await calCol.find({ status: 'active' }).toArray();
+    const missing   = calendars.filter(c => !(c.slots || []).some(s => s.date === today));
+    if (missing.length > 0) {
+      console.log(`[Startup] ${missing.length} calendar(s) missing today's slots — generating now`);
+      for (const cal of missing) {
+        await runDailySlotGeneration(String(cal.userId)).catch(e =>
+          console.error(`[Startup] Generation failed for calendar ${cal._id}:`, e.message)
+        );
+      }
+    } else {
+      console.log('[Startup] All active calendars have today\'s slots');
+    }
+  } catch (e) {
+    console.error('[Startup] Slot check failed:', e.message);
+  }
+}
+
 if (process.env.MONGODB_URI) {
   mongoose.connect(process.env.MONGODB_URI, {
     useNewUrlParser:    true,
     useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,  // fail fast so server startup isn't blocked
+    serverSelectionTimeoutMS: 5000,
   })
-  .then(() => console.log('[MongoDB] Connected successfully'))
+  .then(() => {
+    console.log('[MongoDB] Connected successfully');
+    // Run after a short delay so all route/function definitions are guaranteed loaded
+    setTimeout(runStartupSlotCheck, 3000);
+  })
   .catch(err => {
     console.error('[MongoDB] Connection failed — check MONGODB_URI credentials in Railway Variables:', err.message);
     // Server keeps running — /health still responds, DB-dependent routes return 503
@@ -4279,29 +4304,8 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Viralityy server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-
-  // Startup check: if the daily cron was missed (e.g. server restart after midnight),
-  // generate today's slots for any active calendar that doesn't have them yet.
-  setImmediate(async () => {
-    try {
-      const today     = new Date().toISOString().slice(0, 10);
-      const calCol    = agentCol('content_calendars');
-      const calendars = await calCol.find({ status: 'active' }).toArray();
-      const missing   = calendars.filter(c => !(c.slots || []).some(s => s.date === today));
-      if (missing.length > 0) {
-        console.log(`[Startup] ${missing.length} calendar(s) missing today's slots — generating now`);
-        for (const cal of missing) {
-          await runDailySlotGeneration(String(cal.userId)).catch(e =>
-            console.error(`[Startup] Generation failed for calendar ${cal._id}:`, e.message)
-          );
-        }
-      } else {
-        console.log(`[Startup] All active calendars have today's slots`);
-      }
-    } catch (e) {
-      console.error('[Startup] Slot check failed:', e.message);
-    }
-  });
+  // Startup slot check is triggered from the MongoDB .then() callback above,
+  // so it is guaranteed to run only after the database connection is ready.
 });
 
 module.exports = app;
