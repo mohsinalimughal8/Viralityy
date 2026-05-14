@@ -1075,11 +1075,16 @@ async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
   if (!top.length) {
     console.warn('[Niche] discoverTopNiches: all seeds returned empty — using static fallback niches');
     const staticNiches = [
-      { niche_id: 'psychology', name: 'Psychology & Human Behaviour', keyword: 'psychology', combined_score: 91, trend_boost: 8, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Education', cpm_estimate: 9 },
-      { niche_id: 'finance_tips', name: 'Personal Finance Tips', keyword: 'personal finance', combined_score: 90, trend_boost: 7, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Finance', cpm_estimate: 20 },
-      { niche_id: 'stoicism', name: 'Stoicism & Philosophy', keyword: 'stoicism', combined_score: 88, trend_boost: 6, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Education', cpm_estimate: 9 },
-      { niche_id: 'ai_tools', name: 'AI Tools & Productivity', keyword: 'AI tools', combined_score: 87, trend_boost: 9, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Technology', cpm_estimate: 14 },
-      { niche_id: 'dark_psychology', name: 'Dark Psychology', keyword: 'dark psychology', combined_score: 86, trend_boost: 5, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Education', cpm_estimate: 9 },
+      { niche_id: 'psychology',      name: 'Psychology & Human Behaviour',  category: 'Education',       combined_score: 92, competition: 'low',    cpm_range: '$5-$18',  why_its_trending: 'High engagement evergreen content',       verdict: 'hot', live_data_used: false },
+      { niche_id: 'finance',         name: 'Personal Finance Tips',          category: 'Finance',         combined_score: 93, competition: 'medium', cpm_range: '$12-$45', why_its_trending: 'High CPM recession-proof niche',           verdict: 'hot', live_data_used: false },
+      { niche_id: 'stoicism',        name: 'Stoicism & Philosophy',          category: 'Self Improvement', combined_score: 91, competition: 'low',    cpm_range: '$5-$18',  why_its_trending: 'Growing mindfulness audience',             verdict: 'hot', live_data_used: false },
+      { niche_id: 'ai_tools',        name: 'AI Tools & Productivity',        category: 'Technology',      combined_score: 95, competition: 'medium', cpm_range: '$10-$35', why_its_trending: 'Fastest growing YouTube category',        verdict: 'hot', live_data_used: false },
+      { niche_id: 'health',          name: 'Health & Longevity',             category: 'Wellness',        combined_score: 90, competition: 'medium', cpm_range: '$7-$25',  why_its_trending: 'Post-pandemic health awareness',           verdict: 'hot', live_data_used: false },
+      { niche_id: 'mindfulness',     name: 'Mindfulness & Meditation',       category: 'Wellness',        combined_score: 91, competition: 'low',    cpm_range: '$6-$22',  why_its_trending: 'Mental health awareness growing',          verdict: 'hot', live_data_used: false },
+      { niche_id: 'entrepreneurship',name: 'Entrepreneurship & Startups',    category: 'Business',        combined_score: 92, competition: 'medium', cpm_range: '$10-$38', why_its_trending: 'Creator economy boom',                    verdict: 'hot', live_data_used: false },
+      { niche_id: 'science',         name: 'Science & Space Facts',          category: 'Education',       combined_score: 90, competition: 'low',    cpm_range: '$5-$15',  why_its_trending: 'Curiosity-driven viral content',           verdict: 'hot', live_data_used: false },
+      { niche_id: 'true_crime',      name: 'True Crime & Mysteries',         category: 'Entertainment',   combined_score: 91, competition: 'medium', cpm_range: '$5-$18',  why_its_trending: 'Consistently top YouTube category',       verdict: 'hot', live_data_used: false },
+      { niche_id: 'language',        name: 'Language Learning',              category: 'Education',       combined_score: 90, competition: 'low',    cpm_range: '$6-$20',  why_its_trending: 'Global audience appeal',                  verdict: 'hot', live_data_used: false },
     ];
     return { niches: staticNiches, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
   }
