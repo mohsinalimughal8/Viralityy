@@ -322,6 +322,7 @@ const userSchema = new mongoose.Schema({
   referredBy:      { type: String },
   autoPost:        { type: Boolean, default: true },
   timezone:        { type: String },
+  usedFootageIds:  { type: [String], default: [] },
   createdAt:       { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -3773,73 +3774,187 @@ const ROYALTY_FREE_MUSIC = [
 ];
 
 // Extract 5 distinct Pexels search queries from video title + script
-function deriveFootageQueries(title, script, nicheName = '') {
-  const combined = `${title} ${script}`.slice(0, 400).toLowerCase();
-  const stop = new Set(['the','a','an','is','are','was','were','this','that','these','those',
+// Derives 5 diverse search queries from different script aspects.
+// excludeQueries: Set of queries already used today (to prevent same-day repeats).
+function deriveFootageQueries(title, script, nicheName = '', excludeQueries = new Set()) {
+  const stop = new Set([
+    'the','a','an','is','are','was','were','this','that','these','those',
     'with','for','and','but','or','not','to','of','in','on','at','by','from','about',
     'how','why','what','when','where','who','will','can','do','does','did','be','been',
     'have','has','had','get','got','make','made','take','your','you','my','me','we',
-    'our','they','their','it','its','if','so','than','then','into','over','under','up']);
-  const words = combined.match(/\b[a-z]{4,}\b/g) || [];
-  const seen = new Set();
-  const kw = [];
-  for (const w of words) {
-    if (!stop.has(w) && !seen.has(w)) { seen.add(w); kw.push(w); }
-    if (kw.length >= 10) break;
-  }
-  const queries = [];
-  if (kw[0] && kw[1]) queries.push(`${kw[0]} ${kw[1]}`);
-  if (kw[2] && kw[3]) queries.push(`${kw[2]} ${kw[3]}`);
-  if (kw[4] && kw[5]) queries.push(`${kw[4]} ${kw[5]}`);
-  if (kw[6]) queries.push(kw[6]);
+    'our','they','their','it','its','if','so','than','then','into','over','under','up',
+    'just','very','more','most','also','even','still','well','good','great','best','new',
+    'time','days','years','people','things','way','ways','need','want','know','think','feel',
+  ]);
+  const extractKw = (text, limit) => {
+    const seen = new Set(); const kw = [];
+    for (const w of (text.toLowerCase().match(/\b[a-z]{4,}\b/g) || [])) {
+      if (!stop.has(w) && !seen.has(w)) { seen.add(w); kw.push(w); }
+      if (kw.length >= limit) break;
+    }
+    return kw;
+  };
 
-  // Niche-based fallbacks so every query is distinct and relevant
+  const titleKw  = extractKw(title, 6);
+  const third    = Math.floor(script.length / 3);
+  const openKw   = extractKw(script.slice(0, third), 6);         // opening: main topic
+  const midKw    = extractKw(script.slice(third, third * 2), 6); // middle: action/process
+  const closeKw  = extractKw(script.slice(third * 2), 6);        // closing: outcome/emotion
+  const allKw    = extractKw(title + ' ' + script, 12);
+
   const nicheSlug = (nicheName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-  const nicheFallbacks = nicheSlug
-    ? [`${nicheSlug} lifestyle`, `${nicheSlug} motivation`, `${nicheSlug} success`, `${nicheSlug} people`]
-    : ['lifestyle motivation', 'people working', 'city morning', 'nature relax'];
 
-  for (const fb of nicheFallbacks) {
-    if (queries.length >= 5) break;
-    if (!queries.includes(fb)) queries.push(fb);
+  // 5 aspect-based candidate pools (tried in order)
+  const aspectPools = [
+    // Aspect 1 — primary topic (from title or opening)
+    [
+      titleKw[0] && titleKw[1] ? `${titleKw[0]} ${titleKw[1]}` : null,
+      titleKw[0] && openKw[0]  ? `${titleKw[0]} ${openKw[0]}`  : null,
+      openKw[0]  && openKw[1]  ? `${openKw[0]} ${openKw[1]}`   : null,
+      allKw[0]   && allKw[1]   ? `${allKw[0]} ${allKw[1]}`     : null,
+    ],
+    // Aspect 2 — action/process (from middle of script)
+    [
+      midKw[0]  && midKw[1]  ? `${midKw[0]} ${midKw[1]}`   : null,
+      midKw[0]  && allKw[3]  ? `${midKw[0]} ${allKw[3]}`   : null,
+      allKw[2]  && allKw[3]  ? `${allKw[2]} ${allKw[3]}`   : null,
+      nicheSlug              ? `${nicheSlug} process`       : 'focused working process',
+    ],
+    // Aspect 3 — setting / environment (cinematic variety)
+    [
+      nicheSlug ? `${nicheSlug} workspace`    : null,
+      nicheSlug ? `${nicheSlug} environment`  : null,
+      openKw[2] ? `${openKw[2]} outdoor`      : null,
+      midKw[2]  ? `${midKw[2]} indoors`       : null,
+      'modern office workspace',
+      'urban city street',
+      'bright natural light',
+    ],
+    // Aspect 4 — outcome / emotion (closing of script)
+    [
+      closeKw[0] && closeKw[1] ? `${closeKw[0]} ${closeKw[1]}` : null,
+      closeKw[0]               ? `${closeKw[0]} success`        : null,
+      nicheSlug                ? `${nicheSlug} results`         : null,
+      'confident person success',
+      'motivated inspiring moment',
+      'achievement celebration',
+    ],
+    // Aspect 5 — niche baseline lifestyle
+    [
+      nicheSlug ? `${nicheSlug} lifestyle`   : null,
+      nicheSlug ? `${nicheSlug} motivation`  : null,
+      nicheSlug ? `${nicheSlug} people`      : null,
+      'lifestyle motivation mindset',
+      'productive morning routine',
+      'people smiling success',
+      'energetic positive attitude',
+    ],
+  ];
+
+  const chosen = [];
+  const chosenSet = new Set();
+  for (const pool of aspectPools) {
+    for (const candidate of pool) {
+      if (!candidate) continue;
+      const q = candidate.trim().slice(0, 80);
+      if (chosenSet.has(q) || excludeQueries.has(q)) continue;
+      chosenSet.add(q);
+      chosen.push(q);
+      break; // one per aspect
+    }
+    if (chosen.length >= 5) break;
   }
 
-  // Last-resort generic fallbacks to guarantee 5 unique entries
-  const generic = ['productive morning','urban lifestyle','success mindset','focused work','bright outdoor'];
+  // Pad with generic fallbacks if fewer than 5
+  const generic = [
+    'productive morning','focused mindset','success journey','bright future','motivated action',
+    'hands typing laptop','sunrise landscape','person walking city','calm nature scene','team collaboration',
+  ];
   for (const g of generic) {
-    if (queries.length >= 5) break;
-    if (!queries.includes(g)) queries.push(g);
+    if (chosen.length >= 5) break;
+    if (!chosenSet.has(g) && !excludeQueries.has(g)) { chosenSet.add(g); chosen.push(g); }
   }
 
-  return queries.slice(0, 5);
+  return chosen.slice(0, 5);
 }
 
-// Step 3 — Fetch 5 portrait clips from Pexels using script-derived queries
-async function pipelineFetchMultipleFootage(title, script, nicheName = '') {
+// Step 3 — Fetch 5 unique portrait clips from Pexels, excluding previously used video IDs.
+// Paginates up to 3 pages per query until 5 unused clips are found.
+async function pipelineFetchMultipleFootage(title, script, nicheName = '', userId = null) {
   const apiKey = process.env.PEXELS_API_KEY;
   if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
-  const queries = deriveFootageQueries(title, script, nicheName);
-  const clips = [];
-  for (const query of queries) {
-    try {
-      const params = new URLSearchParams({ query: query.slice(0, 100), per_page: '10', orientation: 'portrait' });
-      const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
-        headers: { Authorization: apiKey },
-      });
-      const data = await res.json();
-      const videos = (data.videos || []).filter(v => v.duration >= 5);
-      if (!videos.length) { console.warn(`[Footage] No results for "${query}", skipping`); continue; }
-      const video = videos[0];
-      const file = (video.video_files || []).find(f => f.quality === 'hd') || (video.video_files || [])[0];
-      if (!file?.link) continue;
-      clips.push({ url: file.link, duration: video.duration, query });
-      logAPIUsage('pexels', 'video_search', null, 1, 0, true);
-      console.log(`[Footage] Clip for "${query}": ${video.duration}s`);
-    } catch (e) {
-      logAPIUsage('pexels', 'video_search', null, 1, 0, false);
-      console.warn(`[Footage] Failed for "${query}":`, e.message);
+
+  // Load previously used footage IDs and today's queries from MongoDB
+  const usedIds = new Set();
+  const usedQueriesOnDay = new Set();
+  if (userId) {
+    const userDoc = await User.findById(userId).select('usedFootageIds').lean().catch(() => null);
+    if (userDoc?.usedFootageIds) for (const id of userDoc.usedFootageIds) usedIds.add(String(id));
+
+    const today = new Date().toISOString().slice(0, 10);
+    const calCol = agentCol('content_calendars');
+    const cals = await calCol.find(
+      { userId, 'slots.date': today },
+      { projection: { 'slots.date': 1, 'slots.footageQueries': 1 } }
+    ).toArray().catch(() => []);
+    for (const cal of cals) {
+      for (const s of (cal.slots || [])) {
+        if (s.date === today && Array.isArray(s.footageQueries)) {
+          for (const q of s.footageQueries) usedQueriesOnDay.add(q);
+        }
+      }
     }
+    if (usedIds.size > 0 || usedQueriesOnDay.size > 0)
+      console.log(`[Footage] User ${userId}: ${usedIds.size} used IDs, ${usedQueriesOnDay.size} today's queries excluded`);
   }
+
+  const queries = deriveFootageQueries(title, script, nicheName, usedQueriesOnDay);
+  const clips = [];
+  const pickedIds = new Set(); // avoid duplicates within this batch
+
+  for (const query of queries) {
+    let found = false;
+    for (let page = 1; page <= 3 && !found; page++) {
+      try {
+        const params = new URLSearchParams({
+          query: query.slice(0, 100),
+          per_page: '15',
+          orientation: 'portrait',
+          page: String(page),
+        });
+        const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
+          headers: { Authorization: apiKey },
+        });
+        const data = await res.json();
+        logAPIUsage('pexels', 'video_search', userId, 1, 0, true);
+
+        const videos = (data.videos || []).filter(v =>
+          v.duration >= 5 &&
+          !usedIds.has(String(v.id)) &&
+          !pickedIds.has(String(v.id))
+        );
+
+        if (!videos.length) {
+          console.warn(`[Footage] All p${page} results used for "${query}" — trying next page`);
+          continue;
+        }
+
+        const video = videos[0];
+        const file  = (video.video_files || []).find(f => f.quality === 'hd') || (video.video_files || [])[0];
+        if (!file?.link) continue;
+
+        pickedIds.add(String(video.id));
+        clips.push({ id: String(video.id), url: file.link, duration: video.duration, query });
+        console.log(`[Footage] "${query}" p${page}: id=${video.id}, ${video.duration}s`);
+        found = true;
+      } catch (e) {
+        logAPIUsage('pexels', 'video_search', userId, 1, 0, false);
+        console.warn(`[Footage] Failed for "${query}" p${page}:`, e.message);
+      }
+    }
+    if (!found) console.warn(`[Footage] No unused clip found for "${query}" after 3 pages`);
+  }
+
   if (!clips.length) throw new Error('No Pexels footage clips fetched');
   return clips;
 }
@@ -4249,7 +4364,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
 
     // 3/3 Footage — fetch clip URLs and save to MongoDB (no /tmp files here)
     console.log(`[Pipeline] 3/3 Footage — "${slot.title}"`);
-    const footageClips = await pipelineFetchMultipleFootage(slot.title, script, nicheName);
+    const footageClips = await pipelineFetchMultipleFootage(slot.title, script, nicheName, String(calendar.userId));
     console.log(`[Pipeline] 3/3 Done — ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
 
     // Mark data-ready — assembly deferred to posting time so /tmp files survive only minutes
@@ -4261,6 +4376,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
         [`slots.$[s].footageUrls`]:       footageClips.map(c => c.url),
         [`slots.$[s].footageQueries`]:    footageClips.map(c => c.query),
         [`slots.$[s].footageDurations`]:  footageClips.map(c => c.duration),
+        [`slots.$[s].footageIds`]:        footageClips.map(c => c.id || ''),
         [`slots.$[s].assembledPath`]:     null,
         [`slots.$[s].pipelineError`]:     null,
       }},
@@ -4306,13 +4422,14 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
     if (Array.isArray(slot.footageUrls) && slot.footageUrls.length > 0) {
       footageClips = slot.footageUrls.map((url, i) => ({
         url,
-        query:    (slot.footageQueries   || [])[i] || slot.title,
-        duration: (slot.footageDurations || [])[i] || 6,
+        id:       (slot.footageIds      || [])[i] || '',
+        query:    (slot.footageQueries  || [])[i] || slot.title,
+        duration: (slot.footageDurations|| [])[i] || 6,
       }));
       console.log(`[AssembleUpload] 2/3 Using ${footageClips.length} cached footage URL(s) for "${slot.title}"`);
     } else {
       console.log(`[AssembleUpload] 2/3 No cached footage — re-fetching for "${slot.title}"`);
-      footageClips = await pipelineFetchMultipleFootage(slot.title, scriptText, nicheName);
+      footageClips = await pipelineFetchMultipleFootage(slot.title, scriptText, nicheName, String(calendar.userId));
     }
 
     // Use fresh word-timestamp captions; fall back to MongoDB-cached ones, then duration-based estimate
@@ -4341,9 +4458,15 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
       }},
       { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
     );
+    // Record used footage IDs so they are excluded from future videos
+    const usedClipIds = footageClips.map(c => c.id).filter(Boolean);
+    if (usedClipIds.length > 0) {
+      User.findByIdAndUpdate(calendar.userId, { $addToSet: { usedFootageIds: { $each: usedClipIds } } })
+        .catch(e => console.warn('[AssembleUpload] Failed to save used footage IDs:', e.message));
+    }
     fs.unlink(outPath, () => {});
     if (audioPath) { fs.unlink(audioPath, () => {}); audioPath = null; }
-    console.log(`[AssembleUpload] ✓ "${slot.title}" → https://youtu.be/${ytId}`);
+    console.log(`[AssembleUpload] ✓ "${slot.title}" → https://youtu.be/${ytId} (${usedClipIds.length} footage IDs recorded)`);
     return ytId;
   } catch (err) {
     if (audioPath) require('fs').unlink(audioPath, () => {});
@@ -5237,6 +5360,18 @@ function registerCronJobs() {
       } catch (err) { console.error('[Analytics] Error:', err); }
     });
   }
+
+  // Monthly footage reset — 1st of each month at 00:05 UTC
+  // Clears usedFootageIds so clips can be reused after ~30 days
+  cron.schedule('5 0 1 * *', async () => {
+    console.log('[MonthlyReset] Clearing usedFootageIds for all users...');
+    try {
+      const result = await User.updateMany({}, { $set: { usedFootageIds: [] } });
+      console.log(`[MonthlyReset] usedFootageIds cleared for ${result.modifiedCount} user(s)`);
+    } catch (e) {
+      console.error('[MonthlyReset] Failed:', e.message);
+    }
+  }, { timezone: 'UTC' });
 
   cronJobsRegistered = true;
   console.log('[Cron] All cron jobs registered successfully');
