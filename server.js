@@ -3818,18 +3818,6 @@ function deriveFootageQueries(title, script, nicheName = '') {
   return queries.slice(0, 5);
 }
 
-// Escape text for ffmpeg drawtext filter
-function escapeDT(str) {
-  return String(str)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/:/g, '\\:')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]')
-    .replace(/,/g, '\\,')
-    .replace(/;/g, '\\;');
-}
-
 // Step 3 — Fetch 5 portrait clips from Pexels using script-derived queries
 async function pipelineFetchMultipleFootage(title, script, nicheName = '') {
   const apiKey = process.env.PEXELS_API_KEY;
@@ -3875,9 +3863,36 @@ function buildFallbackCaptions(scriptText, totalDuration) {
   }));
 }
 
-// Step 4 — Assemble: concat clips, overlay captions (Shorts only) + voiceover, mix background music at 15%
-// isShort=true  → drawtext captions baked in at y=h*0.78
-// isShort=false → no caption overlays (Long-form)
+// Converts seconds to SRT timestamp format: HH:MM:SS,mmm
+function toSRTTime(totalSeconds) {
+  const s  = Math.max(0, Number(totalSeconds) || 0);
+  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const ss = String(Math.floor(s % 60)).padStart(2, '0');
+  const ms = String(Math.round((s % 1) * 1000)).padStart(3, '0');
+  return `${hh}:${mm}:${ss},${ms}`;
+}
+
+// Writes captions array to a valid SRT file — no shell escaping needed inside SRT
+function generateSRTFile(captions, runId) {
+  const fs    = require('fs');
+  const lines = [];
+  captions.forEach((c, i) => {
+    const startSec = Number(c.start || 0);
+    const endSec   = Math.min(Number(c.end || startSec + 3), 3599);
+    lines.push(String(i + 1));
+    lines.push(`${toSRTTime(startSec)} --> ${toSRTTime(endSec)}`);
+    lines.push(String(c.text || '').trim());
+    lines.push('');
+  });
+  const srtPath = `/tmp/vly_subs_${runId}.srt`;
+  fs.writeFileSync(srtPath, lines.join('\n'), 'utf8');
+  return srtPath;
+}
+
+// Step 4 — Assemble: concat clips, burn-in SRT subtitles (Shorts only), mix voiceover + background music
+// Uses -filter_complex_script to avoid command-line length limits.
+// If the subtitles filter fails (e.g. libass not available), retries without subtitles.
 async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true) {
   const fs   = require('fs');
   const path = require('path');
@@ -3908,99 +3923,90 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
 
   const n       = clipPaths.length;
   const clipDur = 6;
-  const parts   = [];
 
-  // Scale/crop/trim each clip to 1080x1920 portrait, 6 s
+  // Base filter parts: scale/crop/trim each clip, then concat
+  const baseParts = [];
   for (let i = 0; i < n; i++) {
-    parts.push(
+    baseParts.push(
       `[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,` +
       `crop=1080:1920,setsar=1,trim=0:${clipDur},setpts=PTS-STARTPTS[v${i}]`
     );
   }
-
-  // Concat all video streams
   const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
-  parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
+  baseParts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
 
-  // Captions: Shorts only — cap at 8 segments, last extended to end of video
+  const voiceIdx   = n;
+  const audioFilter = hasMus
+    ? `[${voiceIdx}:a][${n + 1}:a]amix=inputs=2:duration=shortest:weights=1 0.15[aout]`
+    : `[${voiceIdx}:a]volume=1.0[aout]`;
+
+  // Generate SRT file for Shorts captions (no escaping needed — it's a plain text file)
+  let srtPath = null;
   if (isShort && captions.length > 0) {
-    const capSegs = captions.slice(0, 8);
-    capSegs[capSegs.length - 1] = { ...capSegs[capSegs.length - 1], end: 999 };
-
-    let lastV = 'vcat';
-    for (let i = 0; i < capSegs.length; i++) {
-      const c = capSegs[i];
-      // Escape special characters for drawtext: backslash first, then quotes, commas, colons, brackets
-      const txt = (c.text || '')
-        .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\\'")
-        .replace(/,/g, '\\,')
-        .replace(/:/g, '\\:')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]')
-        .replace(/;/g, '\\;');
-      const st    = Number(c.start || 0).toFixed(2);
-      const en    = Number(c.end   || (Number(c.start || 0) + 3)).toFixed(2);
-      const nextV = i < capSegs.length - 1 ? `vcap${i}` : 'vout';
-      parts.push(
-        `[${lastV}]drawtext=text='${txt}':fontsize=48:fontcolor=white:` +
-        `box=1:boxcolor=black@0.5:boxborderw=8:x=(w-text_w)/2:y=h*0.78:` +
-        `enable='between(t,${st},${en})'[${nextV}]`
-      );
-      lastV = nextV;
-    }
-    console.log(`[Assembly] drawtext: ${capSegs.length} caption segment(s) baked in (Short)`);
-  } else {
-    parts.push(`[vcat]null[vout]`);
-    if (!isShort) console.log('[Assembly] drawtext: skipped (Long-form)');
+    srtPath = generateSRTFile(captions, runId);
+    console.log(`[Assembly] SRT written: ${srtPath} (${captions.length} segments)`);
   }
 
-  // Audio: mix voiceover (100%) with optional background music (15%)
-  const voiceIdx = n;
-  if (hasMus) {
-    parts.push(`[${voiceIdx}:a][${n + 1}:a]amix=inputs=2:duration=shortest:weights=1 0.15[aout]`);
-  } else {
-    parts.push(`[${voiceIdx}:a]volume=1.0[aout]`);
-  }
-
-  const filterStr  = parts.join(';');
-  const filterFile = `/tmp/vly_filter_${runId}.txt`;
-  fs.writeFileSync(filterFile, filterStr);
-
-  // Build args — use -filter_complex_script to avoid command-line length limits
-  const args = ['-y'];
-  for (const p of clipPaths) { args.push('-i', p); }
-  args.push('-i', audioPath);
-  if (hasMus) args.push('-i', musicPath);
-  args.push('-filter_complex_script', filterFile);
-  args.push('-map', '[vout]', '-map', '[aout]');
-  args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
-  args.push('-c:a', 'aac', '-b:a', '128k');
-  args.push('-movflags', '+faststart');
-  args.push('-shortest');
-  args.push(outputPath);
-
-  console.log(`[Assembly] ffmpeg spawn: ${clipPaths.length} clips, captions=${captions.length}, music=${hasMus}, filter_len=${filterStr.length}`);
-
-  return new Promise((resolve, reject) => {
+  // Helper: write filter to file and run ffmpeg, resolves on success, rejects on failure
+  const runFFmpeg = (filterStr, label) => new Promise((res, rej) => {
+    const filterFile = `/tmp/vly_filter_${runId}_${label}.txt`;
+    fs.writeFileSync(filterFile, filterStr);
+    const args = ['-y'];
+    for (const p of clipPaths) args.push('-i', p);
+    args.push('-i', audioPath);
+    if (hasMus) args.push('-i', musicPath);
+    args.push('-filter_complex_script', filterFile);
+    args.push('-map', '[vout]', '-map', '[aout]');
+    args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
+    args.push('-c:a', 'aac', '-b:a', '128k');
+    args.push('-movflags', '+faststart');
+    args.push('-shortest');
+    args.push(outputPath);
+    console.log(`[Assembly] ffmpeg [${label}]: ${n} clips, filter_len=${filterStr.length}`);
     const ff = spawn('ffmpeg', args);
     const stderrLines = [];
     ff.stderr.on('data', d => stderrLines.push(...d.toString().split('\n')));
-    const cleanup = () => {
-      fs.unlink(filterFile, () => {});
-      for (const p of clipPaths) fs.unlink(p, () => {});
-      if (hasMus) fs.unlink(musicPath, () => {});
-    };
     ff.on('close', code => {
-      cleanup();
+      fs.unlink(filterFile, () => {});
       if (code !== 0) {
         const tail = stderrLines.filter(l => l.trim()).slice(-5).join('\n');
-        return reject(new Error(`ffmpeg assembly failed (exit ${code}):\n${tail}`));
-      }
-      resolve(outputPath);
+        rej(new Error(`ffmpeg [${label}] failed (exit ${code}):\n${tail}`));
+      } else res();
     });
-    ff.on('error', err => { cleanup(); reject(new Error(`ffmpeg spawn error: ${err.message}`)); });
+    ff.on('error', err => { fs.unlink(filterFile, () => {}); rej(new Error(`ffmpeg spawn error: ${err.message}`)); });
   });
+
+  const cleanup = () => {
+    if (srtPath) fs.unlink(srtPath, () => {});
+    for (const p of clipPaths) fs.unlink(p, () => {});
+    if (hasMus) fs.unlink(musicPath, () => {});
+  };
+
+  try {
+    // First attempt: with SRT subtitles filter (Shorts only)
+    if (srtPath) {
+      const subsFilter = `[vcat]subtitles='${srtPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'[vout]`;
+      const filterWithSubs = [...baseParts, subsFilter, audioFilter].join(';');
+      try {
+        await runFFmpeg(filterWithSubs, 'subs');
+        cleanup();
+        console.log(`[Assembly] ✓ ${outputPath} (with subtitles)`);
+        return outputPath;
+      } catch (subsErr) {
+        console.warn(`[Assembly] Subtitles pass failed — retrying without: ${subsErr.message.slice(0, 150)}`);
+      }
+    }
+
+    // Fallback or Long-form: no subtitles
+    const filterNoSubs = [...baseParts, '[vcat]null[vout]', audioFilter].join(';');
+    await runFFmpeg(filterNoSubs, 'nosubs');
+    cleanup();
+    console.log(`[Assembly] ✓ ${outputPath}${isShort ? ' (subtitles skipped — fallback)' : ' (Long-form)'}`);
+    return outputPath;
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
 }
 
 // Step 5 — Refresh a YouTube OAuth access token and persist to MongoDB
