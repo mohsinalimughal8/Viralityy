@@ -3922,34 +3922,23 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
   parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
 
-  // Captions: Shorts only — all segments, last extended to end of video
+  // Captions: Shorts only — cap at 8 segments, last extended to end of video
   if (isShort && captions.length > 0) {
-    // If >15 segments, normalize any over-long caption texts to max 4 words each
-    let capSegs = [...captions];
-    if (capSegs.length > 15) {
-      const expanded = [];
-      for (const c of capSegs) {
-        const words = (c.text || '').trim().split(/\s+/).filter(Boolean);
-        if (words.length <= 4) { expanded.push(c); continue; }
-        const dur    = (Number(c.end || 0) - Number(c.start || 0)) || 2;
-        const chunks = Math.ceil(words.length / 4);
-        for (let ci = 0; ci < chunks; ci++) {
-          expanded.push({
-            text:  words.slice(ci * 4, (ci + 1) * 4).join(' '),
-            start: Number(c.start || 0) + (ci / chunks) * dur,
-            end:   Number(c.start || 0) + ((ci + 1) / chunks) * dur,
-          });
-        }
-      }
-      capSegs = expanded;
-    }
-    // Extend last segment to end of video — no captionless moments
+    const capSegs = captions.slice(0, 8);
     capSegs[capSegs.length - 1] = { ...capSegs[capSegs.length - 1], end: 999 };
 
     let lastV = 'vcat';
     for (let i = 0; i < capSegs.length; i++) {
-      const c     = capSegs[i];
-      const txt   = escapeDT(c.text || '');
+      const c = capSegs[i];
+      // Escape special characters for drawtext: backslash first, then quotes, commas, colons, brackets
+      const txt = (c.text || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/,/g, '\\,')
+        .replace(/:/g, '\\:')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]')
+        .replace(/;/g, '\\;');
       const st    = Number(c.start || 0).toFixed(2);
       const en    = Number(c.end   || (Number(c.start || 0) + 3)).toFixed(2);
       const nextV = i < capSegs.length - 1 ? `vcap${i}` : 'vout';
@@ -3974,14 +3963,16 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     parts.push(`[${voiceIdx}:a]volume=1.0[aout]`);
   }
 
-  const filterStr = parts.join(';');
+  const filterStr  = parts.join(';');
+  const filterFile = `/tmp/vly_filter_${runId}.txt`;
+  fs.writeFileSync(filterFile, filterStr);
 
-  // Build args array for spawn — no shell involved, no escaping issues
+  // Build args — use -filter_complex_script to avoid command-line length limits
   const args = ['-y'];
   for (const p of clipPaths) { args.push('-i', p); }
   args.push('-i', audioPath);
   if (hasMus) args.push('-i', musicPath);
-  args.push('-filter_complex', filterStr);
+  args.push('-filter_complex_script', filterFile);
   args.push('-map', '[vout]', '-map', '[aout]');
   args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
   args.push('-c:a', 'aac', '-b:a', '128k');
@@ -3996,6 +3987,7 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     const stderrLines = [];
     ff.stderr.on('data', d => stderrLines.push(...d.toString().split('\n')));
     const cleanup = () => {
+      fs.unlink(filterFile, () => {});
       for (const p of clipPaths) fs.unlink(p, () => {});
       if (hasMus) fs.unlink(musicPath, () => {});
     };
