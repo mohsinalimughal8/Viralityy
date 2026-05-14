@@ -14,6 +14,7 @@ const helmet         = require('helmet');
 const morgan         = require('morgan');
 const rateLimit      = require('express-rate-limit');
 const cron           = require('node-cron');
+let cronJobsRegistered = false;
 const crypto         = require('crypto');
 const path           = require('path');
 const { exec, spawn } = require('child_process');
@@ -223,7 +224,7 @@ if (process.env.MONGODB_URI) {
   })
   .then(() => {
     console.log('[MongoDB] Connected successfully');
-    // Run after a short delay so all route/function definitions are guaranteed loaded
+    registerCronJobs();
     setTimeout(runStartupSlotCheck, 3000);
   })
   .catch(err => {
@@ -315,30 +316,33 @@ app.use('/api/', limiter);
 // This is what Railway pings. Must respond 200 within 5 minutes.
 // =============================================================================
 app.get('/health', async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today        = new Date().toISOString().slice(0, 10);
+  const startOfToday = today + 'T00:00:00.000Z';
   let pipeline = { error: 'unavailable' };
   try {
-    const calCol   = agentCol('content_calendars');
-    const cals     = await calCol.find({ status: 'active' }).toArray();
-    const allSlots = cals.flatMap(c => (c.slots || []).filter(s => s.date === today));
-    const nextSlot = allSlots
-      .filter(s => (s.status === 'ready' || s.status === 'pending') && !s.posted)
-      .sort((a, b) => (a.scheduledPostTime || '') < (b.scheduledPostTime || '') ? -1 : 1)[0];
-    const userIds    = [...new Set(cals.map(c => String(c.userId)))];
-    let tokenValid   = false;
-    if (userIds.length) {
-      const u = await User.findById(userIds[0]).catch(() => null);
-      tokenValid = !!(u?.youtubeChannels?.[0]?.accessToken);
-    }
+    const slotsCol = agentCol('calendar_slots');
+    const [gen, ready, posted, failed, processing] = await Promise.all([
+      slotsCol.countDocuments({ date: today }),
+      slotsCol.countDocuments({ date: today, status: 'ready', posted: false }),
+      slotsCol.countDocuments({ status: 'posted', postedAt: { $gte: startOfToday } }),
+      slotsCol.countDocuments({ date: today, status: 'failed' }),
+      slotsCol.countDocuments({ date: today, status: 'processing' }),
+    ]);
+    const nextSlot = await slotsCol
+      .find({ date: today, status: { $in: ['ready', 'pending'] }, posted: false })
+      .sort({ scheduledPostTime: 1 })
+      .limit(1)
+      .toArray()
+      .then(r => r[0] || null)
+      .catch(() => null);
     pipeline = {
-      todaysSlotsGenerated: allSlots.length > 0,
-      slotsReady:     allSlots.filter(s => s.status === 'ready').length,
-      slotsPosted:    allSlots.filter(s => s.status === 'posted' || s.posted).length,
-      slotsFailed:    allSlots.filter(s => s.status === 'failed').length,
-      slotsPending:   allSlots.filter(s => s.status === 'pending').length,
-      slotsProcessing:allSlots.filter(s => s.status === 'processing').length,
-      nextPostTime:   nextSlot?.scheduledPostTime || null,
-      youtubeTokenValid: tokenValid,
+      todaysSlotsGenerated: gen > 0,
+      slotsReady:      ready,
+      slotsPosted:     posted,
+      slotsFailed:     failed,
+      slotsProcessing: processing,
+      nextPostTime:    nextSlot?.scheduledPostTime || null,
+      cronJobsRegistered,
     };
   } catch { /* pipeline stays { error: 'unavailable' } */ }
 
@@ -1399,44 +1403,8 @@ const agentCol = (name) => getDb().collection(name);
 
 
 // =============================================================================
-// CRON JOBS — scheduled automation
+// CRON JOBS — all registered via registerCronJobs() after MongoDB connects (see bottom of file)
 // =============================================================================
-
-// Daily Topic Scout — runs every day at 6 AM server time
-cron.schedule('0 6 * * *', async () => {
-  console.log('[Scout] Daily topic scout starting...');
-  try {
-    const script = path.join(__dirname, 'daily_topic_scout_agent.py');
-    exec(`python3 "${script}" --run-all`, { timeout: 300000 }, (err, stdout, stderr) => {
-      if (err) console.error('[Scout] Cron error:', stderr);
-      else     console.log('[Scout] Cron complete:', stdout.slice(0, 200));
-    });
-  } catch (e) { console.error('[Scout] Cron failed:', e); }
-});
-
-// Competitor Watcher — ACTIVE (free: YouTube API + OpenAI already in stack)
-if (FEATURES.competitorWatcher) {
-  cron.schedule('0 */4 * * *', async () => {
-    console.log('[CompetitorWatcher] Check starting...');
-    try {
-      const script = path.join(__dirname, 'competitor_watcher_agent.py');
-      exec(`python3 "${script}" --run-all`, { timeout: 600000 }, (err, stdout, stderr) => {
-        if (err) console.error('[CompetitorWatcher] Cron error:', stderr);
-        else     console.log('[CompetitorWatcher] Cron complete:', stdout.slice(0, 200));
-      });
-    } catch (e) { console.error('[CompetitorWatcher] Cron failed:', e); }
-  });
-}
-
-// Script Research Queue Processor — runs every 30 minutes
-cron.schedule('*/30 * * * *', async () => {
-  try {
-    const script = path.join(__dirname, 'script_research_agent.py');
-    exec(`python3 "${script}" --process-queue ""`, { timeout: 300000 }, (err, stdout, stderr) => {
-      if (err) console.error('[ScriptResearch] Queue error:', stderr);
-    });
-  } catch (e) { console.error('[ScriptResearch] Queue cron failed:', e); }
-});
 
 
 // =============================================================================
@@ -2643,39 +2611,7 @@ const runAgentPyT2 = runAgentPy;
 const col2         = agentCol;
 
 
-// =============================================================================
-// CRON JOBS — Agents 5 and 8
-// =============================================================================
-
-// Trend Scraper — SHELVED (enable: FEATURE_TREND_SCRAPER=true)
-if (FEATURES.trendScraper) {
-  cron.schedule('0 7 * * *', async () => {
-    console.log('[TrendScraper] Daily run starting...');
-    try {
-      const script = path.join(__dirname, 'trend_scraper_agent.py');
-      exec(`python3 "${script}" --run-all`, { timeout: 600000 }, (err, stdout, stderr) => {
-        if (err) console.error('[TrendScraper] Cron error:', stderr);
-        else     console.log('[TrendScraper] Cron complete:', stdout.slice(0, 200));
-      });
-    } catch (e) { console.error('[TrendScraper] Cron failed:', e); }
-  });
-}
-
-// Competitor Content Scraper — ACTIVE (free: YouTube API + OpenAI already in stack)
-if (FEATURES.competitorScraper) {
-  cron.schedule('0 5,17 * * *', async () => {
-    console.log('[CompetitorScraper] Bulk scrape starting...');
-    try {
-      const users = await User.find({ plan: { $ne: 'trial' } }).select('_id').lean();
-      for (const user of users) {
-        const script = path.join(__dirname, 'competitor_content_scraper.py');
-        exec(`python3 "${script}" --bulk ${user._id}`, { timeout: 300000 },
-          (err, stdout, stderr) => { if (err) console.error(`[CompetitorScraper] Error for ${user._id}:`, stderr); }
-        );
-      }
-    } catch (e) { console.error('[CompetitorScraper] Cron failed:', e); }
-  });
-}
+// Agent 5 + 8 cron jobs — registered via registerCronJobs() after MongoDB connects
 
 
 // AGENT 5 — TREND SCRAPER ROUTES — SHELVED
@@ -4933,10 +4869,31 @@ app.get('/api/admin/pipeline-stats', requireAdmin, async (req, res) => {
   }
 });
 
-// Every 5 minutes — post any ready+due slots (autoPost users) or approved+due slots (manual users)
-cron.schedule('*/5 * * * *', async () => {
-  try { await runScheduledPosting(); }
-  catch (err) { console.error('[CRON] Posting error:', err.message); }
+// POST /api/admin/run-pipeline — manually trigger daily generation + scheduled posting (admin only)
+app.post('/api/admin/run-pipeline', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const slotsCol = agentCol('calendar_slots');
+    console.log('[Admin] Manual pipeline trigger started');
+
+    const beforeGen    = await slotsCol.countDocuments({ date: today }).catch(() => 0);
+    const beforePosted = await slotsCol.countDocuments({ date: today, status: 'posted' }).catch(() => 0);
+
+    await runDailySlotGeneration();
+    await runScheduledPosting();
+
+    const afterGen    = await slotsCol.countDocuments({ date: today }).catch(() => 0);
+    const afterPosted = await slotsCol.countDocuments({ date: today, status: 'posted' }).catch(() => 0);
+
+    const slotsGenerated = Math.max(0, afterGen - beforeGen);
+    const slotsPosted    = Math.max(0, afterPosted - beforePosted);
+
+    console.log(`[Admin] Pipeline trigger complete — generated: ${slotsGenerated}, posted: ${slotsPosted}`);
+    res.json({ success: true, message: 'Pipeline triggered', slotsGenerated, slotsPosted });
+  } catch (err) {
+    console.error('[Admin] run-pipeline error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
@@ -5032,24 +4989,99 @@ app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
   }
 });
 
-// Fallback cron — 00:01 UTC daily.
-// Primary trigger: maybePreGenerateTomorrow() fires immediately after the last post of the day.
-// This fallback ensures slots exist even if the last-post trigger was missed (e.g. no posts ran).
-// runDailySlotGeneration checks calendar_slots first — skips if slots already exist for today.
-cron.schedule('1 0 * * *', async () => {
-  console.log('[CRON] Fallback daily slot check starting…');
-  try { await runDailySlotGeneration(); }
-  catch (err) { console.error('[CRON] Fallback generation error:', err.message); }
-});
-
-// Analytics Collection — ACTIVE (free: YouTube Data API free quota)
-if (FEATURES.analyticsCollection) {
-  cron.schedule('0 4 * * *', async () => {
-    console.log('[CRON] Analytics collection running...');
+// =============================================================================
+// CRON REGISTRATION — called once after MongoDB is connected
+// All cron jobs live here so they can safely access the database.
+// =============================================================================
+function registerCronJobs() {
+  // Daily Topic Scout — 6 AM daily
+  cron.schedule('0 6 * * *', async () => {
+    console.log('[Scout] Daily topic scout starting...');
     try {
-      await runPython(path.join(__dirname, 'analytics_engine.py'), '--collect', 90000);
-    } catch (err) { console.error('[CRON] Analytics error:', err); }
+      exec(`python3 "${path.join(__dirname, 'daily_topic_scout_agent.py')}" --run-all`, { timeout: 300000 }, (err, stdout, stderr) => {
+        if (err) console.error('[Scout] Cron error:', stderr);
+        else     console.log('[Scout] Cron complete:', stdout.slice(0, 200));
+      });
+    } catch (e) { console.error('[Scout] Cron failed:', e); }
   });
+
+  // Competitor Watcher — every 4 hours (feature-gated)
+  if (FEATURES.competitorWatcher) {
+    cron.schedule('0 */4 * * *', async () => {
+      console.log('[CompetitorWatcher] Check starting...');
+      try {
+        exec(`python3 "${path.join(__dirname, 'competitor_watcher_agent.py')}" --run-all`, { timeout: 600000 }, (err, stdout, stderr) => {
+          if (err) console.error('[CompetitorWatcher] Cron error:', stderr);
+          else     console.log('[CompetitorWatcher] Cron complete:', stdout.slice(0, 200));
+        });
+      } catch (e) { console.error('[CompetitorWatcher] Cron failed:', e); }
+    });
+  }
+
+  // Script Research Queue — every 30 minutes
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      exec(`python3 "${path.join(__dirname, 'script_research_agent.py')}" --process-queue ""`, { timeout: 300000 }, (err, stdout, stderr) => {
+        if (err) console.error('[ScriptResearch] Queue error:', stderr);
+      });
+    } catch (e) { console.error('[ScriptResearch] Queue cron failed:', e); }
+  });
+
+  // Trend Scraper — 7 AM daily (feature-gated)
+  if (FEATURES.trendScraper) {
+    cron.schedule('0 7 * * *', async () => {
+      console.log('[TrendScraper] Daily run starting...');
+      try {
+        exec(`python3 "${path.join(__dirname, 'trend_scraper_agent.py')}" --run-all`, { timeout: 600000 }, (err, stdout, stderr) => {
+          if (err) console.error('[TrendScraper] Cron error:', stderr);
+          else     console.log('[TrendScraper] Cron complete:', stdout.slice(0, 200));
+        });
+      } catch (e) { console.error('[TrendScraper] Cron failed:', e); }
+    });
+  }
+
+  // Competitor Content Scraper — 5 AM and 5 PM daily (feature-gated)
+  if (FEATURES.competitorScraper) {
+    cron.schedule('0 5,17 * * *', async () => {
+      console.log('[CompetitorScraper] Bulk scrape starting...');
+      try {
+        const users = await User.find({ plan: { $ne: 'trial' } }).select('_id').lean();
+        for (const user of users) {
+          exec(`python3 "${path.join(__dirname, 'competitor_content_scraper.py')}" --bulk ${user._id}`, { timeout: 300000 },
+            (err, stdout, stderr) => { if (err) console.error(`[CompetitorScraper] Error for ${user._id}:`, stderr); }
+          );
+        }
+      } catch (e) { console.error('[CompetitorScraper] Cron failed:', e); }
+    });
+  }
+
+  // Posting cron — every 5 minutes: upload pre-assembled videos that are due
+  cron.schedule('*/5 * * * *', async () => {
+    console.log('[PostingCron] Cron fired at', new Date().toISOString(), '— checking for due slots');
+    try { await runScheduledPosting(); }
+    catch (err) { console.error('[PostingCron] Error:', err.message); }
+  });
+
+  // Daily generation fallback — 00:01 UTC
+  // Primary trigger is maybePreGenerateTomorrow(); this is the safety net.
+  cron.schedule('1 0 * * *', async () => {
+    console.log('[DailyGen] Cron fired at', new Date().toISOString());
+    try { await runDailySlotGeneration(); }
+    catch (err) { console.error('[DailyGen] Cron error:', err.message); }
+  });
+
+  // Analytics Collection — 4 AM daily (feature-gated)
+  if (FEATURES.analyticsCollection) {
+    cron.schedule('0 4 * * *', async () => {
+      console.log('[Analytics] Collection running...');
+      try {
+        await runPython(path.join(__dirname, 'analytics_engine.py'), '--collect', 90000);
+      } catch (err) { console.error('[Analytics] Error:', err); }
+    });
+  }
+
+  cronJobsRegistered = true;
+  console.log('[Cron] All cron jobs registered successfully');
 }
 
 // =============================================================================
