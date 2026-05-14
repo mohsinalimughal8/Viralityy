@@ -111,20 +111,105 @@ process.on('unhandledRejection', (err) => {
 
 async function runStartupSlotCheck() {
   try {
-    const today     = new Date().toISOString().slice(0, 10);
-    const calCol    = agentCol('content_calendars');
+    const today   = new Date().toISOString().slice(0, 10);
+    const now     = new Date().toISOString();
+    const calCol  = agentCol('content_calendars');
+    const fs      = require('fs');
     const calendars = await calCol.find({ status: 'active' }).toArray();
-    const missing   = calendars.filter(c => !(c.slots || []).some(s => s.date === today));
+
+    console.log(`[AutoPost Audit] ─── Server startup audit ─── ${now}`);
+    console.log(`[AutoPost Audit] OPENAI_API_KEY:        ${process.env.OPENAI_API_KEY        ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[AutoPost Audit] YOUTUBE_API_KEY:       ${process.env.YOUTUBE_API_KEY       ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[AutoPost Audit] YOUTUBE_CLIENT_ID:     ${process.env.YOUTUBE_CLIENT_ID     ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[AutoPost Audit] YOUTUBE_CLIENT_SECRET: ${process.env.YOUTUBE_CLIENT_SECRET ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[AutoPost Audit] Active calendars: ${calendars.length}`);
+
+    for (const cal of calendars) {
+      const user    = await User.findById(cal.userId).catch(() => null);
+      if (!user) { console.log(`[AutoPost Audit]   User ${cal.userId} not found — skipping`); continue; }
+      const channel = (user.youtubeChannels || []).find(ch => ch.channelId === cal.channelId) || user.youtubeChannels?.[0];
+      const todaySlots = (cal.slots || []).filter(s => s.date === today);
+
+      console.log(`[AutoPost Audit]   User ${user._id} | plan=${user.plan} | autoPost=${user.autoPost !== false} | niche=${cal.nicheName || 'none'}`);
+      console.log(`[AutoPost Audit]     Channel: ${channel?.channelName || 'NONE CONNECTED'} | accessToken=${channel?.accessToken ? 'present' : 'MISSING ⚠'} | refreshToken=${channel?.refreshToken ? 'present' : 'MISSING ⚠'}`);
+      console.log(`[AutoPost Audit]     Today slots: ${todaySlots.length} | ${todaySlots.map(s => `${s.title?.slice(0,20)}→${s.status}`).join(', ') || 'none'}`);
+
+      // Recovery 1: reset stuck "processing" slots (server restarted mid-pipeline)
+      const stuck = todaySlots.filter(s => s.status === 'processing');
+      if (stuck.length) {
+        console.log(`[Startup Recovery] Resetting ${stuck.length} stuck processing slot(s) → pending for user ${user._id}`);
+        for (const s of stuck) {
+          await calCol.updateOne(
+            { _id: cal._id },
+            { $set: { 'slots.$[s].status': 'pending', 'slots.$[s].pipelineStatus': 'reset-on-startup' } },
+            { arrayFilters: [{ 's.day': s.day, 's.videoIndex': s.videoIndex || 1 }] }
+          ).catch(() => {});
+        }
+      }
+
+      // Recovery 2: reset "ready" slots whose assembled file was wiped (Railway /tmp cleared on deploy)
+      const readyMissing = todaySlots.filter(s =>
+        s.status === 'ready' && !s.posted && s.assembledPath && !fs.existsSync(s.assembledPath)
+      );
+      if (readyMissing.length) {
+        console.log(`[Startup Recovery] ${readyMissing.length} "ready" slot(s) have missing /tmp files — resetting to pending for re-assembly`);
+        for (const s of readyMissing) {
+          await calCol.updateOne(
+            { _id: cal._id },
+            { $set: { 'slots.$[s].status': 'pending', 'slots.$[s].pipelineStatus': 'reset-missing-file' } },
+            { arrayFilters: [{ 's.day': s.day, 's.videoIndex': s.videoIndex || 1 }] }
+          ).catch(() => {});
+        }
+      }
+    }
+
+    // Recovery 3: generate today's slots for calendars that are missing them
+    const freshCals = await calCol.find({ status: 'active' }).toArray();
+    const missing   = freshCals.filter(c => !(c.slots || []).some(s => s.date === today));
     if (missing.length > 0) {
-      console.log(`[Startup] ${missing.length} calendar(s) missing today's slots — generating now`);
+      console.log(`[Startup Recovery] ${missing.length} calendar(s) missing today's slots — generating now`);
       for (const cal of missing) {
         await runDailySlotGeneration(String(cal.userId)).catch(e =>
-          console.error(`[Startup] Generation failed for calendar ${cal._id}:`, e.message)
+          console.error(`[Startup Recovery] Generation failed for calendar ${cal._id}:`, e.message)
         );
       }
     } else {
-      console.log('[Startup] All active calendars have today\'s slots');
+      console.log('[AutoPost Audit] All active calendars have today\'s slots ✓');
     }
+
+    // Recovery 4: immediately post any overdue "ready" slots whose files still exist
+    const finalCals = await calCol.find({ status: 'active' }).toArray();
+    for (const cal of finalCals) {
+      const user = await User.findById(cal.userId).catch(() => null);
+      if (!user || user.autoPost === false) continue;
+      const channel = (user.youtubeChannels || []).find(ch => ch.channelId === cal.channelId) || user.youtubeChannels?.[0];
+      if (!channel?.accessToken) continue;
+      const overdue = (cal.slots || []).filter(s =>
+        s.date === today && s.status === 'ready' && !s.posted &&
+        s.assembledPath && require('fs').existsSync(s.assembledPath) &&
+        (s.scheduledPostTime || `${s.date}T18:00:00`) <= now
+      );
+      if (!overdue.length) continue;
+      console.log(`[Startup Recovery] ${overdue.length} overdue ready slot(s) for user ${user._id} — posting now`);
+      setImmediate(async () => {
+        for (const slot of overdue) {
+          try {
+            const ytId = await pipelineUploadToYouTube(slot.assembledPath, slot.title, slot.cachedScript || slot.title, channel, slot.type !== 'Long-form');
+            await calCol.updateOne(
+              { _id: cal._id },
+              { $set: { 'slots.$[s].status': 'posted', 'slots.$[s].posted': true, 'slots.$[s].postedAt': new Date().toISOString(), 'slots.$[s].youtubeVideoId': ytId } },
+              { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+            );
+            require('fs').unlink(slot.assembledPath, () => {});
+            console.log(`[Startup Recovery] ✓ Posted "${slot.title}" → https://youtu.be/${ytId}`);
+          } catch (e) {
+            console.error(`[Startup Recovery] ✗ Failed to post "${slot.title}": ${e.message}`);
+          }
+        }
+      });
+    }
+
+    console.log('[AutoPost Audit] ─── Startup audit complete ───');
   } catch (e) {
     console.error('[Startup] Slot check failed:', e.message);
   }
@@ -229,7 +314,34 @@ app.use('/api/', limiter);
 // HEALTH CHECK — registered early so it responds even if other routes fail
 // This is what Railway pings. Must respond 200 within 5 minutes.
 // =============================================================================
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  let pipeline = { error: 'unavailable' };
+  try {
+    const calCol   = agentCol('content_calendars');
+    const cals     = await calCol.find({ status: 'active' }).toArray();
+    const allSlots = cals.flatMap(c => (c.slots || []).filter(s => s.date === today));
+    const nextSlot = allSlots
+      .filter(s => (s.status === 'ready' || s.status === 'pending') && !s.posted)
+      .sort((a, b) => (a.scheduledPostTime || '') < (b.scheduledPostTime || '') ? -1 : 1)[0];
+    const userIds    = [...new Set(cals.map(c => String(c.userId)))];
+    let tokenValid   = false;
+    if (userIds.length) {
+      const u = await User.findById(userIds[0]).catch(() => null);
+      tokenValid = !!(u?.youtubeChannels?.[0]?.accessToken);
+    }
+    pipeline = {
+      todaysSlotsGenerated: allSlots.length > 0,
+      slotsReady:     allSlots.filter(s => s.status === 'ready').length,
+      slotsPosted:    allSlots.filter(s => s.status === 'posted' || s.posted).length,
+      slotsFailed:    allSlots.filter(s => s.status === 'failed').length,
+      slotsPending:   allSlots.filter(s => s.status === 'pending').length,
+      slotsProcessing:allSlots.filter(s => s.status === 'processing').length,
+      nextPostTime:   nextSlot?.scheduledPostTime || null,
+      youtubeTokenValid: tokenValid,
+    };
+  } catch { /* pipeline stays { error: 'unavailable' } */ }
+
   res.json({
     status:  'ok',
     uptime:  process.uptime(),
@@ -238,6 +350,7 @@ app.get('/health', (req, res) => {
     stripe:  !!process.env.STRIPE_SECRET_KEY ? 'configured' : 'not configured (billing disabled)',
     youtube: !!process.env.YOUTUBE_API_KEY   ? 'configured' : 'not configured',
     openai:  !!process.env.OPENAI_API_KEY    ? 'configured' : 'not configured',
+    pipeline,
   });
 });
 
@@ -3891,12 +4004,21 @@ async function pipelineRefreshToken(channel) {
 }
 
 // Step 6 — Upload assembled video to YouTube
-async function pipelineUploadToYouTube(videoPath, title, description, channel) {
+async function pipelineUploadToYouTube(videoPath, title, description, channel, isShort = true) {
   const { google } = require('googleapis');
   const oauth2 = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID,
     process.env.YOUTUBE_CLIENT_SECRET
   );
+
+  const uploadTitle = isShort && !title.includes('#Shorts')
+    ? (title + ' #Shorts').slice(0, 100)
+    : title.slice(0, 100);
+  const uploadDesc  = ((description || title).slice(0, 4800)) +
+    (isShort ? '\n\n#Shorts #YouTubeShorts #viral' : '');
+  const uploadTags  = isShort
+    ? ['shorts', 'youtube shorts', 'viral', 'trending']
+    : ['youtube', 'educational'];
 
   const tryUpload = async (accessToken) => {
     oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
@@ -3905,12 +4027,12 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel) {
       part: ['snippet', 'status'],
       requestBody: {
         snippet: {
-          title:       title.slice(0, 100),
-          description: description.slice(0, 5000),
-          tags:        ['shorts', 'youtube shorts'],
+          title:       uploadTitle,
+          description: uploadDesc,
+          tags:        uploadTags,
           categoryId:  '22',
         },
-        status: { privacyStatus: 'public' },
+        status: { privacyStatus: 'public', madeForKids: false },
       },
       media: { body: require('fs').createReadStream(videoPath) },
     });
@@ -4068,7 +4190,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
 
   await col.updateOne(
     { _id: calendar._id },
-    { $set: { [`slots.$[s].pipelineStatus`]: 'generating', [`slots.$[s].pipelineStartedAt`]: new Date().toISOString() } },
+    { $set: { [`slots.$[s].status`]: 'processing', [`slots.$[s].pipelineStatus`]: 'generating', [`slots.$[s].pipelineStartedAt`]: new Date().toISOString() } },
     { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
   ).catch(() => {});
 
@@ -4374,7 +4496,7 @@ async function runScheduledPosting() {
           const doneSlot = (doneCal?.slots || []).find(s => s.day === slot.day && (s.videoIndex || 1) === (slot.videoIndex || 1));
           if (doneSlot?.status !== 'ready' || !doneSlot?.assembledPath || !fs.existsSync(doneSlot.assembledPath)) continue;
           try {
-            const ytId = await pipelineUploadToYouTube(doneSlot.assembledPath, doneSlot.title, doneSlot.cachedScript || doneSlot.title, channel);
+            const ytId = await pipelineUploadToYouTube(doneSlot.assembledPath, doneSlot.title, doneSlot.cachedScript || doneSlot.title, channel, doneSlot.type !== 'Long-form');
             await calCol.updateOne(
               { _id: doneCal._id },
               { $set: {
@@ -4400,11 +4522,18 @@ async function runScheduledPosting() {
 
     for (const slot of dueSlots) {
       if (!slot.assembledPath || !fs.existsSync(slot.assembledPath)) {
-        console.warn(`[Posting] Assembled video missing for "${slot.title}" — skipping slot`); continue;
+        // File wiped (Railway redeploys clear /tmp) — reset to pending so pipeline re-runs
+        console.warn(`[PostingCron] Assembled file missing for "${slot.title}" — resetting to pending for re-assembly`);
+        await calCol.updateOne(
+          { _id: calendar._id },
+          { $set: { 'slots.$[s].status': 'pending', 'slots.$[s].pipelineStatus': 'reset-missing-file' } },
+          { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+        ).catch(() => {});
+        continue;
       }
       try {
         const description = slot.cachedScript || slot.title;
-        const ytId = await pipelineUploadToYouTube(slot.assembledPath, slot.title, description, channel);
+        const ytId = await pipelineUploadToYouTube(slot.assembledPath, slot.title, description, channel, slot.type !== 'Long-form');
         const postedAt = new Date().toISOString();
         await calCol.updateOne(
           { _id: calendar._id },
@@ -4879,7 +5008,7 @@ app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
         }
 
         const description = targetSlot.cachedScript || targetSlot.title;
-        const ytId = await pipelineUploadToYouTube(targetSlot.assembledPath, targetSlot.title, description, channel);
+        const ytId = await pipelineUploadToYouTube(targetSlot.assembledPath, targetSlot.title, description, channel, targetSlot.type !== 'Long-form');
         await col.updateOne(
           { _id: targetCal._id },
           { $set: {
