@@ -1169,6 +1169,56 @@ app.get('/api/agents/planner/calendar', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/content/calendar/today
+// Returns today's calendar slots from MongoDB cache — never re-generates if they exist.
+// If no slots exist for today, runs generation once, saves, then returns them.
+app.get('/api/content/calendar/today', requireAuth, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const userId   = String(req.user.id);
+    const slotsCol = agentCol('calendar_slots');
+
+    let slots = await slotsCol
+      .find({ userId, date: today })
+      .sort({ videoIndex: 1 })
+      .toArray();
+
+    if (slots.length) {
+      slots.forEach(s => { if (s._id) s._id = s._id.toString(); });
+      return res.json({
+        success:     true,
+        slots,
+        today,
+        fromCache:   true,
+        generatedAt: slots[0]?.generatedAt || today,
+        count:       slots.length,
+      });
+    }
+
+    // Cache miss — generate now, save, return.
+    console.log(`[CalToday] No slots for ${today} (user ${userId}) — generating now`);
+    await runDailySlotGeneration(userId, today);
+
+    slots = await slotsCol
+      .find({ userId, date: today })
+      .sort({ videoIndex: 1 })
+      .toArray();
+    slots.forEach(s => { if (s._id) s._id = s._id.toString(); });
+
+    res.json({
+      success:     true,
+      slots,
+      today,
+      fromCache:   false,
+      generatedAt: slots[0]?.generatedAt || new Date().toISOString(),
+      count:       slots.length,
+    });
+  } catch (err) {
+    console.error('[CalToday] Error:', err.message);
+    res.status(500).json({ error: 'Failed to load today\'s calendar' });
+  }
+});
+
 // GET /api/agents/planner/slots/upcoming
 // Returns the next 7 unposted calendar slots
 app.get('/api/agents/planner/slots/upcoming', requireAuth, async (req, res) => {
@@ -3942,11 +3992,11 @@ async function runProductionPipelineWithRetry(calendar, slot, user, col, maxRetr
 // Generates today's video slots for every active user who has a niche + plan + channel,
 // then immediately fires the production pipeline for each slot in the background.
 // Idempotent: skips users who already have today's slots. Called by the 00:01 cron and startup check.
-async function runDailySlotGeneration(targetUserId = null) {
+async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
   if (!process.env.OPENAI_API_KEY) {
     console.log('[DailyGen] Skipping — OPENAI_API_KEY not configured'); return;
   }
-  const today    = new Date().toISOString().slice(0, 10);
+  const today    = targetDate || new Date().toISOString().slice(0, 10);
   const calCol   = agentCol('content_calendars');
   const slotsCol = agentCol('calendar_slots');
   const { OpenAI } = require('openai');
@@ -3957,8 +4007,12 @@ async function runDailySlotGeneration(targetUserId = null) {
 
   for (const calendar of calendars) {
     try {
-      if ((calendar.slots || []).some(s => s.date === today)) {
-        console.log(`[DailyGen] Slots for ${today} already exist (calendar ${calendar._id}) — skipping`); continue;
+      // Idempotency: check the calendar_slots collection — the authoritative store.
+      // Never regenerate if docs already exist for this user+date (posted or not).
+      const existingCount = await slotsCol.countDocuments({ userId: String(calendar.userId), date: today });
+      if (existingCount > 0) {
+        console.log(`[DailyGen] ${existingCount} slot(s) for ${today} already in DB (user ${calendar.userId}) — skipping`);
+        continue;
       }
       const user = await User.findById(calendar.userId).catch(() => null);
       if (!user) continue;
@@ -3985,6 +4039,7 @@ Return JSON: { "titles": [${count} strings] }` }],
       let titles = [];
       try { titles = JSON.parse(genRes.choices[0].message.content).titles || []; } catch {}
 
+      const generatedAt = new Date().toISOString();
       const newSlots = [];
       for (let v = 0; v < count; v++) {
         newSlots.push({
@@ -3994,6 +4049,7 @@ Return JSON: { "titles": [${count} strings] }` }],
           type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
           status: 'pending', posted: false, retryCount: 0,
           scheduledPostTime: assignPostingTime(today, v + 1, count),
+          generatedAt,
         });
       }
 
@@ -4019,6 +4075,7 @@ Return JSON: { "title": "string" }` }],
           type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
           status: 'pending', posted: false, retryCount: 0,
           scheduledPostTime: assignPostingTime(today, 1, 1),
+          generatedAt,
         });
       }
 
@@ -4050,6 +4107,40 @@ Return JSON: { "title": "string" }` }],
     }
   }
   console.log(`[DailyGen] Complete — ${generated} calendar(s) had slots generated for ${today}`);
+}
+
+// After the last video of the day posts, pre-generate tomorrow's slots immediately.
+// Called after every successful upload; bails out early if any slots are still pending.
+async function maybePreGenerateTomorrow(userId) {
+  try {
+    const today     = new Date().toISOString().slice(0, 10);
+    const tomorrow  = new Date();
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+
+    const slotsCol = agentCol('calendar_slots');
+
+    // Check if tomorrow's slots already exist — skip if so.
+    const tomorrowCount = await slotsCol.countDocuments({ userId, date: tomorrowStr });
+    if (tomorrowCount > 0) return;
+
+    // Check whether every slot for today is terminal (posted / failed / skipped).
+    // Read from the calendar doc's embedded slots — that's where posted:true is written.
+    const calCol = agentCol('content_calendars');
+    const cal    = await calCol.findOne({ userId, status: 'active' });
+    if (!cal) return;
+    const todaySlots = (cal.slots || []).filter(s => s.date === today);
+    if (!todaySlots.length) return;
+    const allDone = todaySlots.every(s =>
+      s.posted === true || s.status === 'posted' || s.status === 'failed' || s.status === 'skipped'
+    );
+    if (!allDone) return;
+
+    console.log(`[PostGen] All videos done for ${today} (user ${userId}) — pre-generating tomorrow ${tomorrowStr}`);
+    await runDailySlotGeneration(userId, tomorrowStr);
+  } catch (err) {
+    console.error('[PostGen] maybePreGenerateTomorrow error:', err.message);
+  }
 }
 
 // Posts all due "ready" slots (autoPost users) or "approved" slots (manual-approval users).
@@ -4116,6 +4207,7 @@ async function runScheduledPosting() {
             );
             fs.unlink(doneSlot.assembledPath, () => {});
             console.log(`[Posting] ✓ Auto-posted overdue slot "${doneSlot.title}" → https://youtu.be/${ytId}`);
+            setImmediate(() => maybePreGenerateTomorrow(String(capturedCal.userId)).catch(() => {}));
           } catch (e) {
             console.error(`[Posting] ✗ Upload failed for overdue slot "${slot.title}": ${e.message}`);
           }
@@ -4147,6 +4239,8 @@ async function runScheduledPosting() {
         posted++;
         fs.unlink(slot.assembledPath, () => {});
         console.log(`[Posting] ✓ "${slot.title}" → https://youtu.be/${ytId}`);
+        // After each successful post, check if today is fully done and pre-generate tomorrow.
+        setImmediate(() => maybePreGenerateTomorrow(String(calendar.userId)).catch(() => {}));
       } catch (err) {
         console.error(`[Posting] ✗ Upload failed for "${slot.title}": ${err.message}`);
         await calCol.updateOne(
@@ -4628,11 +4722,14 @@ app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
   }
 });
 
-// Daily 00:01 UTC — generate today's slots for all active users and fire production pipeline
+// Fallback cron — 00:01 UTC daily.
+// Primary trigger: maybePreGenerateTomorrow() fires immediately after the last post of the day.
+// This fallback ensures slots exist even if the last-post trigger was missed (e.g. no posts ran).
+// runDailySlotGeneration checks calendar_slots first — skips if slots already exist for today.
 cron.schedule('1 0 * * *', async () => {
-  console.log('[CRON] Daily slot generation starting…');
+  console.log('[CRON] Fallback daily slot check starting…');
   try { await runDailySlotGeneration(); }
-  catch (err) { console.error('[CRON] Daily generation error:', err.message); }
+  catch (err) { console.error('[CRON] Fallback generation error:', err.message); }
 });
 
 // Analytics Collection — ACTIVE (free: YouTube Data API free quota)
