@@ -1025,7 +1025,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── SCRIPT RESEARCH ── -->
 <div class="dash-page" id="dp-research">
-  <div class="dash-topbar"><div><p class="ph">Script Briefs</p><p class="ps">AI-generated structured scripts for your upcoming calendar slots</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Script Briefs</p><p class="ps" id="research-subtitle">Today's scripts</p></div></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Scripts ready</p><p class="sc-value" id="stat-scripts-ready">—</p><p class="sc-sub green">Generated</p></div>
     <div class="stat-card"><p class="sc-label">Shorts</p><p class="sc-value" id="stat-scripts-shorts">—</p><p class="sc-sub">In queue</p></div>
@@ -1062,7 +1062,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT QUALITY ── -->
 <div class="dash-page" id="dp-quality">
-  <div class="dash-topbar"><div><p class="ph">Content Quality</p><p class="ps">AI scores every script on hook strength, clarity, CTA and niche relevance before posting</p></div></div>
+  <div class="dash-topbar"><div><p class="ph">Content Quality</p><p class="ps" id="quality-subtitle">Today's quality scores</p></div></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Avg quality score</p><p class="sc-value" id="qual-avg">—</p><p class="sc-sub green" id="qual-avg-sub"></p></div>
     <div class="stat-card"><p class="sc-label">Videos scored</p><p class="sc-value" id="qual-total">—</p><p class="sc-sub">Lifetime</p></div>
@@ -2108,6 +2108,13 @@ async function initResearch() {
     const data    = await apiCall('/api/scripts');
     const scripts = data?.scripts || [];
 
+    // Update subtitle with today's date
+    const subEl = document.getElementById('research-subtitle');
+    if (subEl) {
+      const dateLabel = new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      subEl.textContent = `Today's scripts — ${dateLabel}`;
+    }
+
     const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
     setStat('stat-scripts-ready',    scripts.length || '—');
     setStat('stat-scripts-shorts',   scripts.filter(s => s.type !== 'Long-form').length || '—');
@@ -2410,6 +2417,18 @@ function _fmtFreq(days) {
   return `Every ~${days} days`;
 }
 
+async function addSuggestedCompetitor(channelId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  const data = await apiCall('/api/competitors', 'POST', { channelUrl: channelId });
+  if (data?.success) {
+    if (btn) { btn.textContent = 'Added ✓'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
+    await initCompetitors();
+  } else {
+    toast(data?.error || 'Failed to add channel', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Add'; }
+  }
+}
+
 async function initCompetitors() {
   const chEl    = document.getElementById('competitor-channels-list');
   const alertEl = document.getElementById('competitor-alerts');
@@ -2418,22 +2437,42 @@ async function initCompetitors() {
       apiCall('/api/competitors'),
       apiCall('/api/agents/competitor/alerts'),
     ]);
-    const competitors = compData?.competitors || [];
-    const alerts      = alertData?.alerts     || [];
+    const competitors      = compData?.competitors      || [];
+    const suggestedChannels = compData?.suggestedChannels || [];
+    const alerts           = alertData?.alerts          || [];
     const setStat = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
     setStat('stat-comp-channels', competitors.length);
     setStat('stat-comp-alerts',   alerts.filter(a => !a.read).length);
     setStat('stat-comp-videos',   alertData?.count ?? alerts.length);
 
     if (chEl) {
-      if (!competitors.length) {
-        chEl.innerHTML = `<div style="padding:2rem;text-align:center;border:1px dashed var(--border2);border-radius:10px;margin-top:.25rem">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.35"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-          <p style="font-size:.82rem;font-weight:500;color:var(--text2);margin-bottom:3px">No competitors added yet</p>
-          <p style="font-size:.73rem;color:var(--text3)">Paste a YouTube channel URL above to start monitoring</p>
-        </div>`;
-      } else {
-        chEl.innerHTML = competitors.map(ch => `
+      const suggestedHtml = suggestedChannels.length ? `
+        <div style="margin-bottom:1rem">
+          <p style="font-size:.72rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.55rem">Suggested for your niche</p>
+          ${suggestedChannels.map(ch => `
+            <div style="background:rgba(99,102,241,.05);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:.75rem 1rem;margin-bottom:7px">
+              <div style="display:flex;align-items:center;gap:10px">
+                ${ch.thumbnail ? `<img src="${ch.thumbnail}" style="width:34px;height:34px;border-radius:8px;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:34px;height:34px;border-radius:8px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:var(--text3);flex-shrink:0">${(ch.name||'?').slice(0,2).toUpperCase()}</div>`}
+                <div style="flex:1;min-width:0">
+                  <p style="font-size:.83rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.name||ch.channelId}</p>
+                  <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:3px">
+                    <span style="font-size:.66rem;color:var(--text3)">${_fmtCompact(ch.subscriberCount)} subs</span>
+                    <span style="font-size:.66rem;color:var(--text3)">·</span>
+                    <span style="font-size:.66rem;color:var(--text3)">${_fmtCompact(ch.avgViews)} avg views</span>
+                  </div>
+                </div>
+                <button class="act" style="font-size:.67rem;padding:3px 10px;flex-shrink:0" onclick="addSuggestedCompetitor('${ch.channelId}',this)">Add</button>
+              </div>
+            </div>`).join('')}
+        </div>` : '';
+
+      const watchedHtml = !competitors.length
+        ? `<div style="padding:2rem;text-align:center;border:1px dashed var(--border2);border-radius:10px">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.35"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <p style="font-size:.82rem;font-weight:500;color:var(--text2);margin-bottom:3px">No competitors added yet</p>
+            <p style="font-size:.73rem;color:var(--text3)">Paste a YouTube channel URL above to start monitoring</p>
+          </div>`
+        : competitors.map(ch => `
           <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.9rem 1rem;margin-bottom:8px">
             <div style="display:flex;align-items:center;gap:10px">
               <div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;color:#fff;flex-shrink:0">${(ch.channelName||'?').slice(0,2).toUpperCase()}</div>
@@ -2448,7 +2487,8 @@ async function initCompetitors() {
               <button class="act" style="font-size:.67rem;padding:3px 9px;flex-shrink:0" onclick="removeCompetitor('${ch.channelId}',this)">Remove</button>
             </div>
           </div>`).join('');
-      }
+
+      chEl.innerHTML = suggestedHtml + watchedHtml;
     }
 
     if (alertEl) {
@@ -3110,6 +3150,13 @@ async function initQuality() {
   try {
     const data = await apiCall('/api/quality/scores');
     const { scores = [], stats = {} } = data || {};
+
+    // Update subtitle with today's date
+    const qualSubEl = document.getElementById('quality-subtitle');
+    if (qualSubEl) {
+      const dateLabel = new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      qualSubEl.textContent = `Today's quality scores — ${dateLabel}`;
+    }
 
     // Stat cards
     if (avgEl)    avgEl.textContent    = stats.avg != null ? `${stats.avg}%` : '—';

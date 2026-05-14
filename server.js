@@ -1775,7 +1775,7 @@ app.get('/api/agents/competitor/videos', requireAuth, async (req, res) => {
 // COMPETITORS — direct YouTube API routes (no Python dependency)
 // =============================================================================
 
-// GET /api/competitors — list all competitors for the logged-in user
+// GET /api/competitors — list all competitors + YouTube-suggested channels for the user's niche
 app.get('/api/competitors', requireAuth, async (req, res) => {
   try {
     const col  = agentCol('competitor_channels');
@@ -1784,7 +1784,59 @@ app.get('/api/competitors', requireAuth, async (req, res) => {
       .sort({ addedAt: -1 })
       .toArray();
     docs.forEach(d => { d._id = d._id.toString(); });
-    res.json({ success: true, competitors: docs, count: docs.length });
+
+    // Auto-suggest: search YouTube for top channels in the user's niche
+    let suggestedChannels = [];
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    if (apiKey) {
+      try {
+        const user      = await User.findById(req.user.id);
+        const nicheName = user?.nicheName
+          || (user?.youtubeChannels || []).map(c => c.nicheName).find(Boolean)
+          || null;
+
+        if (nicheName) {
+          const existingIds = new Set(docs.map(d => d.channelId));
+
+          // Search for channels in this niche
+          const searchParams = new URLSearchParams({
+            part: 'snippet', type: 'channel',
+            q: `top ${nicheName} YouTube channels`,
+            maxResults: '10', key: apiKey,
+          });
+          const searchRes  = await fetch(`https://www.googleapis.com/youtube/v3/search?${searchParams}`);
+          const searchData = await searchRes.json();
+          const channelIds = (searchData.items || [])
+            .map(item => item.snippet?.channelId || item.id?.channelId)
+            .filter(id => id && !existingIds.has(id))
+            .slice(0, 5);
+
+          if (channelIds.length) {
+            const statsParams = new URLSearchParams({
+              part: 'snippet,statistics', id: channelIds.join(','), key: apiKey,
+            });
+            const statsRes  = await fetch(`https://www.googleapis.com/youtube/v3/channels?${statsParams}`);
+            const statsData = await statsRes.json();
+            suggestedChannels = (statsData.items || []).map(ch => {
+              const vidCount = parseInt(ch.statistics?.videoCount || 0);
+              return {
+                channelId:       ch.id,
+                name:            ch.snippet?.title || '',
+                thumbnail:       ch.snippet?.thumbnails?.default?.url || null,
+                subscriberCount: parseInt(ch.statistics?.subscriberCount || 0),
+                avgViews:        vidCount > 0
+                  ? Math.round(parseInt(ch.statistics?.viewCount || 0) / vidCount) : 0,
+              };
+            });
+            console.log(`[Competitors] ${suggestedChannels.length} suggested for niche "${nicheName}"`);
+          }
+        }
+      } catch (e) {
+        console.warn('[Competitors] Suggest failed (non-fatal):', e.message);
+      }
+    }
+
+    res.json({ success: true, competitors: docs, count: docs.length, suggestedChannels });
   } catch (err) {
     console.error('[Competitors] GET error:', err);
     res.status(500).json({ error: 'Failed to fetch competitors' });
@@ -2000,22 +2052,23 @@ app.get('/api/scripts', requireAuth, async (req, res) => {
     const scriptsCol   = agentCol('scripts');
     const calendarsCol = agentCol('content_calendars');
 
-    // Read existing cached scripts
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Read today's cached scripts only
     let scripts = await scriptsCol
-      .find({ userId: req.user.id })
-      .sort({ scheduledDate: 1, slotDay: 1, videoIndex: 1 })
+      .find({ userId: req.user.id, scheduledDate: today })
+      .sort({ slotDay: 1, videoIndex: 1 })
       .toArray();
     scripts.forEach(s => { s._id = s._id.toString(); });
 
     // Need an active calendar to generate from
     const calendar = await calendarsCol.findOne({ userId: req.user.id, status: 'active' });
-    if (!calendar) return res.json({ success: true, scripts, count: scripts.length, hasCalendar: false });
+    if (!calendar) return res.json({ success: true, scripts, count: scripts.length, hasCalendar: false, today });
 
-    // Generate for upcoming slots that are missing scripts (max 5 per request)
+    // Generate for today's slots that are missing scripts (max 5 per request)
     const generatedKeys = new Set(scripts.map(s => `${s.slotDay}_${s.videoIndex || 1}`));
-    const today         = new Date().toISOString().slice(0, 10);
     const missing       = (calendar.slots || [])
-      .filter(s => (s.date || '') >= today && s.status === 'planned' && !generatedKeys.has(`${s.day}_${s.videoIndex || 1}`))
+      .filter(s => s.date === today && ['planned', 'pending'].includes(s.status) && !generatedKeys.has(`${s.day}_${s.videoIndex || 1}`))
       .slice(0, 5);
 
     if (missing.length > 0 && process.env.OPENAI_API_KEY) {
@@ -2053,7 +2106,7 @@ app.get('/api/scripts', requireAuth, async (req, res) => {
       scripts.sort((a, b) => (a.scheduledDate || '') < (b.scheduledDate || '') ? -1 : 1);
     }
 
-    res.json({ success: true, scripts, count: scripts.length, hasCalendar: true });
+    res.json({ success: true, scripts, count: scripts.length, hasCalendar: true, today });
   } catch (err) {
     console.error('[Scripts] GET error:', err);
     res.status(500).json({ error: 'Failed to fetch scripts' });
@@ -3020,14 +3073,14 @@ app.post('/api/channels/:channelId/pause', requireAuth, async (req, res) => {
 // QUALITY SCORES
 // =============================================================================
 
-// GET /api/quality/scores — returns AI-generated quality scores for this user's posted videos
+// GET /api/quality/scores — returns AI-generated quality scores for this user's videos today
 app.get('/api/quality/scores', requireAuth, async (req, res) => {
   try {
+    const today  = new Date().toISOString().slice(0, 10);
     const col    = agentCol('quality_scores');
     const scores = await col
-      .find({ userId: req.user.id })
+      .find({ userId: req.user.id, $or: [{ scheduledDate: today }, { date: today }] })
       .sort({ scoredAt: -1 })
-      .limit(50)
       .toArray();
     scores.forEach(s => { s._id = s._id.toString(); });
 
@@ -3036,7 +3089,7 @@ app.get('/api/quality/scores', requireAuth, async (req, res) => {
     const passed = scores.filter(s => (s.scores?.overall || 0) >= 60).length;
     const failed = total - passed;
 
-    res.json({ success: true, scores, stats: { total, avg, passed, failed } });
+    res.json({ success: true, scores, stats: { total, avg, passed, failed }, today });
   } catch (err) {
     console.error('[QualityScores] GET error:', err.message);
     res.status(500).json({ error: 'Failed to load quality scores' });
