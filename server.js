@@ -3804,6 +3804,7 @@ Return JSON: { "title": "string" }` }],
 // Only uploads pre-assembled videos — never re-generates. Runs every 5 minutes.
 async function runScheduledPosting() {
   const now    = new Date().toISOString();
+  const today  = now.slice(0, 10); // YYYY-MM-DD UTC — only process today's slots
   const calCol = agentCol('content_calendars');
   const fs     = require('fs');
   const calendars = await calCol.find({ status: 'active' }).toArray();
@@ -3816,6 +3817,7 @@ async function runScheduledPosting() {
 
     const dueSlots = (calendar.slots || []).filter(s => {
       if (s.posted || s.status === 'posted') return false;
+      if (s.date !== today) return false; // today only — skip past and future dates
       const postAt = s.scheduledPostTime || `${s.date}T18:00:00`;
       if (postAt > now) return false;
       return autoPostOn ? s.status === 'ready' : s.status === 'approved';
@@ -3824,7 +3826,7 @@ async function runScheduledPosting() {
     // Auto-approve overdue pending slots: if a slot is still pending past its
     // scheduled post time, run the pipeline and post it regardless of autoPost setting.
     const overduePending = (calendar.slots || []).filter(s =>
-      !s.posted && s.status === 'pending' &&
+      !s.posted && s.status === 'pending' && s.date === today &&
       (s.scheduledPostTime || `${s.date}T18:00:00`) <= now
     );
 
