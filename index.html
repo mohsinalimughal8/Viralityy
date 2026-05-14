@@ -399,6 +399,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .toast-error{background:rgba(239,68,68,.9);border:1px solid rgba(239,68,68,.4)}
 .toast-info{background:rgba(99,102,241,.9);border:1px solid rgba(99,102,241,.4)}
 @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* NICHE ENGINE V2 (in dashboard) */
 .ne2-plan-pills{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:1rem}
@@ -2641,19 +2642,32 @@ async function initNiches() {
   const el = document.getElementById('ne-results');
   if (!el) return;
   if (liveNiches.length) { renderNiches(); return; }
-  el.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text3)">Loading live niche scores…</div>';
+
+  // Real-time discovery loading spinner
+  el.innerHTML = `<div style="padding:2.5rem 1rem;text-align:center">
+    <div style="display:inline-block;width:36px;height:36px;border:3px solid var(--border2);border-top-color:var(--purple);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:1rem"></div>
+    <p style="color:var(--text2);font-size:.88rem;font-weight:500;margin-bottom:.35rem">Analysing YouTube trends in real-time…</p>
+    <p style="color:var(--text3);font-size:.72rem">Scanning trending videos · clustering niches with AI · validating with Google Trends</p>
+    <p style="color:var(--text3);font-size:.68rem;margin-top:.5rem;opacity:.7">This takes 5–15 seconds the first time, then loads instantly from cache</p>
+  </div>`;
+
   const data = await apiCall('/api/niches/recommend');
-  console.log('[initNiches] /api/niches/recommend response:', data);
-  liveNiches = data?.niches || [];
-  console.log('[initNiches] liveNiches count:', liveNiches.length);
+  liveNiches  = data?.niches || [];
+
   if (!liveNiches.length) {
     el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">
-      <p style="margin-bottom:.5rem">No niche data returned from API.</p>
-      <p style="font-size:.7rem;opacity:.7">Check browser console for details. The niche engine may still be loading on the server.</p>
+      <p style="margin-bottom:.5rem">No niche data yet — the engine is scanning YouTube trends.</p>
+      <p style="font-size:.7rem;opacity:.7">Make sure YOUTUBE_API_KEY and OPENAI_API_KEY are configured on the server.</p>
       <button class="act act-ok" style="margin-top:.75rem;font-size:.72rem" onclick="liveNiches=[];initNiches()">Retry</button>
     </div>`;
     return;
   }
+
+  if (data?.fromCache) {
+    const statusEl = document.getElementById('planner-trending-status');
+    // show freshness on discover page if element exists
+  }
+
   renderNiches();
 }
 
