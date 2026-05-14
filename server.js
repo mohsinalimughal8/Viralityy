@@ -803,19 +803,26 @@ function normaliseNicheScore(raw) {
 
 // ── YouTube video search — returns enriched video objects
 async function ytSearch(keyword, { days = 7, maxResults = 25, order = 'viewCount' } = {}) {
+  // Always read inline — never cache at module load time
   const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) {
+    console.warn(`[Niche] ytSearch("${keyword}"): YOUTUBE_API_KEY not set`);
+    return [];
+  }
   try {
     const publishedAfter = new Date(Date.now() - days * 86_400_000).toISOString();
     const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id,snippet&q=${encodeURIComponent(keyword)}&type=video&order=${order}&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=${maxResults}&key=${apiKey}&relevanceLanguage=en`;
     const searchResp = await axios.get(searchUrl, { timeout: 12_000 });
     const items = searchResp.data.items || [];
     const videoIds = items.map(i => i.id?.videoId).filter(Boolean);
-    if (!videoIds.length) return [];
+    if (!videoIds.length) {
+      console.warn(`[Niche] ytSearch("${keyword}"): 0 videos returned from YouTube (order=${order}, days=${days})`);
+      return [];
+    }
 
     const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds.join(',')}&key=${apiKey}`;
     const statsResp = await axios.get(statsUrl, { timeout: 12_000 });
-    return (statsResp.data.items || []).map(v => ({
+    const videos = (statsResp.data.items || []).map(v => ({
       videoId:     v.id,
       title:       v.snippet?.title        || '',
       channel:     v.snippet?.channelTitle || '',
@@ -824,8 +831,10 @@ async function ytSearch(keyword, { days = 7, maxResults = 25, order = 'viewCount
       likes:       parseInt(v.statistics?.likeCount    || '0', 10),
       publishedAt: v.snippet?.publishedAt  || '',
     }));
+    console.log(`[Niche] ytSearch("${keyword}"): ${videos.length} videos, top views=${videos[0]?.views ?? 0}`);
+    return videos;
   } catch (err) {
-    console.warn(`[Niche] ytSearch("${keyword}") failed:`, err.message);
+    console.error(`[Niche] ytSearch("${keyword}") failed:`, err.response?.data?.error?.message || err.message);
     return [];
   }
 }
@@ -838,7 +847,8 @@ async function ytSuggestions(keyword) {
     const data = Array.isArray(resp.data) ? resp.data : [];
     const suggestions = Array.isArray(data[1]) ? data[1].slice(0, 8) : [];
     return suggestions.filter(s => typeof s === 'string' && s !== keyword);
-  } catch {
+  } catch (err) {
+    console.warn('[Niche] ytSuggestions failed:', err.message);
     return [];
   }
 }
@@ -864,17 +874,28 @@ async function fetchGoogleTrends() {
     _trendsMemCache.terms     = terms;
     _trendsMemCache.fetchedAt = Date.now();
     return terms;
-  } catch {
+  } catch (err) {
+    console.warn('[Niche] fetchGoogleTrends failed:', err.message);
     return _trendsMemCache.terms; // stale is fine
   }
 }
 
 // ── OpenAI niche clustering — returns array of niche objects
 async function clusterWithAI(videos, keyword) {
-  if (!process.env.OPENAI_API_KEY || !videos.length) return null;
+  // Always read inline — never cache at module load time
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    console.warn('[Niche] clusterWithAI: OPENAI_API_KEY not set');
+    return null;
+  }
+  if (!videos.length) {
+    console.warn(`[Niche] clusterWithAI("${keyword}"): no videos to cluster`);
+    return null;
+  }
   try {
     const { OpenAI } = require('openai');
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const openai = new OpenAI({ apiKey: openaiKey });
+    console.log(`[Niche] clusterWithAI("${keyword}"): sending ${Math.min(videos.length, 30)} videos to GPT-4o-mini`);
     const topVids = videos
       .sort((a, b) => b.views - a.views)
       .slice(0, 30)
@@ -895,9 +916,11 @@ async function clusterWithAI(videos, keyword) {
 
     const raw     = resp.choices[0]?.message?.content?.trim() || '[]';
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    return JSON.parse(cleaned);
+    const parsed  = JSON.parse(cleaned);
+    console.log(`[Niche] clusterWithAI("${keyword}"): got ${parsed.length} niches from AI`);
+    return parsed;
   } catch (err) {
-    console.warn('[Niche] clusterWithAI failed:', err.message);
+    console.error('[Niche] clusterWithAI failed:', err.message);
     return null;
   }
 }
@@ -954,47 +977,62 @@ function scoreNiche(niche, allVideos, trendingTerms) {
 
 // ── Core: discover niches for one keyword (YouTube + AI + Trends)
 async function discoverNiches(keyword, plan = 'combo_pro') {
-  // 1. YouTube search for main keyword
-  const mainVideos = await ytSearch(keyword, { days: 7, maxResults: 25 });
+  console.log(`[Niche] discoverNiches("${keyword}") start`);
 
-  // 2. Suggestions → pick top 4 → search each
-  const suggestions = await ytSuggestions(keyword);
-  const relVideos   = await Promise.all(
-    suggestions.slice(0, 4).map(kw => ytSearch(kw, { days: 7, maxResults: 10 }).catch(() => []))
-  );
+  const run = async () => {
+    // 1. YouTube search for main keyword
+    const mainVideos = await ytSearch(keyword, { days: 7, maxResults: 25 });
 
-  const allVideos     = [...mainVideos, ...relVideos.flat()];
-  const trendingTerms = await fetchGoogleTrends();
+    // 2. Suggestions → pick top 4 → search each
+    const suggestions = await ytSuggestions(keyword);
+    const relVideos   = await Promise.all(
+      suggestions.slice(0, 4).map(kw => ytSearch(kw, { days: 7, maxResults: 10 }).catch(() => []))
+    );
 
-  // 3. OpenAI clustering
-  const aiNiches = await clusterWithAI(allVideos, keyword);
-  if (!aiNiches || !aiNiches.length) {
-    // No AI result — return basic scored fallback from video data alone
-    if (!allVideos.length) return [];
-    const fallback = suggestions.slice(0, 10).map(kw => ({
-      niche_id:      slugify(kw),
-      name:          kw.split(' ').map(w => w[0]?.toUpperCase() + w.slice(1)).join(' '),
-      category:      'Other',
-      combined_score: normaliseNicheScore(30),
-      why_its_trending: `Trending YouTube search related to "${keyword}"`,
-      content_angle: 'educational facts and tips',
-      cpm_range:     '$6–$12',
-      competition:   'medium',
-      growth_potential: 'medium',
-      trend_boost:   0,
-      virality_boost: 0,
-      score_breakdown: {},
-      representative_titles: [],
-      live_data: false,
-      analysed_at: new Date().toISOString(),
-    }));
-    return fallback;
+    const allVideos     = [...mainVideos, ...relVideos.flat()];
+    const trendingTerms = await fetchGoogleTrends();
+    console.log(`[Niche] discoverNiches("${keyword}"): ${allVideos.length} total videos collected`);
+
+    // 3. OpenAI clustering
+    const aiNiches = await clusterWithAI(allVideos, keyword);
+    if (!aiNiches || !aiNiches.length) {
+      // No AI result — return basic scored fallback from video data alone
+      if (!allVideos.length) return [];
+      const fallback = suggestions.slice(0, 10).map(kw => ({
+        niche_id:      slugify(kw),
+        name:          kw.split(' ').map(w => w[0]?.toUpperCase() + w.slice(1)).join(' '),
+        category:      'Other',
+        combined_score: normaliseNicheScore(30),
+        why_its_trending: `Trending YouTube search related to "${keyword}"`,
+        content_angle: 'educational facts and tips',
+        cpm_range:     '$6–$12',
+        competition:   'medium',
+        growth_potential: 'medium',
+        trend_boost:   0,
+        virality_boost: 0,
+        score_breakdown: {},
+        representative_titles: [],
+        live_data: false,
+        analysed_at: new Date().toISOString(),
+      }));
+      return fallback;
+    }
+
+    // 4. Score each AI niche
+    const scored = aiNiches.map(n => scoreNiche(n, allVideos, trendingTerms));
+    scored.sort((a, b) => b.combined_score - a.combined_score);
+    return scored.slice(0, 10);
+  };
+
+  try {
+    return await Promise.race([
+      run(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout after 25s')), 25_000)),
+    ]);
+  } catch (err) {
+    console.error(`[Niche] discoverNiches("${keyword}") failed: ${err.message}`);
+    return [];
   }
-
-  // 4. Score each AI niche
-  const scored = aiNiches.map(n => scoreNiche(n, allVideos, trendingTerms));
-  scored.sort((a, b) => b.combined_score - a.combined_score);
-  return scored.slice(0, 10);
 }
 
 // ── Top niches across all seed categories — cached 6h in MongoDB
@@ -1033,12 +1071,17 @@ async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
   const all = Object.values(byId).sort((a, b) => b.combined_score - a.combined_score);
   const top = all.slice(0, 20);
 
-  // Fallback: if no API keys, use Python engine Layer 1
+  // Static fallback — returned when YouTube/OpenAI keys are missing or discovery fails
   if (!top.length) {
-    try {
-      const l1 = nicheEngine.recommend(plan, 15);
-      return { niches: l1, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
-    } catch { return { niches: [], fromCache: false }; }
+    console.warn('[Niche] discoverTopNiches: all seeds returned empty — using static fallback niches');
+    const staticNiches = [
+      { niche_id: 'psychology', name: 'Psychology & Human Behaviour', keyword: 'psychology', combined_score: 91, trend_boost: 8, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Education', cpm_estimate: 9 },
+      { niche_id: 'finance_tips', name: 'Personal Finance Tips', keyword: 'personal finance', combined_score: 90, trend_boost: 7, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Finance', cpm_estimate: 20 },
+      { niche_id: 'stoicism', name: 'Stoicism & Philosophy', keyword: 'stoicism', combined_score: 88, trend_boost: 6, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Education', cpm_estimate: 9 },
+      { niche_id: 'ai_tools', name: 'AI Tools & Productivity', keyword: 'AI tools', combined_score: 87, trend_boost: 9, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Technology', cpm_estimate: 14 },
+      { niche_id: 'dark_psychology', name: 'Dark Psychology', keyword: 'dark psychology', combined_score: 86, trend_boost: 5, verdict: 'top_pick', verdict_label: 'Top Pick', live_data_used: false, category: 'Education', cpm_estimate: 9 },
+    ];
+    return { niches: staticNiches, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
   }
 
   const cachedAt = new Date().toISOString();
@@ -1056,6 +1099,8 @@ async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
 // ---------------------------------------------------------------------------
 app.get('/api/niches/recommend', requireAuth, async (req, res) => {
   try {
+    console.log('[Niche Route] YOUTUBE_API_KEY:', process.env.YOUTUBE_API_KEY ? 'SET (' + process.env.YOUTUBE_API_KEY.slice(0, 8) + '...)' : 'MISSING');
+    console.log('[Niche Route] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? 'SET' : 'MISSING');
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const plan    = user.plan || 'shorts_starter';
