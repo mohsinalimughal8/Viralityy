@@ -1470,6 +1470,8 @@ function selNiche(el) {
 // DASHBOARD ROUTING
 // ════════════════════════════════════════════
 let dashInited = false;
+let _dashRefreshTimer     = null;
+let _analyticsRefreshTimer = null;
 function dashPage(id, el) {
   document.querySelectorAll('.dash-page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.sidebar-item').forEach(s => s.classList.remove('active'));
@@ -1522,24 +1524,28 @@ async function initDashboard() {
 async function initOverview() {
   const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
 
-  const [status, ytAnalytics, preview, alertData, calData, qualData] = await Promise.all([
+  const [status, dashStats, preview, alertData, calData, qualData] = await Promise.all([
     apiCall('/api/agents/status'),
-    apiCall('/api/analytics').catch(() => null),
+    apiCall('/api/dashboard/stats').catch(() => null),
     apiCall('/api/agents/preview/queue').catch(() => null),
     apiCall('/api/agents/competitor/alerts').catch(() => null),
     apiCall('/api/agents/planner/calendar').catch(() => null),
     apiCall('/api/quality/scores').catch(() => null),
   ]);
 
-  // ── Stat cards (ID-targeted, no fragile index approach) ──
-  const ytStats    = ytAnalytics?.stats || {};
+  // Build a merged ytAnalytics-shaped object from /api/dashboard/stats so the
+  // rest of the function can use the same field names as before.
+  const ytAnalytics = dashStats;
+
+  // ── Stat cards ──
+  const ytStats    = dashStats?.stats || {};
   const queueCount = preview?.queue?.length || preview?.videos?.length || 0;
   const alertCount = (alertData?.alerts || []).filter(a => !a.read).length;
 
   // Total views — YouTube channel lifetime total
   if (ytStats.totalViews > 0) {
     setEl('ov-views', _fmtViews(ytStats.totalViews));
-    setEl('ov-views-sub', ytAnalytics.channelName || 'Channel lifetime');
+    setEl('ov-views-sub', dashStats.channelName || 'Channel lifetime');
   }
 
   // Subscribers
@@ -1548,9 +1554,8 @@ async function initOverview() {
     setEl('ov-subs-sub', 'Total subscribers');
   }
 
-  // Videos posted — from calendar slots marked posted
-  const slots       = calData?.slots || [];
-  const postedCount = slots.filter(s => s.status === 'posted').length;
+  // Videos posted — authoritative count from calendar_slots (posted: true) via server
+  const postedCount = calData?.videosPosted ?? ytStats.videosPosted ?? 0;
   setEl('ov-posted', postedCount || '—');
 
   // Avg quality score
@@ -1591,7 +1596,7 @@ async function initOverview() {
   // ── Top video card ──
   const topVideoEl = document.getElementById('top-video-card');
   if (topVideoEl) {
-    const topVid = (ytAnalytics?.topVideos || [])[0];
+    const topVid = ytAnalytics?.topVideo || (ytAnalytics?.topVideos || [])[0];
     if (topVid) {
       const eng = topVid.viewCount ? ((topVid.likeCount / topVid.viewCount) * 100).toFixed(1) : 0;
       topVideoEl.innerHTML = `
@@ -1633,6 +1638,10 @@ async function initOverview() {
       }).join('');
     }
   }
+
+  // Auto-refresh every 30 minutes without page reload
+  if (_dashRefreshTimer) clearInterval(_dashRefreshTimer);
+  _dashRefreshTimer = setInterval(() => initOverview(), 30 * 60 * 1000);
 }
 
 // ════════════════════════════════════════════
@@ -1773,6 +1782,10 @@ async function initAnalytics() {
     const p = noChEl?.querySelector('p');
     if (p) p.textContent = 'Could not load analytics — refresh to try again.';
   }
+
+  // Auto-refresh every 30 minutes without page reload
+  if (_analyticsRefreshTimer) clearInterval(_analyticsRefreshTimer);
+  _analyticsRefreshTimer = setInterval(() => initAnalytics(), 30 * 60 * 1000);
 }
 
 // ════════════════════════════════════════════
