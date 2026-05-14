@@ -210,6 +210,33 @@ async function runStartupSlotCheck() {
       });
     }
 
+    // Recovery 5: run pipeline for any pending slots that were never processed
+    const pipelineCals = await calCol.find({ status: 'active' }).toArray();
+    for (const cal of pipelineCals) {
+      const user = await User.findById(cal.userId).catch(() => null);
+      if (!user) continue;
+      const pendingSlots = (cal.slots || []).filter(s =>
+        s.date === today && s.status === 'pending' && !s.posted
+      );
+      if (!pendingSlots.length) continue;
+      console.log(`[Startup Recovery] Found ${pendingSlots.length} pending slot(s) for user ${user._id} — running pipeline now`);
+      const capturedCal  = cal;
+      const capturedUser = user;
+      setImmediate(async () => {
+        for (const s of pendingSlots) {
+          try {
+            const freshCal  = await calCol.findOne({ _id: capturedCal._id });
+            const freshSlot = (freshCal?.slots || []).find(x => x.date === today && x.videoIndex === s.videoIndex);
+            if (!freshSlot || freshSlot.status !== 'pending' || freshSlot.posted) continue;
+            console.log(`[Startup Recovery] Running pipeline for pending slot: "${freshSlot.title}"`);
+            await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
+          } catch (e) {
+            console.error(`[Startup Recovery] Pipeline failed for "${s.title}": ${e.message}`);
+          }
+        }
+      });
+    }
+
     console.log('[AutoPost Audit] ─── Startup audit complete ───');
   } catch (e) {
     console.error('[Startup] Slot check failed:', e.message);
@@ -4328,6 +4355,7 @@ Return JSON: { "title": "string" }` }],
       await calCol.updateOne({ _id: calendar._id }, { $set: { slots: merged } });
       generated++;
       console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${calendar.userId} | plan: ${user.plan}`);
+      console.log(`[DailyGen] Starting pipeline for ${newSlots.length} slot(s)`);
 
       // Fire production pipeline in background — non-blocking, one slot at a time
       const capturedCal   = { ...calendar, slots: merged };
@@ -4335,10 +4363,15 @@ Return JSON: { "title": "string" }` }],
       const capturedSlots = [...newSlots];
       setImmediate(async () => {
         for (const s of capturedSlots) {
-          const freshCal  = await calCol.findOne({ _id: capturedCal._id });
-          const freshSlot = (freshCal?.slots || []).find(x => x.date === today && x.videoIndex === s.videoIndex);
-          if (!freshSlot || freshSlot.posted || freshSlot.status === 'ready') continue;
-          await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
+          try {
+            const freshCal  = await calCol.findOne({ _id: capturedCal._id });
+            const freshSlot = (freshCal?.slots || []).find(x => x.date === today && x.videoIndex === s.videoIndex);
+            if (!freshSlot || freshSlot.posted || freshSlot.status === 'ready') continue;
+            console.log(`[DailyGen] Pipeline starting for slot: "${freshSlot.title}"`);
+            await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
+          } catch (e) {
+            console.error(`[DailyGen] Pipeline failed for "${s.title}": ${e.message}`);
+          }
         }
       });
     } catch (err) {
