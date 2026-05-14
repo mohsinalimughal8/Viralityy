@@ -248,12 +248,14 @@ async function runStartupSlotCheck() {
     for (const cal of pipelineCals) {
       const user = await User.findById(cal.userId).catch(() => null);
       if (!user) continue;
+      const in30minStartup = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       const pendingSlots = (cal.slots || []).filter(s => {
-        if (s.date !== today || s.posted) return false;
-        return s.status === 'pending'; // 'approved' slots have cached data — handled by Recovery 4 + cron
+        if (s.date !== today || s.posted || s.status !== 'pending') return false;
+        const postAt = s.scheduledPostTime || `${s.date}T18:00:00`;
+        return postAt <= in30minStartup; // only within 30 min of post time (or overdue)
       });
       if (!pendingSlots.length) continue;
-      console.log(`[Startup Recovery] Found ${pendingSlots.length} pending/unassembled slot(s) for user ${user._id} — running pipeline now`);
+      console.log(`[Startup Recovery] Found ${pendingSlots.length} pending slot(s) due within 30 min — starting pipeline for user ${user._id}`);
       const capturedCal  = cal;
       const capturedUser = user;
       setImmediate(async () => {
@@ -4515,25 +4517,7 @@ Return JSON: { "title": "string" }` }],
       await calCol.updateOne({ _id: calendar._id }, { $set: { slots: merged } });
       generated++;
       console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${calendar.userId} | plan: ${user.plan}`);
-      console.log(`[DailyGen] Starting pipeline for ${newSlots.length} slot(s)`);
-
-      // Fire production pipeline in background — non-blocking, one slot at a time
-      const capturedCal   = { ...calendar, slots: merged };
-      const capturedUser  = user;
-      const capturedSlots = [...newSlots];
-      setImmediate(async () => {
-        for (const s of capturedSlots) {
-          try {
-            const freshCal  = await calCol.findOne({ _id: capturedCal._id });
-            const freshSlot = (freshCal?.slots || []).find(x => x.date === today && x.videoIndex === s.videoIndex);
-            if (!freshSlot || freshSlot.posted || freshSlot.status === 'ready') continue;
-            console.log(`[DailyGen] Pipeline starting for slot: "${freshSlot.title}"`);
-            await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
-          } catch (e) {
-            console.error(`[DailyGen] Pipeline failed for "${s.title}": ${e.message}`);
-          }
-        }
-      });
+      console.log(`[DailyGen] ${newSlots.length} slot(s) saved — PostingCron will start pipeline 30 min before each scheduledPostTime`);
     } catch (err) {
       console.error(`[DailyGen] Failed for calendar ${calendar._id}:`, err.message);
     }
@@ -4592,46 +4576,36 @@ async function runScheduledPosting() {
 
     const dueSlots = (calendar.slots || []).filter(s => {
       if (s.posted || s.status === 'posted') return false;
-      if (s.date !== today) return false; // today only — skip past and future dates
+      if (s.date !== today) return false;
       const postAt = s.scheduledPostTime || `${s.date}T18:00:00`;
-      if (postAt > now) return false;
+      if (postAt > now) return false; // never post before scheduledPostTime
       return s.status === 'ready' || s.status === 'approved';
     });
 
-    // Auto-approve overdue pending slots: if a slot is still pending past its
-    // scheduled post time, run the pipeline and post it regardless of autoPost setting.
-    const overduePending = (calendar.slots || []).filter(s =>
+    // Start pipeline for pending slots whose scheduledPostTime is ≤30 min away (just-in-time prep)
+    const in30min = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const pendingDue = (calendar.slots || []).filter(s =>
       !s.posted && s.status === 'pending' && s.date === today &&
-      (s.scheduledPostTime || `${s.date}T18:00:00`) <= now
+      (s.scheduledPostTime || `${s.date}T18:00:00`) <= in30min
     );
 
     const channel = (user.youtubeChannels || []).find(ch => ch.channelId === calendar.channelId)
                  || (user.youtubeChannels || [])[0];
-    if (!channel && !dueSlots.length && !overduePending.length) continue;
+    if (!channel && !dueSlots.length && !pendingDue.length) continue;
     if (!channel) { console.warn(`[Posting] No channel for calendar ${calendar._id}`); continue; }
 
-    // Fire pipeline + upload for each overdue pending slot in the background
-    if (overduePending.length > 0) {
-      console.log(`[Posting] ${overduePending.length} overdue pending slot(s) for calendar ${calendar._id} — auto-approving`);
+    // Fire pipeline in background for slots coming up within 30 min
+    if (pendingDue.length > 0) {
+      console.log(`[PostingCron] ${pendingDue.length} slot(s) due in ≤30 min — starting pipeline`);
       const capturedCal  = calendar;
       const capturedUser = user;
       setImmediate(async () => {
-        for (const slot of overduePending) {
+        for (const slot of pendingDue) {
           const freshCal  = await calCol.findOne({ _id: capturedCal._id });
           const freshSlot = (freshCal?.slots || []).find(s => s.day === slot.day && (s.videoIndex || 1) === (slot.videoIndex || 1));
           if (!freshSlot || freshSlot.status !== 'pending') continue;
+          console.log(`[PostingCron] Pipeline starting for "${freshSlot.title}" (due ${freshSlot.scheduledPostTime || 'TBD'})`);
           await runProductionPipelineWithRetry(freshCal, freshSlot, capturedUser, calCol);
-          // Pipeline now sets status to 'approved' (data cached) — assemble + upload immediately
-          const doneCal  = await calCol.findOne({ _id: capturedCal._id });
-          const doneSlot = (doneCal?.slots || []).find(s => s.day === slot.day && (s.videoIndex || 1) === (slot.videoIndex || 1));
-          if (!doneSlot || doneSlot.status !== 'approved') continue;
-          try {
-            await runAssembleAndUpload(doneCal, doneSlot, capturedUser, calCol, channel);
-            console.log(`[Posting] ✓ Auto-posted overdue slot "${slot.title}"`);
-            setImmediate(() => maybePreGenerateTomorrow(String(capturedCal.userId)).catch(() => {}));
-          } catch (e) {
-            console.error(`[Posting] ✗ Assemble+upload failed for overdue slot "${slot.title}": ${e.message}`);
-          }
         }
       });
     }
@@ -4687,7 +4661,20 @@ async function runScheduledPosting() {
       }
     }
   }
-  if (posted > 0) console.log(`[Posting] Cycle complete — ${posted} video(s) posted`);
+  if (posted > 0) {
+    console.log(`[Posting] Cycle complete — ${posted} video(s) posted`);
+  } else {
+    // Log the next upcoming post time so the Railway logs are easy to read
+    let nextPostAt = null;
+    for (const cal of calendars) {
+      for (const s of (cal.slots || [])) {
+        if (s.posted || s.status === 'posted') continue;
+        const at = s.scheduledPostTime || `${s.date}T18:00:00`;
+        if (at > now && (!nextPostAt || at < nextPostAt)) nextPostAt = at;
+      }
+    }
+    if (nextPostAt) console.log(`[PostingCron] No slots due yet — next post at ${nextPostAt}`);
+  }
 }
 
 // Topic Scout — searches YouTube for trending videos in a niche (last 7 days, ordered by viewCount).
