@@ -1665,7 +1665,8 @@ async function initChannels() {
       <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
       <div class="ch-info">
         <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
-        <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers · ' : ''}${ch.nicheName || 'No niche set'}${ch.paused ? ' · Paused' : ''}</p>
+        ${ch.nicheName ? `<span style="display:inline-block;background:#1D9E75;color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;font-weight:500;margin:4px 0 2px">${ch.nicheName}</span>` : ''}
+        <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers' : 'No subscribers data'}${ch.paused ? ' · Paused' : ''}</p>
       </div>
       <div class="ch-actions">
         <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
@@ -2213,28 +2214,29 @@ async function runNicheSearch() {
 
 function renderNicheCard(n) {
   const score = n.combined_score || n.score || 0;
-  const rawVerdict = (n.verdict || (score >= 70 ? 'HOT' : score >= 50 ? 'MODERATE' : 'WEAK')).toLowerCase();
-  const vcls = rawVerdict === 'hot' ? 'hot' : rawVerdict === 'moderate' ? 'moderate' : 'weak';
-  const vbadge = rawVerdict === 'hot' ? 'vb-hot' : rawVerdict === 'moderate' ? 'vb-mod' : 'vb-weak';
-  const barcol = rawVerdict === 'hot' ? 'var(--green)' : rawVerdict === 'moderate' ? 'var(--amber)' : 'rgba(107,114,128,.5)';
+  const rawVerdict = (n.verdict || (score >= 70 ? 'HOT' : score >= 50 ? 'GOOD' : 'WEAK')).toLowerCase()
+    .replace('moderate', 'good'); // normalise legacy values
+  const vcls   = rawVerdict === 'hot' ? 'hot'  : rawVerdict === 'good' ? 'moderate' : 'weak';
+  const vbadge = rawVerdict === 'hot' ? 'vb-hot' : rawVerdict === 'good' ? 'vb-mod' : 'vb-weak';
+  const barcol = rawVerdict === 'hot' ? 'var(--green)' : rawVerdict === 'good' ? 'var(--amber)' : 'rgba(107,114,128,.5)';
   const cpmL = n.cpm_l || n.cpmLow || 0;
   const cpmH = n.cpm_h || n.cpmHigh || 0;
-  const cpmRange = n.cpm_range || (cpmL && cpmH ? '$'+cpmL+'–$'+cpmH : null);
-  const nicheId = n.niche_id || n.id || n.nicheId || '';
+  const cpmRange  = n.cpm_range || (cpmL && cpmH ? '$'+cpmL+'–$'+cpmH : null);
+  const nicheId   = n.niche_id || n.id || n.nicheId || '';
   const nicheLabel = n.label || n.name || nicheId;
-  const comp = n.competition || n.comp || '';
-  const revEst = n.monthly_revenue_estimate?.mid || '—';
+  const comp      = n.competition || n.comp || '';
+  const scoreTier = score >= 96 ? 'Elite' : score >= 90 ? 'Strong' : Math.round(score);
+  const badgeText = rawVerdict === 'hot' ? 'HOT' : rawVerdict === 'good' ? 'GOOD' : 'WEAK';
   return `<div class="ne2-card ${vcls}">
     <div class="ne2-card-inner">
       <div class="ne2-top">
         <div style="flex:1"><p class="ne2-label">${nicheLabel}</p><p class="ne2-cat">${n.cat||n.category||''}</p></div>
-        <div style="text-align:right"><p class="ne2-score">${Math.round(score)}</p><span class="ne2-vbadge ${vbadge}">${rawVerdict.toUpperCase()}</span></div>
+        <div style="text-align:right"><p class="ne2-score">${scoreTier}</p><span class="ne2-vbadge ${vbadge}">${badgeText}</span></div>
       </div>
       <div class="ne2-bar"><div class="ne2-bar-fill" style="width:${Math.min(score,100)}%;background:${barcol}"></div></div>
       <div class="ne2-meta">
         ${cpmRange ? `<span>CPM <span>${cpmRange}</span></span>` : ''}
         ${comp ? `<span>Competition <span>${comp}</span></span>` : ''}
-        ${revEst !== '—' ? `<span>Revenue <span>${revEst}</span></span>` : ''}
       </div>
       <div style="display:flex;gap:7px;margin-top:.65rem">
         <button class="act act-ok" style="font-size:.68rem;padding:4px 11px" onclick="selectNiche('${n.id||n.nicheId}','${(n.label||n.name||n.id).replace(/'/g,"\''")}')">Use this niche</button>
@@ -2362,9 +2364,9 @@ function renderNiches() {
     return;
   }
   const getScore = n => n.combined_score || n.score || 0;
-  const list = [...liveNiches].sort((a, b) => getScore(b) - getScore(a)).slice(0, 10);
-  el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">Top ${list.length} niches by performance</p>` +
-    list.map(renderNicheCard).join('');
+  const list = [...liveNiches].sort((a, b) => getScore(b) - getScore(a)).filter(n => getScore(n) >= 90);
+  el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">Top-tier niches only — scored 90+ for maximum growth potential</p>` +
+    (list.length ? list.map(renderNicheCard).join('') : '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No niches scored 90+ yet — data is still loading.</div>');
 }
 
 async function initNiches() {
@@ -2670,13 +2672,13 @@ function sortAndRenderSignupNiches_internal() {
     const id      = n.id || n.nicheId || n._id || '';
     const label   = n.label || n.name || id;
     const score   = Math.round(n.score || 0);
-    const verdict = n.verdict || (score >= 70 ? 'hot' : score >= 50 ? 'moderate' : 'weak');
+    const verdict = (n.verdict || (score >= 70 ? 'hot' : score >= 50 ? 'good' : 'weak')).replace('moderate','good');
     const cpmL    = n.cpm_l || n.cpmLow || 0;
     const cpmH    = n.cpm_h || n.cpmHigh || 0;
     const comp    = n.competition || n.comp || '—';
     const cat     = n.cat || n.category || '';
     const isSelected = id === selectedNicheId;
-    const badgeCls = verdict==='hot'?'snc-hot':verdict==='moderate'?'snc-mod':'snc-weak';
+    const badgeCls = verdict==='hot'?'snc-hot':verdict==='good'?'snc-mod':'snc-weak';
 
     return `<div class="signup-niche-card ${isSelected?'selected':''}" onclick="pickSignupNiche('${id}','${label.replace(/'/g,"\'")}',${cpmL},${cpmH},'${comp}')">
       <div class="snc-info">
