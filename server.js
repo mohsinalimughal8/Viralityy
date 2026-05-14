@@ -16,7 +16,7 @@ const rateLimit      = require('express-rate-limit');
 const cron           = require('node-cron');
 const crypto         = require('crypto');
 const path           = require('path');
-const { exec }       = require('child_process');
+const { exec, spawn } = require('child_process');
 // Stripe lazy-initialised — missing key does not crash startup
 let _stripeInstance = null;
 function getStripeClient() {
@@ -3776,9 +3776,9 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
   parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
 
-  // Captions: Shorts only — chain one drawtext filter per segment
+  // Captions: Shorts only — pick every other segment, max 5 total
   if (isShort && captions.length > 0) {
-    const capSegs = captions.slice(0, 20);
+    const capSegs = captions.filter((_, i) => i % 2 === 0).slice(0, 5);
     let lastV = 'vcat';
     for (let i = 0; i < capSegs.length; i++) {
       const c     = capSegs[i];
@@ -3793,9 +3793,8 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
       );
       lastV = nextV;
     }
-    console.log(`[Assembly] drawtext: ${captions.length} caption segment(s) baked in (Short)`);
+    console.log(`[Assembly] drawtext: ${capSegs.length} caption segment(s) baked in (Short)`);
   } else {
-    // Long-form or no captions — pass video through unchanged
     parts.push(`[vcat]null[vout]`);
     if (!isShort) console.log('[Assembly] drawtext: skipped (Long-form)');
   }
@@ -3803,45 +3802,45 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   // Audio: mix voiceover (100%) with optional background music (15%)
   const voiceIdx = n;
   if (hasMus) {
-    const musIdx = n + 1;
-    parts.push(
-      `[${voiceIdx}:a]volume=1.0[vo];[${musIdx}:a]volume=0.15[mu];` +
-      `[vo][mu]amix=inputs=2:duration=first:dropout_transition=2[aout]`
-    );
+    parts.push(`[${voiceIdx}:a][${n + 1}:a]amix=inputs=2:duration=shortest:weights=1 0.15[aout]`);
   } else {
     parts.push(`[${voiceIdx}:a]volume=1.0[aout]`);
   }
 
-  // Write filter_complex to temp file (avoids shell escaping issues)
-  const filterPath = path.join('/tmp', `vly_filter_${runId}.txt`);
-  fs.writeFileSync(filterPath, parts.join(';\n'));
+  const filterStr = parts.join(';');
 
-  const inputArgs = clipPaths.map(p => `-i "${p}"`).join(' ');
-  const musArg    = hasMus ? `-i "${musicPath}"` : '';
-  const cmd = [
-    'ffmpeg -y',
-    inputArgs,
-    `-i "${audioPath}"`,
-    musArg,
-    `-filter_complex_script "${filterPath}"`,
-    '-map [vout] -map [aout]',
-    '-c:v libx264 -preset fast -crf 23',
-    '-c:a aac -b:a 128k',
-    '-movflags +faststart',
-    '-shortest',
-    `"${outputPath}"`,
-  ].filter(Boolean).join(' ');
+  // Build args array for spawn — no shell involved, no escaping issues
+  const args = ['-y'];
+  for (const p of clipPaths) { args.push('-i', p); }
+  args.push('-i', audioPath);
+  if (hasMus) args.push('-i', musicPath);
+  args.push('-filter_complex', filterStr);
+  args.push('-map', '[vout]', '-map', '[aout]');
+  args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
+  args.push('-c:a', 'aac', '-b:a', '128k');
+  args.push('-movflags', '+faststart');
+  args.push('-shortest');
+  args.push(outputPath);
 
-  console.log(`[Assembly] ffmpeg cmd: ${cmd}`);
+  console.log(`[Assembly] ffmpeg spawn: ${clipPaths.length} clips, captions=${captions.length}, music=${hasMus}, filter_len=${filterStr.length}`);
 
   return new Promise((resolve, reject) => {
-    exec(cmd, { timeout: 600000 }, (err, _stdout, stderr) => {
+    const ff = spawn('ffmpeg', args);
+    const stderrLines = [];
+    ff.stderr.on('data', d => stderrLines.push(...d.toString().split('\n')));
+    const cleanup = () => {
       for (const p of clipPaths) fs.unlink(p, () => {});
-      fs.unlink(filterPath, () => {});
       if (hasMus) fs.unlink(musicPath, () => {});
-      if (err) return reject(new Error('ffmpeg assembly failed: ' + (stderr || err.message).slice(0, 500)));
+    };
+    ff.on('close', code => {
+      cleanup();
+      if (code !== 0) {
+        const tail = stderrLines.filter(l => l.trim()).slice(-5).join('\n');
+        return reject(new Error(`ffmpeg assembly failed (exit ${code}):\n${tail}`));
+      }
       resolve(outputPath);
     });
+    ff.on('error', err => { cleanup(); reject(new Error(`ffmpeg spawn error: ${err.message}`)); });
   });
 }
 
