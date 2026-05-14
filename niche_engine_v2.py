@@ -1076,6 +1076,12 @@ class NicheEngine:
             }
             view_score = eng_score = rec_score = sf_score = None
 
+        # Normalise raw 0-100 score to display range 60-100.
+        # Raw scores of 40+ map linearly to 60-100; anything below 40 floors at 60.
+        # This means genuinely top niches naturally land at 90+.
+        normalised = ((combined - 40) / (100 - 40)) * 40 + 60
+        combined   = round(max(60.0, min(100.0, normalised)), 1)
+
         verdict, verdict_label = self._verdict(combined)
 
         # Revenue estimate (from static data if available)

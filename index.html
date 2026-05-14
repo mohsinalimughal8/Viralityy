@@ -1187,6 +1187,88 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 </div>
 
 
+<!-- ═══ ADMIN SECRET PAGE — only shown when URL hash is #admin-vrl9k2 ═══ -->
+<div class="site-page" id="page-admin-vrl9k2" style="display:none;min-height:100vh;background:#0a0a0f">
+
+  <!-- Step 1: login prompt — no branding, no labels -->
+  <div id="adm-login" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:12px">
+    <input id="adm-pw" type="password" placeholder="••••••••••••"
+      style="width:240px;padding:10px 14px;border-radius:8px;border:1px solid #333;background:#111;color:#e5e7eb;font-size:1rem;outline:none;text-align:center"
+      onkeydown="if(event.key==='Enter')adminLogin()">
+    <button onclick="adminLogin()"
+      style="width:240px;padding:10px;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:.9rem;cursor:pointer">→</button>
+    <p id="adm-err" style="color:#ef4444;font-size:.8rem;display:none">Access denied</p>
+  </div>
+
+  <!-- Step 2: dashboard — shown after successful auth -->
+  <div id="adm-dash" style="display:none;min-height:100vh;padding:1.5rem;max-width:1100px;margin:0 auto">
+
+    <!-- Tab bar -->
+    <div style="display:flex;gap:6px;margin-bottom:1.5rem;flex-wrap:wrap">
+      <button class="adm-tab active" id="admt-overview"  onclick="admTab('overview')"  style="padding:6px 16px;border-radius:6px;border:1px solid #333;background:#6366f1;color:#fff;font-size:.8rem;cursor:pointer">Overview</button>
+      <button class="adm-tab"        id="admt-apiusage"  onclick="admTab('apiusage')"  style="padding:6px 16px;border-radius:6px;border:1px solid #333;background:#111;color:#9ca3af;font-size:.8rem;cursor:pointer">API Usage</button>
+      <button class="adm-tab"        id="admt-users"     onclick="admTab('users')"     style="padding:6px 16px;border-radius:6px;border:1px solid #333;background:#111;color:#9ca3af;font-size:.8rem;cursor:pointer">Users</button>
+      <button class="adm-tab"        id="admt-pipeline"  onclick="admTab('pipeline')"  style="padding:6px 16px;border-radius:6px;border:1px solid #333;background:#111;color:#9ca3af;font-size:.8rem;cursor:pointer">Pipeline</button>
+      <button class="adm-tab"        id="admt-alerts"    onclick="admTab('alerts')"    style="padding:6px 16px;border-radius:6px;border:1px solid #333;background:#111;color:#9ca3af;font-size:.8rem;cursor:pointer">Alerts</button>
+      <button onclick="sessionStorage.removeItem('vly_admin_token');document.getElementById('adm-dash').style.display='none';document.getElementById('adm-login').style.display='flex'"
+        style="margin-left:auto;padding:6px 16px;border-radius:6px;border:1px solid #444;background:transparent;color:#6b7280;font-size:.8rem;cursor:pointer">Sign out</button>
+    </div>
+
+    <!-- Overview tab -->
+    <div id="adm-pane-overview" class="adm-pane">
+      <div id="adm-alerts-banner" style="display:none;margin-bottom:1rem;padding:10px 14px;border-radius:8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fca5a5;font-size:.82rem"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:1.5rem">
+        <div class="adm-card"><p class="adm-val" id="adm-totalusers">—</p><p class="adm-lbl">Total users</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-posted-today">—</p><p class="adm-lbl">Videos posted today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-cost-today">—</p><p class="adm-lbl">Cost today (USD)</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-quota-pct">—</p><p class="adm-lbl">YouTube quota used</p></div>
+      </div>
+      <div id="adm-plan-breakdown" style="font-size:.8rem;color:#6b7280"></div>
+    </div>
+
+    <!-- API Usage tab -->
+    <div id="adm-pane-apiusage" class="adm-pane" style="display:none">
+      <div id="adm-usage-table" style="overflow-x:auto"></div>
+    </div>
+
+    <!-- Users tab -->
+    <div id="adm-pane-users" class="adm-pane" style="display:none">
+      <div id="adm-users-table" style="overflow-x:auto"></div>
+    </div>
+
+    <!-- Pipeline tab -->
+    <div id="adm-pane-pipeline" class="adm-pane" style="display:none">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+        <div class="adm-card"><p class="adm-val" id="adm-generated">—</p><p class="adm-lbl">Generated today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-pipe-posted">—</p><p class="adm-lbl">Posted today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-failed">—</p><p class="adm-lbl">Failed today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-success-rate">—</p><p class="adm-lbl">Success rate</p></div>
+      </div>
+    </div>
+
+    <!-- Alerts tab -->
+    <div id="adm-pane-alerts" class="adm-pane" style="display:none">
+      <div id="adm-alerts-list"></div>
+    </div>
+
+  </div><!-- /adm-dash -->
+</div><!-- /page-admin-vrl9k2 -->
+
+<style>
+.adm-card{background:#111;border:1px solid #222;border-radius:10px;padding:1rem 1.2rem}
+.adm-val{font-size:1.6rem;font-weight:700;color:#e5e7eb;margin:0 0 4px}
+.adm-lbl{font-size:.72rem;color:#6b7280;margin:0}
+.adm-tbl{width:100%;border-collapse:collapse;font-size:.78rem;color:#d1d5db}
+.adm-tbl th{text-align:left;padding:8px 10px;border-bottom:1px solid #222;color:#6b7280;font-weight:500}
+.adm-tbl td{padding:8px 10px;border-bottom:1px solid #1a1a1a}
+.adm-tbl tr:hover td{background:rgba(255,255,255,.02)}
+.adm-badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:.68rem;font-weight:500}
+.adm-badge-ok{background:rgba(16,185,129,.15);color:#34d399}
+.adm-badge-warn{background:rgba(245,158,11,.15);color:#fbbf24}
+.adm-badge-err{background:rgba(239,68,68,.15);color:#f87171}
+.adm-tab.active{background:#6366f1 !important;color:#fff !important}
+</style>
+
 <script>
 // ════════════════════════════════════════════
 // CONFIG
@@ -1300,6 +1382,161 @@ async function apiCall(path, method='GET', body=null) {
 function captureTimezone() {
   if (!AUTH_TOKEN) return;
   apiCall('/api/user/timezone', 'PATCH', { timezone: userTZ }).catch(() => {});
+}
+
+// ════════════════════════════════════════════
+// ADMIN PANEL
+// ════════════════════════════════════════════
+async function adminApiCall(path, method = 'GET', body = null) {
+  const token = sessionStorage.getItem('vly_admin_token');
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': 'Bearer ' + token } : {}) },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  try {
+    const res = await fetch(API_BASE + path, opts);
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+async function adminLogin() {
+  const pw  = document.getElementById('adm-pw').value;
+  const err = document.getElementById('adm-err');
+  err.style.display = 'none';
+  if (!pw) return;
+  try {
+    // Pass the regular user JWT so the backend can verify ADMIN_EMAIL
+    const res = await fetch(API_BASE + '/api/admin/auth', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(AUTH_TOKEN ? { 'Authorization': 'Bearer ' + AUTH_TOKEN } : {}),
+      },
+      body: JSON.stringify({ password: pw }),
+    });
+    const data = await res.json();
+    if (data?.token) {
+      sessionStorage.setItem('vly_admin_token', data.token);
+      document.getElementById('adm-login').style.display = 'none';
+      document.getElementById('adm-dash').style.display  = 'block';
+      document.getElementById('adm-pw').value = '';
+      admTab('overview');
+    } else {
+      err.style.display = 'block';
+    }
+  } catch { err.style.display = 'block'; }
+}
+
+function admTab(name) {
+  document.querySelectorAll('.adm-pane').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.adm-tab').forEach(b => b.classList.remove('active'));
+  const pane = document.getElementById('adm-pane-' + name);
+  const btn  = document.getElementById('admt-' + name);
+  if (pane) pane.style.display = 'block';
+  if (btn)  btn.classList.add('active');
+  if      (name === 'overview') admLoadOverview();
+  else if (name === 'apiusage') admLoadApiUsage();
+  else if (name === 'users')    admLoadUsers();
+  else if (name === 'pipeline') admLoadPipeline();
+  else if (name === 'alerts')   admLoadAlerts();
+}
+
+async function admLoadOverview() {
+  const [ov, quota] = await Promise.all([
+    adminApiCall('/api/admin/overview'),
+    adminApiCall('/api/admin/youtube-quota'),
+  ]);
+  if (!ov?.success) return;
+  document.getElementById('adm-totalusers').textContent  = ov.totalUsers ?? '—';
+  document.getElementById('adm-posted-today').textContent = ov.videosPostedToday ?? '—';
+  document.getElementById('adm-cost-today').textContent  = ov.totalCostToday != null ? '$' + ov.totalCostToday.toFixed(4) : '—';
+  document.getElementById('adm-quota-pct').textContent   = quota?.percentUsed != null ? quota.percentUsed + '%' : '—';
+  const pb = ov.perPlanBreakdown || {};
+  document.getElementById('adm-plan-breakdown').innerHTML =
+    Object.entries(pb).map(([plan, n]) => `<span style="margin-right:14px"><b style="color:#e5e7eb">${n}</b> ${plan}</span>`).join('');
+  // Alerts banner
+  const alerts = await adminApiCall('/api/admin/alerts');
+  const banner = document.getElementById('adm-alerts-banner');
+  if (alerts?.alertCount > 0) {
+    banner.style.display = 'block';
+    banner.textContent   = `⚠ ${alerts.alertCount} active alert${alerts.alertCount > 1 ? 's' : ''} — see Alerts tab`;
+  } else { banner.style.display = 'none'; }
+}
+
+async function admLoadApiUsage() {
+  const el = document.getElementById('adm-usage-table');
+  el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">Loading…</p>';
+  const data = await adminApiCall('/api/admin/api-usage');
+  if (!data?.usage) { el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">No data</p>'; return; }
+  const statusBadge = (rate) => {
+    if (rate >= 0.95) return '<span class="adm-badge adm-badge-ok">OK</span>';
+    if (rate >= 0.80) return '<span class="adm-badge adm-badge-warn">Degraded</span>';
+    return '<span class="adm-badge adm-badge-err">Error</span>';
+  };
+  el.innerHTML = `<table class="adm-tbl">
+    <thead><tr><th>Service</th><th>Calls (24h)</th><th>Tokens / Units</th><th>Cost (24h)</th><th>Success rate</th><th>Status</th></tr></thead>
+    <tbody>${data.usage.map(r => `<tr>
+      <td style="font-weight:500;color:#e5e7eb">${r.service}</td>
+      <td>${r.calls}</td>
+      <td>${r.tokensUsed.toLocaleString()}</td>
+      <td>$${r.totalCost.toFixed(4)}</td>
+      <td>${(r.successRate * 100).toFixed(1)}%</td>
+      <td>${statusBadge(r.successRate)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+async function admLoadUsers() {
+  const el = document.getElementById('adm-users-table');
+  el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">Loading…</p>';
+  const data = await adminApiCall('/api/admin/users');
+  if (!data?.users) { el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">No data</p>'; return; }
+  const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '—';
+  el.innerHTML = `<table class="adm-tbl">
+    <thead><tr><th>Email</th><th>Plan</th><th>Videos posted</th><th>Cost this month</th><th>Last active</th><th>Channels</th></tr></thead>
+    <tbody>${data.users.map(u => {
+      const highCost = u.apiCostThisMonth > 5;
+      const rowStyle = highCost ? 'background:rgba(239,68,68,.06)' : '';
+      return `<tr style="${rowStyle}">
+        <td style="color:#e5e7eb;font-weight:500">${u.email}</td>
+        <td><span class="adm-badge ${u.plan==='agency'?'adm-badge-ok':u.plan==='trial'?'adm-badge-warn':'adm-badge-ok'}">${u.plan}</span></td>
+        <td>${u.videosPosted}</td>
+        <td style="${highCost?'color:#f87171;font-weight:600':''}">$${u.apiCostThisMonth.toFixed(4)}</td>
+        <td>${fmtDate(u.lastActive)}</td>
+        <td>${u.channelsCount}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+async function admLoadPipeline() {
+  const data = await adminApiCall('/api/admin/pipeline-stats');
+  if (!data?.success) return;
+  document.getElementById('adm-generated').textContent   = data.videosGeneratedToday ?? '—';
+  document.getElementById('adm-pipe-posted').textContent = data.videosPostedToday ?? '—';
+  document.getElementById('adm-failed').textContent      = data.failureCount ?? '—';
+  document.getElementById('adm-success-rate').textContent = data.successRate != null
+    ? (data.successRate * 100).toFixed(1) + '%' : '—';
+}
+
+async function admLoadAlerts() {
+  const el = document.getElementById('adm-alerts-list');
+  el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">Loading…</p>';
+  const data = await adminApiCall('/api/admin/alerts');
+  if (!data) { el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">Error loading alerts</p>'; return; }
+  if (!data.alerts?.length) {
+    el.innerHTML = '<div style="padding:2rem;text-align:center;color:#6b7280;font-size:.82rem">No active alerts — all systems normal</div>';
+    return;
+  }
+  el.innerHTML = data.alerts.map(a => {
+    const cls = a.severity === 'high' ? 'adm-badge-err' : 'adm-badge-warn';
+    return `<div style="padding:12px 16px;border-radius:8px;border:1px solid #222;background:#111;margin-bottom:8px;display:flex;align-items:center;gap:12px">
+      <span class="adm-badge ${cls}">${a.severity}</span>
+      <span style="font-size:.82rem;color:#d1d5db">${a.message}</span>
+      <span style="margin-left:auto;font-size:.72rem;color:#6b7280">${a.service}</span>
+    </div>`;
+  }).join('');
 }
 
 // ════════════════════════════════════════════
@@ -3339,10 +3576,20 @@ async function finishOnboarding() {
   nav('dashboard');
 }
 
-// Init: if returning from OAuth (token in URL) decide where to send user
-// New users (no niche set) → onboarding wizard
-// Existing users → dashboard
-if (isLoggedIn()) {
+// Init: check for hidden admin hash before any other routing
+if (window.location.hash === '#admin-vrl9k2') {
+  // Hide all pages, show admin page
+  document.querySelectorAll('.site-page').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+  const adminPage = document.getElementById('page-admin-vrl9k2');
+  if (adminPage) { adminPage.style.display = 'block'; adminPage.classList.add('active'); }
+  // If already have a valid admin token, skip straight to dashboard
+  const existingAdminToken = sessionStorage.getItem('vly_admin_token');
+  if (existingAdminToken) {
+    document.getElementById('adm-login').style.display = 'none';
+    document.getElementById('adm-dash').style.display  = 'block';
+    admTab('overview');
+  }
+} else if (isLoggedIn()) {
   const connectingChannel = localStorage.getItem('vly_connecting_channel');
   const pendingNiche = localStorage.getItem('vly_pending_niche');
   const onboardingStep = localStorage.getItem('vly_onboarding_step');
@@ -3397,6 +3644,7 @@ if (isLoggedIn()) {
   nav('home');
 }
 </script>
+
 <div id="vly-overlay" class="vly-overlay" style="display:none" onclick="if(event.target===this)closeNicheModal()">
   <div class="vly-modal" id="vly-modal"></div>
 </div>
