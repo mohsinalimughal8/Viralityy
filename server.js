@@ -4026,7 +4026,6 @@ async function pipelineGenerateVoiceover(script, userId) {
           input: { ssml: ssmlText },
           voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
           audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0.0 },
-          enableTimePointing: ['SSML_MARK'],
         }),
       });
 
