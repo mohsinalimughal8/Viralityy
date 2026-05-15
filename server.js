@@ -1671,11 +1671,27 @@ app.get('/api/content/calendar/today', requireAuth, async (req, res) => {
     const today    = new Date().toISOString().slice(0, 10);
     const userId   = String(req.user.id);
     const slotsCol = agentCol('calendar_slots');
+    const calCol   = agentCol('content_calendars');
 
-    let [slots, allTimePosted] = await Promise.all([
+    // Count all-time posted across BOTH storage layers:
+    //   • calendar_slots  — JIT-pipeline posts (posted:true set per-document)
+    //   • content_calendars.slots[] — old-pipeline posts (posted:true in embedded array)
+    // The two sets are disjoint (different pipeline eras) so summing is correct.
+    const [slots, jitPosted, embeddedPostedArr] = await Promise.all([
       slotsCol.find({ userId, date: today }).sort({ videoIndex: 1 }).toArray(),
       slotsCol.countDocuments({ userId, posted: true }),
+      calCol.aggregate([
+        { $match: { userId } },
+        { $project: { n: { $size: { $filter: {
+            input: { $ifNull: ['$slots', []] },
+            as:    's',
+            cond:  { $eq: ['$$s.posted', true] },
+        }}}}},
+        { $group: { _id: null, total: { $sum: '$n' } } },
+      ]).toArray().catch(() => []),
     ]);
+
+    const allTimePosted = jitPosted + (embeddedPostedArr[0]?.total || 0);
 
     if (slots.length) {
       slots.forEach(s => { if (s._id) s._id = s._id.toString(); });
@@ -1694,19 +1710,19 @@ app.get('/api/content/calendar/today', requireAuth, async (req, res) => {
     console.log(`[CalToday] No slots for ${today} (user ${userId}) — generating now`);
     await runDailySlotGeneration(userId, today);
 
-    slots = await slotsCol
+    const freshSlots = await slotsCol
       .find({ userId, date: today })
       .sort({ videoIndex: 1 })
       .toArray();
-    slots.forEach(s => { if (s._id) s._id = s._id.toString(); });
+    freshSlots.forEach(s => { if (s._id) s._id = s._id.toString(); });
 
     res.json({
       success:       true,
-      slots,
+      slots:         freshSlots,
       today,
       fromCache:     false,
-      generatedAt:   slots[0]?.generatedAt || new Date().toISOString(),
-      count:         slots.length,
+      generatedAt:   freshSlots[0]?.generatedAt || new Date().toISOString(),
+      count:         freshSlots.length,
       allTimePosted,
     });
   } catch (err) {
