@@ -313,7 +313,8 @@ const userSchema = new mongoose.Schema({
   trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
   stripeCustomerId:     { type: String },
   stripeSubscriptionId: { type: String },
-  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String }],
+  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String }],
+  pendingOAuthChannels: [{ channelId: String, channelName: String, thumbnail: String, subscriberCount: Number }],
   googleAccessToken:  String,
   googleRefreshToken: String,
   nicheId:         { type: String },
@@ -466,45 +467,40 @@ passport.use(new GoogleStrategy({
     user.googleAccessToken  = accessToken;
     user.googleRefreshToken = refreshToken || user.googleRefreshToken;
 
-    // 3. Fetch their YouTube channel via YouTube Data API
+    // 3. Fetch ALL YouTube channels on this Google account for the picker
     try {
       const ytRes = await fetch(
-        'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true',
+        'https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true&maxResults=50',
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const ytData = await ytRes.json();
-      const ytChannel = ytData?.items?.[0];
+      const items = ytData?.items || [];
 
-      if (ytChannel) {
-        const channelId   = ytChannel.id;
-        const channelName = ytChannel.snippet?.title || 'My Channel';
-
-        // Add channel if not already connected
-        const already = (user.youtubeChannels || []).find(c => c.channelId === channelId);
-        if (!already) {
-          if (!user.youtubeChannels) user.youtubeChannels = [];
-          user.youtubeChannels.push({
-            channelId,
-            channelName,
-            accessToken:       accessToken,
-            refreshToken:      refreshToken || '',
-            tiktokEnabled:     false,
-            instagramEnabled:  false,
-            connectedAt:       new Date().toISOString(),
-          });
-          console.log(`[OAuth] Channel auto-connected: ${channelName} (${channelId}) for user ${user.email}`);
-        } else {
-          // Update tokens on existing channel
-          already.accessToken  = accessToken;
-          already.refreshToken = refreshToken || already.refreshToken;
-          console.log(`[OAuth] Tokens refreshed for channel: ${channelName}`);
+      if (items.length > 0) {
+        // Refresh tokens on any already-connected channels
+        for (const item of items) {
+          const existing = (user.youtubeChannels || []).find(c => c.channelId === item.id);
+          if (existing) {
+            existing.accessToken  = accessToken;
+            existing.refreshToken = refreshToken || existing.refreshToken;
+          }
         }
-        // Flag for frontend to know a channel was just connected
-        user._channelJustConnected = { channelId, channelName };
+
+        // Store all channels as pending — user picks one in the UI
+        user.pendingOAuthChannels = items.map(item => ({
+          channelId:       item.id,
+          channelName:     item.snippet?.title || 'My Channel',
+          thumbnail:       item.snippet?.thumbnails?.default?.url || '',
+          subscriberCount: parseInt(item.statistics?.subscriberCount || '0', 10),
+        }));
+        console.log(`[OAuth] ${items.length} channel(s) pending selection for user ${user.email}`);
+      } else {
+        user.pendingOAuthChannels = [];
+        console.warn('[OAuth] No YouTube channels found on this Google account');
       }
     } catch (ytErr) {
       console.warn('[OAuth] YouTube channel fetch failed:', ytErr.message);
-      // Not fatal — user still signs in, they can connect channel manually
+      user.pendingOAuthChannels = [];
     }
 
     await user.save();
@@ -641,19 +637,20 @@ app.get('/auth/google/callback',
     const token = jwt.sign({ userId: req.user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
     const frontendUrl = process.env.FRONTEND_URL || 'https://viralityy.pages.dev';
 
+    const pending = req.user.pendingOAuthChannels || [];
     const userData = {
-      id:          req.user.id,
-      email:       req.user.email || '',
-      name:        req.user.name  || '',
-      plan:        req.user.plan  || 'trial',
-      nicheId:     (req.user.youtubeChannels || [])[0]?.nicheId || null,
-      hasChannels: (req.user.youtubeChannels || []).length > 0,
-      channels:    (req.user.youtubeChannels || []).map(c => ({
+      id:              req.user.id,
+      email:           req.user.email || '',
+      name:            req.user.name  || '',
+      plan:            req.user.plan  || 'trial',
+      nicheId:         (req.user.youtubeChannels || [])[0]?.nicheId || null,
+      hasChannels:     (req.user.youtubeChannels || []).length > 0,
+      channels:        (req.user.youtubeChannels || []).map(c => ({
         channelId:   c.channelId,
         channelName: c.channelName,
       })),
-      // Tell the frontend if a channel was just connected in this OAuth flow
-      channelJustConnected: req.user._channelJustConnected || null,
+      channelSelect:   pending.length > 0,
+      pendingChannels: pending,
     };
 
     res.redirect(`${frontendUrl}?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
@@ -735,6 +732,90 @@ app.get('/api/channels', requireAuth, async (req, res) => {
       paused:         ch.paused         || false,
     }));
     res.json({ channels, count: channels.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/channels/pending — list channels fetched from Google OAuth, not yet confirmed
+app.get('/api/channels/pending', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    res.json({ channels: user.pendingOAuthChannels || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/channels/confirm — user selects one channel from the OAuth picker
+app.post('/api/channels/confirm', requireAuth, async (req, res) => {
+  try {
+    const { channelId } = req.body;
+    if (!channelId) return res.status(400).json({ error: 'channelId required' });
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Find in pending list
+    const pending = (user.pendingOAuthChannels || []).find(c => c.channelId === channelId);
+    if (!pending) return res.status(400).json({ error: 'Channel not in your pending list. Please reconnect your Google account.' });
+
+    // Plan limit check
+    const limit = (PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial).channels;
+    const currentCount = (user.youtubeChannels || []).length;
+    if (currentCount >= limit) {
+      return res.status(403).json({
+        error: "You've reached your plan's channel limit. Upgrade to add more channels.",
+        code: 'CHANNEL_LIMIT',
+      });
+    }
+
+    // Global uniqueness — no other account can have this channel
+    const duplicate = await User.findOne({ 'youtubeChannels.channelId': channelId, _id: { $ne: user._id } });
+    if (duplicate) {
+      return res.status(409).json({
+        error: 'This channel is already connected to another account.',
+        code: 'DUPLICATE_CHANNEL',
+      });
+    }
+
+    // Already connected to this account — just refresh tokens silently
+    const existing = (user.youtubeChannels || []).find(c => c.channelId === channelId);
+    if (existing) {
+      existing.accessToken  = user.googleAccessToken || existing.accessToken;
+      existing.refreshToken = user.googleRefreshToken || existing.refreshToken;
+      existing.channelName  = pending.channelName;
+      existing.thumbnail    = pending.thumbnail;
+      existing.subscriberCount = pending.subscriberCount;
+    } else {
+      user.youtubeChannels.push({
+        channelId,
+        channelName:      pending.channelName,
+        thumbnail:        pending.thumbnail,
+        subscriberCount:  pending.subscriberCount,
+        accessToken:      user.googleAccessToken  || '',
+        refreshToken:     user.googleRefreshToken || '',
+        tiktokEnabled:    false,
+        instagramEnabled: false,
+        connectedAt:      new Date().toISOString(),
+      });
+    }
+
+    // Trial channel check
+    if (user.plan === 'trial' && !existing) {
+      const triedBefore = await TriedChannel.findOne({ channelId });
+      if (triedBefore) {
+        return res.status(403).json({
+          error: 'This YouTube channel has already used a free trial. Connect a different channel or subscribe to continue.',
+          code: 'TRIAL_USED',
+        });
+      }
+      await TriedChannel.findOneAndUpdate({ channelId }, { channelId }, { upsert: true });
+    }
+
+    // Clear pending list
+    user.pendingOAuthChannels = [];
+    user.markModified('youtubeChannels');
+    await user.save();
+
+    console.log(`[OAuth] Channel confirmed: ${pending.channelName} (${channelId}) for user ${user.email}`);
+    res.json({ success: true, channel: { channelId, channelName: pending.channelName, thumbnail: pending.thumbnail, subscriberCount: pending.subscriberCount } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

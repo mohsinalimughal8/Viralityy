@@ -3559,6 +3559,87 @@ async function finishOnboarding() {
   nav('dashboard');
 }
 
+// ════════════════════════════════════════════
+// CHANNEL PICKER — shown after OAuth when Google account has channels to choose from
+// ════════════════════════════════════════════
+function showChannelPicker(channels, onboardingStep) {
+  const overlay = document.getElementById('vly-overlay');
+  const modal   = document.getElementById('vly-modal');
+  if (!overlay || !modal) return;
+
+  const planLimits = { trial: 1, starter: 1, shorts_pro: 1, growth: 3, agency: 5 };
+  const limit      = planLimits[CURRENT_USER?.plan] || 1;
+  const connected  = (CURRENT_USER?.channels || []).length;
+  const remaining  = limit - connected;
+
+  const formatSubs = n => n >= 1000000 ? (n/1000000).toFixed(1)+'M' : n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n);
+
+  modal.innerHTML = `
+    <h3 style="margin-bottom:.25rem">Select a YouTube Channel</h3>
+    <p style="font-size:.72rem;color:var(--text3);margin-bottom:1rem">
+      Choose which channel to connect to Viralityy.
+      ${remaining > 1 ? `Your plan allows ${remaining} more channel(s).` : ''}
+    </p>
+    <div id="ch-picker-list" style="display:flex;flex-direction:column;gap:.6rem;max-height:320px;overflow-y:auto">
+      ${channels.map(ch => `
+        <div style="display:flex;align-items:center;gap:.75rem;padding:.75rem;border-radius:10px;border:1px solid var(--border2);cursor:pointer;transition:border-color .15s"
+             onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border2)'"
+             onclick="confirmChannel('${ch.channelId}', '${ch.channelName.replace(/'/g,"\\'")}', '${onboardingStep || ''}')">
+          ${ch.thumbnail ? `<img src="${ch.thumbnail}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:40px;height:40px;border-radius:50%;background:var(--accent);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:.85rem">${ch.channelName[0]||'?'}</div>`}
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.channelName}</div>
+            <div style="font-size:.7rem;color:var(--text3)">${formatSubs(ch.subscriberCount)} subscribers</div>
+          </div>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      `).join('')}
+    </div>
+    <div class="vly-modal-footer" style="margin-top:1rem">
+      <button class="vly-modal-close" onclick="document.getElementById('vly-overlay').style.display='none';nav('dashboard')">Cancel</button>
+    </div>`;
+
+  overlay.style.display = 'flex';
+}
+
+async function confirmChannel(channelId, channelName, onboardingStep) {
+  document.getElementById('vly-overlay').style.display = 'none';
+
+  const res = await apiCall('/api/channels/confirm', 'POST', { channelId });
+  if (!res) { toast('Connection failed. Please try again.', 'error'); return; }
+  if (res.error) { toast(res.error, 'error'); return; }
+
+  // Update local user state
+  if (CURRENT_USER) {
+    if (!CURRENT_USER.channels) CURRENT_USER.channels = [];
+    CURRENT_USER.channels.push({ channelId, channelName });
+    CURRENT_USER.hasChannels = true;
+    CURRENT_USER.channelJustConnected = { channelId, channelName };
+    localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
+  }
+
+  const successMsg = `✓ ${channelName} connected successfully!`;
+
+  if (onboardingStep && onboardingStep !== 'sup5') {
+    localStorage.removeItem('vly_onboarding_step');
+    nav('signup');
+    setTimeout(() => {
+      const btn = document.getElementById('yt-connect-btn');
+      if (btn) {
+        btn.textContent = '✓ ' + channelName;
+        btn.disabled    = true;
+        btn.style.background  = 'var(--green)';
+        btn.style.borderColor = 'var(--green)';
+        btn.style.color       = '#fff';
+      }
+      nextStep(5);
+      toast(successMsg, 'success');
+    }, 200);
+  } else {
+    nav('dashboard');
+    setTimeout(() => { initChannels(); toast(successMsg, 'success'); }, 300);
+  }
+}
+
 // Init: check for hidden admin hash before any other routing
 if (window.location.hash === '#admin-vrl9k2') {
   // Hide all pages, show admin page
@@ -3580,39 +3661,48 @@ if (window.location.hash === '#admin-vrl9k2') {
   if (connectingChannel) {
     localStorage.removeItem('vly_connecting_channel');
 
-    // Update CURRENT_USER with channel data returned from OAuth
-    if (CURRENT_USER && CURRENT_USER.channels) {
-      CURRENT_USER.hasChannels = CURRENT_USER.channels.length > 0;
-      localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
-    }
+    const pending = CURRENT_USER?.pendingChannels || [];
 
-    const channelName = CURRENT_USER?.channelJustConnected?.channelName ||
-                        CURRENT_USER?.channels?.[0]?.channelName || '';
-    const successMsg  = channelName
-      ? `✓ ${channelName} connected successfully!`
-      : 'YouTube channel connected successfully!';
-
-    if (onboardingStep && onboardingStep !== 'sup5') {
-      localStorage.removeItem('vly_onboarding_step');
-      nav('signup');
-      setTimeout(() => {
-        const btn = document.getElementById('yt-connect-btn');
-        if (btn) {
-          btn.textContent  = channelName ? '✓ ' + channelName : '✓ Connected';
-          btn.disabled     = true;
-          btn.style.background   = 'var(--green)';
-          btn.style.borderColor  = 'var(--green)';
-          btn.style.color        = '#fff';
-        }
-        nextStep(5);
-        toast(successMsg, 'success');
-      }, 200);
-    } else {
+    if (CURRENT_USER?.channelSelect && pending.length > 0) {
+      // Show channel picker — user must explicitly select a channel
       nav('dashboard');
-      setTimeout(() => {
-        initChannels();
-        toast(successMsg, 'success');
-      }, 300);
+      if (pending.length === 1) {
+        // Single channel — auto-confirm, no picker needed
+        setTimeout(() => confirmChannel(pending[0].channelId, pending[0].channelName, onboardingStep), 200);
+      } else {
+        setTimeout(() => showChannelPicker(pending, onboardingStep), 200);
+      }
+    } else {
+      // No pending channels (or OAuth returned nothing) — treat as already connected / just token refresh
+      if (CURRENT_USER && CURRENT_USER.channels) {
+        CURRENT_USER.hasChannels = CURRENT_USER.channels.length > 0;
+        localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
+      }
+
+      const channelName = CURRENT_USER?.channels?.[0]?.channelName || '';
+      const successMsg  = channelName
+        ? `✓ ${channelName} connected successfully!`
+        : 'YouTube account reconnected.';
+
+      if (onboardingStep && onboardingStep !== 'sup5') {
+        localStorage.removeItem('vly_onboarding_step');
+        nav('signup');
+        setTimeout(() => {
+          const btn = document.getElementById('yt-connect-btn');
+          if (btn) {
+            btn.textContent = channelName ? '✓ ' + channelName : '✓ Connected';
+            btn.disabled    = true;
+            btn.style.background  = 'var(--green)';
+            btn.style.borderColor = 'var(--green)';
+            btn.style.color       = '#fff';
+          }
+          nextStep(5);
+          toast(successMsg, 'success');
+        }, 200);
+      } else {
+        nav('dashboard');
+        setTimeout(() => { initChannels(); toast(successMsg, 'success'); }, 300);
+      }
     }
   } else {
     const isNew = !CURRENT_USER?.nicheId && !CURRENT_USER?.plan && !pendingNiche;
