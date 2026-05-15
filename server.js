@@ -2299,24 +2299,76 @@ app.post('/api/competitors', requireAuth, async (req, res) => {
     const apiKey = process.env.YOUTUBE_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'YOUTUBE_API_KEY not configured' });
 
-    // Parse handle (@channelname) or channel ID (UCxxxxxx) from URL
-    const raw          = channelUrl.trim();
-    const handleMatch  = raw.match(/@([\w.-]+)/);
-    const idMatch      = raw.match(/\/(UC[\w-]{22})/);
-    const bareId       = /^UC[\w-]{22}$/.test(raw) ? raw : null;
+    // Parse all YouTube channel URL formats → { type, value }
+    const raw = channelUrl.trim();
+    const parseYouTubeChannelUrl = (s) => {
+      // Bare UC... ID or bare @handle
+      if (/^UC[\w-]{22}$/.test(s)) return { type: 'id', value: s };
+      const bareHandle = s.match(/^@([\w.-]+)$/);
+      if (bareHandle) return { type: 'handle', value: bareHandle[1] };
 
-    let channelParam;
-    if (handleMatch)       channelParam = { forHandle: handleMatch[1] };
-    else if (idMatch)      channelParam = { id: idMatch[1] };
-    else if (bareId)       channelParam = { id: bareId };
-    else return res.status(400).json({ error: 'Could not parse channel URL. Use https://youtube.com/@handle or a UC… channel ID.' });
+      let pathname = s;
+      try { pathname = new URL(s.startsWith('http') ? s : `https://${s}`).pathname.replace(/\/$/, ''); } catch { /* use raw */ }
 
-    // Fetch channel snippet + statistics
-    const ytParams = new URLSearchParams({ part: 'snippet,statistics', key: apiKey, ...channelParam });
-    const ytRes    = await fetch(`https://www.googleapis.com/youtube/v3/channels?${ytParams}`);
-    if (!ytRes.ok) return res.status(502).json({ error: `YouTube API error (${ytRes.status})` });
-    const ytData   = await ytRes.json();
-    const ch       = ytData.items?.[0];
+      let m;
+      if ((m = pathname.match(/\/channel\/(UC[\w-]{22})/))) return { type: 'id',       value: m[1] };
+      if ((m = pathname.match(/\/@([\w.-]+)/)))              return { type: 'handle',   value: m[1] };
+      if ((m = pathname.match(/\/user\/([\w.-]+)/)))         return { type: 'username', value: m[1] };
+      if ((m = pathname.match(/\/c\/([\w.-]+)/)))            return { type: 'search',   value: m[1] };
+
+      // @handle embedded anywhere in the raw string
+      if ((m = s.match(/@([\w.-]+)/)))                       return { type: 'handle', value: m[1] };
+
+      // Vanity URL: /customname with no recognised prefix
+      if ((m = pathname.match(/^\/([\w.-]{3,})$/)) &&
+          !['watch','shorts','playlist','results','feed','c','user','channel'].includes(m[1]))
+        return { type: 'search', value: m[1] };
+
+      return null;
+    };
+
+    const parsed = parseYouTubeChannelUrl(raw);
+    if (!parsed) {
+      return res.status(400).json({
+        error: 'Could not parse channel URL. Supported: youtube.com/@handle, /channel/UC…, /user/name, /c/name',
+      });
+    }
+
+    // Resolve the parsed type to a full channel object (snippet + statistics)
+    const YT_CHANNELS = 'https://www.googleapis.com/youtube/v3/channels';
+    const YT_SEARCH   = 'https://www.googleapis.com/youtube/v3/search';
+
+    // Fetch channel by direct params; returns null if not found, throws on API error
+    const fetchChannel = async (params) => {
+      const r = await fetch(`${YT_CHANNELS}?${new URLSearchParams({ part: 'snippet,statistics', key: apiKey, ...params })}`);
+      if (!r.ok) { const e = new Error(`YouTube API error (${r.status})`); e.status = 502; throw e; }
+      return (await r.json()).items?.[0] || null;
+    };
+
+    // Search by name then fetch the top result's channel
+    const searchThenFetch = async (query) => {
+      const r = await fetch(`${YT_SEARCH}?${new URLSearchParams({ part: 'snippet', q: query, type: 'channel', maxResults: '1', key: apiKey })}`);
+      if (!r.ok) { const e = new Error(`YouTube API error (${r.status})`); e.status = 502; throw e; }
+      const sid = (await r.json()).items?.[0]?.id?.channelId;
+      return sid ? fetchChannel({ id: sid }) : null;
+    };
+
+    let ch = null;
+    if (parsed.type === 'id') {
+      ch = await fetchChannel({ id: parsed.value });
+
+    } else if (parsed.type === 'handle') {
+      ch = await fetchChannel({ forHandle: `@${parsed.value}` });
+      if (!ch) ch = await searchThenFetch(parsed.value); // older channels may not have a handle
+
+    } else if (parsed.type === 'username') {
+      ch = await fetchChannel({ forUsername: parsed.value });
+      if (!ch) ch = await searchThenFetch(parsed.value); // legacy username may not match forUsername
+
+    } else { // 'search' — /c/customname or vanity path
+      ch = await searchThenFetch(parsed.value);
+    }
+
     if (!ch) return res.status(404).json({ error: 'Channel not found on YouTube — double-check the URL' });
 
     const channelId      = ch.id;
@@ -2367,7 +2419,7 @@ app.post('/api/competitors', requireAuth, async (req, res) => {
     res.json({ success: true, competitor: { channelId, channelName, thumbnail, subscriberCount, avgViews, uploadFrequencyDays } });
   } catch (err) {
     console.error('[Competitors] POST error:', err);
-    res.status(500).json({ error: err.message || 'Failed to add competitor' });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to add competitor' });
   }
 });
 
