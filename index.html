@@ -1981,19 +1981,32 @@ async function initChannels() {
       No channels connected yet<br><span style="font-size:.71rem">Click to connect your YouTube channel via Google OAuth</span>
     </div>`;
   } else {
-    el.innerHTML = channels.map(ch => `
+    const fmtSubs = n => {
+      if (!n) return '0';
+      if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+      return String(n);
+    };
+    el.innerHTML = channels.map(ch => {
+      const subsTxt  = ch.subscriberCount ? `${fmtSubs(ch.subscriberCount)} subscribers` : '— subscribers';
+      const viewsTxt = ch.viewCount       ? `${fmtSubs(ch.viewCount)} views`              : null;
+      const vidsTxt  = ch.videoCount      ? `${ch.videoCount} videos`                     : null;
+      const metaParts = [subsTxt, viewsTxt, vidsTxt].filter(Boolean);
+      if (ch.paused) metaParts.push('Paused');
+      return `
       <div class="channel-card" data-channel-id="${ch.channelId||ch._id||''}">
         <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
         <div class="ch-info">
           <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
           ${ch.nicheName ? `<span style="display:inline-block;background:#1D9E75;color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;font-weight:500;margin:4px 0 2px">${ch.nicheName}</span>` : ''}
-          <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers' : 'No subscribers data'}${ch.paused ? ' · Paused' : ''}</p>
+          <p class="ch-meta" style="margin-top:4px">${metaParts.join(' · ')}</p>
         </div>
         <div class="ch-actions">
           <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
           <button class="act act-ok" onclick="dashPage('analytics',null)">Analytics</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   // Render niche quota block based on the plan returned by /api/channels

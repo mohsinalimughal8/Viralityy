@@ -732,17 +732,72 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 // YOUTUBE CHANNEL ROUTES
 // =============================================================================
 
-// GET /api/channels — list user's connected channels + plan-aware niche quota
+// GET /api/channels — list user's connected channels + real YouTube stats + plan-aware niche quota
+// YouTube stats are cached in channel_stats_cache for 1 hour to minimise API quota usage.
 app.get('/api/channels', requireAuth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    const channels = (user.youtubeChannels || []).map(ch => ({
-      channelId:       ch.channelId       || '',
-      channelName:     ch.channelName     || 'My Channel',
-      subscriberCount: ch.subscriberCount || 0,
-      nicheId:         ch.nicheId         || user.nicheId   || null,
-      nicheName:       ch.nicheName       || user.nicheName || null,
-      paused:          ch.paused          || false,
+    const user      = await User.findById(req.user.id);
+    const statsCol  = agentCol('channel_stats_cache');
+    const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+    const channels = await Promise.all((user.youtubeChannels || []).map(async ch => {
+      const channelId = ch.channelId || '';
+      let stats = {
+        subscriberCount: ch.subscriberCount || 0,
+        viewCount:       0,
+        videoCount:      0,
+      };
+
+      if (channelId) {
+        // 1. Check 1-hour cache
+        const cached = await statsCol.findOne({ channelId }).catch(() => null);
+        const age    = cached ? Date.now() - new Date(cached.cachedAt).getTime() : Infinity;
+
+        if (cached && age < CACHE_TTL) {
+          stats = { subscriberCount: cached.subscriberCount, viewCount: cached.viewCount, videoCount: cached.videoCount };
+        } else if (process.env.YOUTUBE_API_KEY) {
+          // 2. Fetch fresh stats from YouTube Data API
+          try {
+            const ytRes  = await fetch(
+              `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${encodeURIComponent(channelId)}&key=${process.env.YOUTUBE_API_KEY}`
+            );
+            const ytData = await ytRes.json();
+            const s = ytData.items?.[0]?.statistics;
+            if (s) {
+              stats = {
+                subscriberCount: parseInt(s.subscriberCount || 0, 10),
+                viewCount:       parseInt(s.viewCount       || 0, 10),
+                videoCount:      parseInt(s.videoCount      || 0, 10),
+              };
+              // 3. Write to cache
+              await statsCol.updateOne(
+                { channelId },
+                { $set: { channelId, ...stats, cachedAt: new Date().toISOString() } },
+                { upsert: true }
+              ).catch(() => {});
+              // 4. Persist subscriber count back to user doc
+              User.findByIdAndUpdate(
+                user._id,
+                { $set: { 'youtubeChannels.$[ch].subscriberCount': stats.subscriberCount } },
+                { arrayFilters: [{ 'ch.channelId': channelId }] }
+              ).catch(() => {});
+            }
+          } catch (e) {
+            console.warn(`[Channels] YouTube stats fetch failed for ${channelId}:`, e.message);
+          }
+        }
+      }
+
+      return {
+        channelId,
+        channelName:     ch.channelName || 'My Channel',
+        subscriberCount: stats.subscriberCount,
+        viewCount:       stats.viewCount,
+        videoCount:      stats.videoCount,
+        nicheId:         ch.nicheId   || user.nicheId   || null,
+        nicheName:       ch.nicheName || user.nicheName || null,
+        paused:          ch.paused    || false,
+      };
     }));
 
     const quota        = planNicheQuota(user.plan);
@@ -756,12 +811,12 @@ app.get('/api/channels', requireAuth, async (req, res) => {
       count: channels.length,
       plan: user.plan,
       nicheQuota: {
-        plan:       user.plan,
-        unlimited:  isUnlimited,
-        locked:     planLocked,
-        quota:      isUnlimited ? 'unlimited' : quota,
-        used:       changesUsed,
-        remaining:  isUnlimited ? null : remaining,
+        plan:      user.plan,
+        unlimited: isUnlimited,
+        locked:    planLocked,
+        quota:     isUnlimited ? 'unlimited' : quota,
+        used:      changesUsed,
+        remaining: isUnlimited ? null : remaining,
       },
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
