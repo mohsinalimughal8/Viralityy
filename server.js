@@ -1006,9 +1006,11 @@ async function ytSearch(keyword, { days = 30, maxResults = 20, order = 'viewCoun
       publishedAfter, maxResults: String(maxResults), key: apiKey,
     });
     const searchUrl = `https://www.googleapis.com/youtube/v3/search?${searchParams}`;
+    console.log('[Niche] ytSearch calling YouTube API with key:', process.env.YOUTUBE_API_KEY ? process.env.YOUTUBE_API_KEY.slice(0, 8) + '...' : 'MISSING');
     const searchResp = await axios.get(searchUrl, { timeout: 12_000 });
     console.log(`[Niche] ytSearch("${keyword}"): HTTP ${searchResp.status}, items=${searchResp.data.items?.length ?? 0}`);
     const items = searchResp.data.items || [];
+    console.log('[Niche] YouTube returned', items?.length, 'items for query:', keyword);
     if (items.length > 0) {
       console.log(`[Niche] ytSearch("${keyword}"): first result title = "${items[0].snippet?.title}"`);
     }
@@ -1101,6 +1103,7 @@ async function clusterWithAI(videos, keyword) {
       .join(', ');
 
     console.log(`[Niche] clusterWithAI("${keyword}"): sending ${Math.min(videos.length, 20)} titles to GPT-4o-mini`);
+    console.log('[Niche] Sending', videos.length, 'videos to OpenAI for clustering');
 
     const prompt = `Here are the top trending YouTube videos for the keyword "${keyword}": ${topVids}. Identify the top 5 distinct content niches these videos belong to. For each niche return a JSON array with: name, category, why_its_trending, competition (low/medium/high), cpm_range (e.g. '$5-$18'), trend (Hot/Rising/Stable). Return ONLY a valid JSON array, no other text.`;
 
@@ -1115,6 +1118,7 @@ async function clusterWithAI(videos, keyword) {
       ((resp.usage?.completion_tokens || 0) * API_COSTS.openai_output), true);
 
     const rawText = resp.choices[0]?.message?.content?.trim() || '[]';
+    console.log('[Niche] OpenAI returned:', JSON.stringify(rawText).slice(0, 200));
     const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     let parsed;
     try {
@@ -1229,6 +1233,7 @@ function nicheNamesSimilar(a, b) {
 
 // ── Top niches across all seed categories — cached 6h in MongoDB
 async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
+  console.log('[Niche] discoverTopNiches starting, YOUTUBE_API_KEY:', process.env.YOUTUBE_API_KEY ? 'SET (' + process.env.YOUTUBE_API_KEY.slice(0, 8) + '...)' : 'MISSING');
   const cacheCol = agentCol('niche_cache');
   const cacheKey = 'discover_cache';
 
@@ -1262,7 +1267,10 @@ async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
 
   // Static fallback when APIs fail or all seeds score below threshold
   if (!top.length) {
-    console.warn('[Niche] discoverTopNiches: all seeds returned empty — using static fallback');
+    const fallbackReason = !process.env.YOUTUBE_API_KEY ? 'YOUTUBE_API_KEY missing' :
+                           !process.env.OPENAI_API_KEY  ? 'OPENAI_API_KEY missing'  :
+                           `all ${DISCOVERY_SEEDS.length} seeds scored below 90 or returned empty`;
+    console.log('[Niche] FALLBACK TRIGGERED — reason:', fallbackReason);
     return { niches: STATIC_FALLBACK_NICHES, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
   }
 
