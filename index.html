@@ -1950,7 +1950,7 @@ async function initOverview() {
         const dateStr = s.date ? formatDate(s.date + 'T00:00:00') : `Day ${s.day}`;
         const typeCol = s.type === 'Long-form' ? 'var(--amber)' : 'var(--purple)';
         const badge   = `<span style="font-size:.62rem;background:${s.type==='Long-form'?'rgba(245,158,11,.12)':'rgba(99,102,241,.12)'};color:${typeCol};border-radius:4px;padding:1px 6px;border:1px solid ${s.type==='Long-form'?'rgba(245,158,11,.2)':'rgba(99,102,241,.2)'}">${s.type === 'Long-form' ? 'Long' : 'Short'}</span>`;
-        const statusDot = s.status === 'approved' ? '🟢' : s.status === 'planned' ? '🔵' : '⚪';
+        const statusDot = s.status === 'posted' ? '🟢' : s.status === 'processing' ? '🟡' : s.status === 'failed' ? '🔴' : s.status === 'missed' ? '⚫' : '⚪';
         return `<div style="display:flex;align-items:center;gap:.65rem;padding:.5rem 0;border-bottom:1px solid var(--border)">
           <span style="font-size:.68rem;color:var(--text3);min-width:64px;flex-shrink:0">${dateStr}</span>
           ${badge}
@@ -2198,7 +2198,7 @@ function renderQueue() {
     const cd = _fmtCountdown(q.scheduledPostTime);
     const countdownHtml = cd ? `<span class="preview-countdown${cd.past ? ' past' : ''}" id="cd-${slotId}">${cd.text}</span>` : '';
     const hasPreview = !!q.previewReadyAt;
-    const statusLabel = q.status === 'approved' ? '<span style="color:var(--green);font-size:.69rem;font-weight:600">✓ Approved</span>' : '';
+    const statusLabel = q.status === 'posted' ? '<span style="color:var(--green);font-size:.69rem;font-weight:600">✓ Posted</span>' : q.status === 'processing' ? '<span style="color:#a5b4fc;font-size:.69rem;font-weight:600">⟳ Processing</span>' : '';
 
     return `
     <div class="preview-card" id="pc-${slotId}">
@@ -2285,11 +2285,15 @@ function renderDayList(slots) {
       : `<span style="flex-shrink:0;font-size:.62rem;font-weight:700;color:#a5b4fc;background:rgba(99,102,241,.13);border-radius:3px;padding:2px 6px;letter-spacing:.02em">S</span>`;
     const timeStr   = s.scheduledPostTime ? formatTime(s.scheduledPostTime) : '—';
     const isPosted  = s.posted || s.status === 'posted';
-    const isPending = !isPosted;
-    const statusTxt = isPosted ? 'Posted' : (s.status === 'generating' ? 'Processing' : 'Queued');
-    const statusBg  = isPosted ? 'rgba(16,185,129,.12)' : 'rgba(245,158,11,.12)';
-    const statusClr = isPosted ? 'var(--green)' : 'var(--amber)';
-    const statusEl  = `<span style="flex-shrink:0;font-size:.62rem;font-weight:600;color:${statusClr};background:${statusBg};border-radius:4px;padding:2px 9px">${statusTxt}</span>`;
+    const statusMap = {
+      posted:     { txt: 'Posted',     bg: 'rgba(16,185,129,.12)', clr: 'var(--green)' },
+      processing: { txt: 'Processing', bg: 'rgba(99,102,241,.12)', clr: '#a5b4fc' },
+      failed:     { txt: 'Failed',     bg: 'rgba(239,68,68,.12)',  clr: '#f87171' },
+      missed:     { txt: 'Missed',     bg: 'rgba(107,114,128,.12)', clr: 'var(--text3)' },
+      scheduled:  { txt: 'Scheduled',  bg: 'rgba(245,158,11,.12)', clr: 'var(--amber)' },
+    };
+    const st = isPosted ? statusMap.posted : (statusMap[s.status] || statusMap.scheduled);
+    const statusEl  = `<span style="flex-shrink:0;font-size:.62rem;font-weight:600;color:${st.clr};background:${st.bg};border-radius:4px;padding:2px 9px">${st.txt}</span>`;
     return `<div style="display:flex;align-items:center;gap:.75rem;padding:.7rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:5px">
       <span style="flex-shrink:0;width:44px;font-size:.72rem;font-weight:600;color:var(--text2);font-variant-numeric:tabular-nums">${timeStr}</span>
       ${badge}
