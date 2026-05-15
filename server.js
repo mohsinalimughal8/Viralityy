@@ -1479,9 +1479,11 @@ const agentCol = (name) => getDb().collection(name);
 // videosPosted is counted from calendar_slots (individual docs) — the authoritative source.
 app.get('/api/agents/planner/calendar', requireAuth, async (req, res) => {
   try {
+    const calCol   = agentCol('content_calendars');
+    const slotsCol = agentCol('calendar_slots');
     const [doc, videosPosted] = await Promise.all([
-      agentCol('content_calendars').then(col => col.findOne({ userId: req.user.id, status: 'active' })),
-      agentCol('calendar_slots').then(col => col.countDocuments({ userId: req.user.id, posted: true })),
+      calCol.findOne({ userId: req.user.id, status: 'active' }),
+      slotsCol.countDocuments({ userId: req.user.id, posted: true }),
     ]);
     if (!doc) return res.json({ success: true, slots: [], pending: false, videosPosted: 0, message: 'Click Generate calendar to create your 30-day content plan' });
     doc._id = doc._id.toString();
