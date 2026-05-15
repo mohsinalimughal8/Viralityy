@@ -2651,8 +2651,8 @@ function renderNiches() {
     return;
   }
   const getScore = n => n.combined_score || n.score || 0;
-  const list = [...liveNiches].sort((a, b) => getScore(b) - getScore(a)).filter(n => getScore(n) >= 85);
-  el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">Top-tier niches — scored by CPM, competition and trend momentum</p>` +
+  const list = [...liveNiches].sort((a, b) => getScore(b) - getScore(a)).filter(n => getScore(n) >= 80);
+  el.innerHTML = `<p style="font-size:.7rem;color:var(--text3);margin-bottom:.75rem">Top-tier niches — scored 80+ for maximum growth potential</p>` +
     (list.length ? list.map(renderNicheCard).join('') : '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">No niches found yet — data is still loading.</div>');
 }
 
