@@ -430,6 +430,31 @@ async function runStartupSlotCheck() {
       });
     }
 
+    // One-shot: reset specific stuck slots back to pending so the pipeline picks them up
+    const stickyTitles = [
+      'How Music Affects Your Brain & Mood: A Deep Dive',
+      'The Halo Effect: Why We Misjudge People\'s Skills',
+    ];
+    try {
+      const calColReset = agentCol('content_calendars');
+      for (const title of stickyTitles) {
+        const result = await calColReset.updateMany(
+          { 'slots.title': title, 'slots.posted': { $ne: true } },
+          { $set: {
+            'slots.$[s].status':         'pending',
+            'slots.$[s].pipelineStatus': 'retry-manual-reset',
+            'slots.$[s].pipelineError':  null,
+          }},
+          { arrayFilters: [{ 's.title': title, 's.posted': { $ne: true } }] }
+        );
+        if (result.modifiedCount > 0) {
+          console.log(`[Startup Recovery] Reset slot to pending: "${title}"`);
+        }
+      }
+    } catch (e) {
+      console.warn('[Startup Recovery] Slot title reset failed (non-fatal):', e.message);
+    }
+
     console.log('[AutoPost Audit] ─── Startup audit complete ───');
   } catch (e) {
     console.error('[Startup] Slot check failed:', e.message);
@@ -4699,8 +4724,25 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
   ).catch(() => {});
 
   try {
-    const scriptText = slot.scriptText || slot.cachedScript;
-    if (!scriptText) throw new Error('No cached script text — run the pipeline first');
+    let scriptText = slot.scriptText || slot.cachedScript;
+    if (!scriptText) {
+      console.log(`[AssembleUpload] No cached script for "${slot.title}" — running full pipeline inline`);
+      // Reset to pending so runProductionPipelineForSlot can set status correctly
+      await calCol.updateOne(
+        { _id: calendar._id },
+        { $set: { 'slots.$[s].status': 'pending', 'slots.$[s].pipelineStatus': 'no-script-reset' } },
+        { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
+      ).catch(() => {});
+      // Run full pipeline: script → voiceover → footage → marks slot approved with all data cached
+      await runProductionPipelineForSlot(calendar, slot, user, calCol);
+      // Re-fetch slot from MongoDB — it now has scriptText, footageUrls, etc.
+      const freshCal  = await calCol.findOne({ _id: calendar._id });
+      const freshSlot = (freshCal?.slots || []).find(s => s.day === slot.day && (s.videoIndex || 1) === (slot.videoIndex || 1));
+      if (!freshSlot?.scriptText && !freshSlot?.cachedScript) {
+        throw new Error('Full pipeline ran but script still not cached — aborting assembly');
+      }
+      return runAssembleAndUpload(freshCal, freshSlot, user, calCol, channel);
+    }
 
     // Regenerate voiceover from cached script — returns fresh word-timestamp captions
     console.log(`[AssembleUpload] 1/3 Voiceover for "${slot.title}"`);
