@@ -4007,30 +4007,40 @@ function getAudioDurationSec(audioPath) {
 // falling back to audio-duration-based even distribution (never character-count estimation).
 async function pipelineGenerateVoiceover(script, userId) {
   const apiKey = process.env.GOOGLE_TTS_API_KEY;
-  if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not configured — add it in Railway env vars');
+  if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not configured');
 
-  const textToSpeech = require('@google-cloud/text-to-speech');
-  const client = new textToSpeech.TextToSpeechClient({ apiKey });
+  const ttsUrl = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
 
   // Wrap each word in an SSML <mark> so TTS returns per-word timepoints
   const escSSML = w => w.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const words = script.slice(0, 5000).split(/\s+/).filter(Boolean);
-  const ssml  = '<speak>' + words.map((w, i) => `<mark name="w${i}"/>${escSSML(w)}`).join(' ') + '</speak>';
-
-  const request = {
-    input: { ssml },
-    voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
-    audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0, enableWordTimeOffsets: true },
-  };
+  const ssmlText = '<speak>' + words.map((w, i) => `<mark name="w${i}"/>${escSSML(w)}`).join(' ') + '</speak>';
 
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const [response] = await client.synthesizeSpeech(request);
-      const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.mp3`;
-      require('fs').writeFileSync(audioPath, response.audioContent, 'binary');
+      const ttsResponse = await fetch(ttsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { ssml: ssmlText },
+          voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
+          audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0.0 },
+          enableTimePointing: ['SSML_MARK'],
+        }),
+      });
 
-      const timepoints = Array.isArray(response.timepoints) ? response.timepoints : [];
+      if (!ttsResponse.ok) {
+        const errBody = await ttsResponse.text();
+        throw new Error(`TTS REST API error ${ttsResponse.status}: ${errBody}`);
+      }
+
+      const ttsData = await ttsResponse.json();
+      const audioBuffer = Buffer.from(ttsData.audioContent, 'base64');
+      const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.mp3`;
+      require('fs').writeFileSync(audioPath, audioBuffer);
+
+      const timepoints = Array.isArray(ttsData.timepoints) ? ttsData.timepoints : [];
       let captions;
       if (timepoints.length >= 3) {
         captions = buildCaptionsFromTimepoints(words, timepoints);
