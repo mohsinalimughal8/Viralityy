@@ -4011,19 +4011,21 @@ async function pipelineGenerateVoiceover(script, userId) {
 
   const ttsUrl = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
 
-  const scriptText = script.slice(0, 5000);
+  let scriptText = script.slice(0, 5000).replace(/<[^>]*>/g, '').trim();
 
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      const requestBody = {
+        input: { text: scriptText },
+        voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
+        audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0.0 },
+      };
+      console.log('[Voiceover] TTS request:', JSON.stringify(requestBody).slice(0, 200));
       const ttsResponse = await fetch(ttsUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: { text: scriptText },
-          voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
-          audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0.0 },
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!ttsResponse.ok) {
