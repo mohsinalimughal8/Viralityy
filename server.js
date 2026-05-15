@@ -1194,11 +1194,11 @@ async function discoverNiches(keyword, plan = 'combo_pro') {
       return [];
     }
 
-    // 4. Score each AI niche, keep only those scoring >= 90
+    // 4. Score each AI niche, keep only those scoring >= 80
     const scored = aiNiches.map(n => scoreNiche(n, allVideos, trendingTerms));
     scored.sort((a, b) => b.combined_score - a.combined_score);
-    const qualified = scored.filter(n => n.combined_score >= 90);
-    console.log(`[Niche] discoverNiches("${keyword}"): ${scored.length} scored, ${qualified.length} >= 90`);
+    const qualified = scored.filter(n => n.combined_score >= 80);
+    console.log(`[Niche] discoverNiches("${keyword}"): ${scored.length} scored, ${qualified.length} >= 80`);
     return qualified.slice(0, 10);
   };
 
@@ -1298,7 +1298,7 @@ app.get('/api/niches/recommend', requireAuth, async (req, res) => {
     const plan    = user.plan || 'shorts_starter';
     const refresh = req.query.refresh === 'true';
     const { niches, fromCache, cachedAt, fallback } = await discoverTopNiches(plan, refresh);
-    const filtered = niches.filter(n => n.combined_score >= 85);
+    const filtered = niches.filter(n => n.combined_score >= 80);
     res.json({ success: true, niches: filtered.length ? filtered : niches.slice(0, 10), count: niches.length, fromCache, cachedAt, fallback: !!fallback });
   } catch (err) {
     console.error('[Niche] /api/niches/recommend error:', err);
