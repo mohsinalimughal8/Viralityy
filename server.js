@@ -18,6 +18,7 @@ let cronJobsRegistered = false;
 const crypto         = require('crypto');
 const path           = require('path');
 const { exec, spawn } = require('child_process');
+const axios           = require('axios');
 // Stripe lazy-initialised — missing key does not crash startup
 let _stripeInstance = null;
 function getStripeClient() {
