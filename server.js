@@ -4011,10 +4011,7 @@ async function pipelineGenerateVoiceover(script, userId) {
 
   const ttsUrl = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
 
-  // Wrap each word in an SSML <mark> so TTS returns per-word timepoints
-  const escSSML = w => w.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const words = script.slice(0, 5000).split(/\s+/).filter(Boolean);
-  const ssmlText = '<speak>' + words.map((w, i) => `<mark name="w${i}"/>${escSSML(w)}`).join(' ') + '</speak>';
+  const scriptText = script.slice(0, 5000);
 
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -4023,7 +4020,7 @@ async function pipelineGenerateVoiceover(script, userId) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: { ssml: ssmlText },
+          input: { text: scriptText },
           voice: { languageCode: 'en-US', name: 'en-US-Journey-F', ssmlGender: 'FEMALE' },
           audioConfig: { audioEncoding: 'MP3', speakingRate: 1.1, pitch: 0.0 },
         }),
@@ -4039,16 +4036,9 @@ async function pipelineGenerateVoiceover(script, userId) {
       const audioPath = `/tmp/vly_voiceover_${userId}_${Date.now()}.mp3`;
       require('fs').writeFileSync(audioPath, audioBuffer);
 
-      const timepoints = Array.isArray(ttsData.timepoints) ? ttsData.timepoints : [];
-      let captions;
-      if (timepoints.length >= 3) {
-        captions = buildCaptionsFromTimepoints(words, timepoints);
-        console.log(`[Voiceover] ✓ ${audioPath} — ${timepoints.length} word marks → ${captions.length} caption segments`);
-      } else {
-        const dur = await getAudioDurationSec(audioPath);
-        captions  = buildFallbackCaptions(script.slice(0, 5000), dur);
-        console.log(`[Voiceover] ✓ ${audioPath} — no timepoints, fallback ${dur.toFixed(1)}s → ${captions.length} segments`);
-      }
+      const dur = await getAudioDurationSec(audioPath);
+      const captions = buildFallbackCaptions(scriptText, dur);
+      console.log(`[Voiceover] ✓ ${audioPath} — ${dur.toFixed(1)}s → ${captions.length} caption segments`);
       return { audioPath, captions };
     } catch (err) {
       lastErr = err;
