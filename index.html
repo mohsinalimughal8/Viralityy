@@ -980,7 +980,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ── CONTENT PLANNER ── -->
 <div class="dash-page" id="dp-planner">
-  <div class="dash-topbar"><div><p class="ph">Content Calendar</p><p class="ps" id="planner-date-subtitle">Today's videos</p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><div style="display:flex;gap:8px;align-items:center"><button onclick="showInfoModal('Content Calendar','Today\'s videos generated each morning by AI. Topics are chosen based on yesterday\'s performance. Loads instantly from cache — never regenerates on page open.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
+  <div class="dash-topbar"><div><p class="ph">Content Calendar</p><p class="ps" id="planner-date-subtitle">Today's videos</p><p id="planner-timing-info" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p><p id="planner-trending-status" style="font-size:.72rem;color:var(--text3);margin-top:3px;display:none"></p></div><div style="display:flex;gap:8px;align-items:center"><button onclick="showInfoModal('Content Calendar','Today\'s videos generated each morning by AI. Topics are chosen based on yesterday\'s performance. Loads instantly from cache — never regenerates on page open.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Today's Videos</p><p class="sc-value" id="stat-planner-total">—</p><p class="sc-sub">Scheduled</p></div>
     <div class="stat-card"><p class="sc-label">Posted</p><p class="sc-value" id="stat-planner-posted">—</p><p class="sc-sub green">On schedule</p></div>
@@ -1241,6 +1241,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
         <div class="adm-card"><p class="adm-val" id="adm-failed">—</p><p class="adm-lbl">Failed today</p></div>
         <div class="adm-card"><p class="adm-val" id="adm-success-rate">—</p><p class="adm-lbl">Success rate</p></div>
       </div>
+      <div id="adm-channel-timings" style="margin-top:1.25rem"></div>
     </div>
 
     <!-- Alerts tab -->
@@ -1508,13 +1509,41 @@ async function admLoadUsers() {
 }
 
 async function admLoadPipeline() {
-  const data = await adminApiCall('/api/admin/pipeline-stats');
-  if (!data?.success) return;
-  document.getElementById('adm-generated').textContent   = data.videosGeneratedToday ?? '—';
-  document.getElementById('adm-pipe-posted').textContent = data.videosPostedToday ?? '—';
-  document.getElementById('adm-failed').textContent      = data.failureCount ?? '—';
-  document.getElementById('adm-success-rate').textContent = data.successRate != null
-    ? (data.successRate * 100).toFixed(1) + '%' : '—';
+  const [data, timings] = await Promise.all([
+    adminApiCall('/api/admin/pipeline-stats'),
+    adminApiCall('/api/admin/channel-timings'),
+  ]);
+  if (data?.success) {
+    document.getElementById('adm-generated').textContent   = data.videosGeneratedToday ?? '—';
+    document.getElementById('adm-pipe-posted').textContent = data.videosPostedToday ?? '—';
+    document.getElementById('adm-failed').textContent      = data.failureCount ?? '—';
+    document.getElementById('adm-success-rate').textContent = data.successRate != null
+      ? (data.successRate * 100).toFixed(1) + '%' : '—';
+  }
+  const timingsEl = document.getElementById('adm-channel-timings');
+  if (timingsEl && timings?.channels?.length) {
+    const srcBadge = src => {
+      if (src === 'channel_analytics') return '<span class="adm-badge adm-badge-ok">Analytics</span>';
+      if (src === 'niche_data')        return '<span class="adm-badge" style="background:rgba(99,102,241,.15);color:#a5b4fc">Niche</span>';
+      if (src === 'niche_defaults')    return '<span class="adm-badge adm-badge-warn">Default</span>';
+      return '<span class="adm-badge" style="background:#1f2937;color:#6b7280">Pending</span>';
+    };
+    const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('en-GB', { day:'2-digit', month:'short' }) : '—';
+    timingsEl.innerHTML = `<p style="font-size:.78rem;color:#6b7280;margin:0 0 .6rem">Channel Posting Times</p>
+    <table class="adm-tbl">
+      <thead><tr><th>Channel</th><th>Email</th><th>Plan</th><th>Source</th><th>Optimal Times (UTC)</th><th>Last calc</th></tr></thead>
+      <tbody>${timings.channels.map(ch => `<tr>
+        <td style="color:#e5e7eb;font-weight:500">${ch.channelName || ch.channelId}</td>
+        <td style="color:#9ca3af">${ch.email}</td>
+        <td>${ch.plan}</td>
+        <td>${srcBadge(ch.source)}</td>
+        <td style="font-family:monospace;font-size:.72rem;color:#d1d5db">${ch.optimalTimes.join(' · ') || '—'}</td>
+        <td>${fmtDate(ch.calculatedAt)}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+  } else if (timingsEl) {
+    timingsEl.innerHTML = '<p style="font-size:.8rem;color:#6b7280;margin-top:1rem">No channel timings calculated yet.</p>';
+  }
 }
 
 async function admLoadAlerts() {
@@ -2285,6 +2314,23 @@ async function initPlanner() {
     const today     = new Date().toISOString().slice(0, 10);
     const dateLabel = new Date(today + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', year:'numeric', timeZone:'UTC' });
     subtitleEl.textContent = `Today's videos — ${dateLabel}`;
+  }
+
+  // Timing info line
+  const timingEl = document.getElementById('planner-timing-info');
+  if (timingEl) {
+    const slot0 = slots[0];
+    const nicheName = slot0?.nicheName || CURRENT_USER?.nicheName || '';
+    apiCall('/api/channels').then(chData => {
+      const ch = (chData?.channels || [])[0];
+      const src = ch?.optimalTimesSource || '';
+      if (src === 'channel_analytics') {
+        timingEl.textContent = 'Posting times based on your channel\'s performance data';
+      } else if (nicheName) {
+        timingEl.textContent = `Posting times optimised for ${nicheName} audience`;
+      }
+      if (timingEl.textContent) timingEl.style.display = 'block';
+    }).catch(() => {});
   }
 
   // "Generated at … · loaded from cache"

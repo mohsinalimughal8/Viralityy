@@ -101,6 +101,161 @@ function assignPostingTime(date, videoIndex, totalForDay) {
   return `${date}T${hhmm}:00`;
 }
 
+// ── Optimal Posting Times ─────────────────────────────────────────────────────
+const NICHE_DEFAULT_TIMES = {
+  'Education':         ['06:00','09:00','12:00','15:00','18:00','20:00','22:00'],
+  'Finance':           ['07:00','10:00','12:00','15:00','18:00','20:00','22:00'],
+  'Technology':        ['08:00','11:00','13:00','16:00','19:00','21:00','23:00'],
+  'Health & Wellness': ['06:00','08:00','11:00','14:00','17:00','19:00','21:00'],
+  'Self Improvement':  ['06:00','09:00','12:00','15:00','18:00','20:00','22:00'],
+  'Entertainment':     ['10:00','13:00','15:00','17:00','19:00','21:00','23:00'],
+  'Business':          ['07:00','09:00','12:00','14:00','17:00','19:00','21:00'],
+  'default':           ['07:00','09:00','11:00','13:00','15:00','18:00','21:00'],
+};
+
+function mapNicheToCategory(nicheName) {
+  const n = (nicheName || '').toLowerCase();
+  if (/finance|money|invest|crypto|stock|wealth|budget/.test(n))          return 'Finance';
+  if (/tech|ai |software|coding|program|gadget|digital/.test(n))          return 'Technology';
+  if (/health|fitness|gym|workout|diet|nutrition|wellness|medic/.test(n)) return 'Health & Wellness';
+  if (/motivat|self.improv|personal.develop|stoic|mindset|productiv/.test(n)) return 'Self Improvement';
+  if (/business|entrepreneur|startup|market|sales/.test(n))               return 'Business';
+  if (/entertain|comedy|fun|game|gaming|movie|music/.test(n))             return 'Entertainment';
+  if (/educat|learn|study|science|history|explain/.test(n))               return 'Education';
+  return 'default';
+}
+
+// Pick `count` posting times spread across the day.
+// Never places more than 2 slots within a 120-minute window.
+function pickSpreadSlots(pool, count) {
+  if (!pool || !pool.length) pool = NICHE_DEFAULT_TIMES.default;
+  const toMin = t => { const [h, m] = (t || '07:00').split(':').map(Number); return h * 60 + (m || 0); };
+  const sorted = [...new Set(pool)].sort((a, b) => toMin(a) - toMin(b));
+  if (count >= sorted.length) return sorted.slice(0, count);
+
+  const idealStep = 1440 / count;
+  const selected  = [];
+  const usedIdx   = new Set();
+
+  for (let i = 0; i < count; i++) {
+    const ideal = (Math.round(idealStep * i + 360)) % 1440; // start spreading from 6 AM
+    let bestIdx = -1, bestDist = Infinity;
+
+    for (let j = 0; j < sorted.length; j++) {
+      if (usedIdx.has(j)) continue;
+      const m = toMin(sorted[j]);
+      if (selected.some(sel => Math.abs(toMin(sel) - m) < 120)) continue; // 2-hour gap constraint
+      const dist = Math.abs(m - ideal);
+      if (dist < bestDist) { bestDist = dist; bestIdx = j; }
+    }
+    // Relax constraint if no slot found
+    if (bestIdx === -1) {
+      for (let j = 0; j < sorted.length; j++) {
+        if (!usedIdx.has(j)) { bestIdx = j; break; }
+      }
+    }
+    if (bestIdx !== -1) { selected.push(sorted[bestIdx]); usedIdx.add(bestIdx); }
+  }
+  return selected.sort((a, b) => toMin(a) - toMin(b));
+}
+
+async function fetchChannelAnalyticsHours(userId, channelId) {
+  const user = await User.findById(userId).lean();
+  const ch = (user?.youtubeChannels || []).find(c => c.channelId === channelId) || user?.youtubeChannels?.[0];
+  if (!ch?.accessToken) return null;
+  const { google } = require('googleapis');
+  const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+  oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
+  const ytAnalytics = google.youtubeAnalytics({ version: 'v2', auth: oauth2 });
+  const endDate   = new Date().toISOString().slice(0, 10);
+  const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const res = await ytAnalytics.reports.query({
+    ids: 'channel==MINE', metrics: 'views,estimatedMinutesWatched',
+    dimensions: 'hour', startDate, endDate, sort: '-views', maxResults: 24,
+  });
+  const rows = res.data?.rows || [];
+  if (!rows.length) return null;
+  return [...rows].sort((a, b) => b[1] - a[1]).slice(0, 7)
+    .map(r => `${String(r[0]).padStart(2, '0')}:00`);
+}
+
+async function fetchNichePublishHours(nicheName) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return null;
+  const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(nicheName)}&order=viewCount&type=video&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=20&key=${apiKey}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const data = await res.json();
+  const hourCounts = {};
+  for (const item of (data.items || [])) {
+    const pub = item.snippet?.publishedAt;
+    if (!pub) continue;
+    const h = new Date(pub).getUTCHours();
+    hourCounts[h] = (hourCounts[h] || 0) + 1;
+  }
+  return Object.entries(hourCounts).sort((a, b) => b[1] - a[1]).slice(0, 7)
+    .map(([h]) => `${String(h).padStart(2, '0')}:00`);
+}
+
+async function getOptimalPostingTimes(userId, channelId, nicheName, plan) {
+  const slotsCol  = agentCol('calendar_slots');
+  const config    = PLAN_CONFIG[plan] || PLAN_CONFIG.trial;
+  const count     = config.shortsPerDay;
+  const category  = mapNicheToCategory(nicheName);
+  const defaultPool = NICHE_DEFAULT_TIMES[category] || NICHE_DEFAULT_TIMES.default;
+
+  const postedCount = await slotsCol.countDocuments({
+    userId: String(userId),
+    ...(channelId ? { channelId } : {}),
+    posted: true,
+  });
+
+  let optimalTimes, source;
+
+  if (postedCount < 10) {
+    console.log(`[Timing] New channel (${postedCount} posted) — using niche defaults for ${nicheName}`);
+    optimalTimes = pickSpreadSlots(defaultPool, count);
+    source = 'niche_defaults';
+  } else {
+    let analyticsPool = null;
+    try { analyticsPool = await fetchChannelAnalyticsHours(userId, channelId); }
+    catch (e) { console.warn('[Timing] Analytics fetch failed (non-fatal):', e.message); }
+
+    let nichePool = null;
+    try { nichePool = await fetchNichePublishHours(nicheName); }
+    catch (e) { console.warn('[Timing] Niche hours fetch failed (non-fatal):', e.message); }
+
+    if (analyticsPool && analyticsPool.length > 0) {
+      // Weight 70% analytics + 30% niche
+      const scored = new Map();
+      for (const t of analyticsPool) scored.set(t, (scored.get(t) || 0) + 7);
+      for (const t of (nichePool || defaultPool)) scored.set(t, (scored.get(t) || 0) + 3);
+      const mergedPool = [...scored.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+      optimalTimes = pickSpreadSlots(mergedPool, count);
+      source = 'channel_analytics';
+    } else {
+      const pool = nichePool?.length ? nichePool : defaultPool;
+      optimalTimes = pickSpreadSlots(pool, count);
+      source = nichePool?.length ? 'niche_data' : 'niche_defaults';
+    }
+    console.log(`[Timing] ${nicheName}: source=${source}, times=${optimalTimes.join(',')}`);
+  }
+
+  if (channelId) {
+    await User.updateOne(
+      { _id: userId, 'youtubeChannels.channelId': channelId },
+      { $set: {
+        'youtubeChannels.$.optimalPostingTimes':      optimalTimes,
+        'youtubeChannels.$.optimalTimesSource':       source,
+        'youtubeChannels.$.optimalTimesCalculatedAt': new Date(),
+      }}
+    ).catch(e => console.warn('[Timing] Save failed:', e.message));
+  }
+
+  return { times: optimalTimes, source };
+}
+
 
 // =============================================================================
 // DATABASE
@@ -313,7 +468,7 @@ const userSchema = new mongoose.Schema({
   trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
   stripeCustomerId:     { type: String },
   stripeSubscriptionId: { type: String },
-  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String }],
+  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date }],
   pendingOAuthChannels: [{ channelId: String, channelName: String, thumbnail: String, subscriberCount: Number }],
   googleAccessToken:  String,
   googleRefreshToken: String,
@@ -4689,8 +4844,24 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
       const nicheName = calendar.nicheName || user.nicheName || '';
       if (!nicheName) { console.warn(`[DailyGen] No niche for user ${calendar.userId} — skipping`); continue; }
 
-      const count  = config.shortsPerDay;
-      const yesterdayCtx = await getYesterdayPerformance(String(calendar.userId), calendar.channelId || '');
+      const count     = config.shortsPerDay;
+      const channelId = calendar.channelId || (user.youtubeChannels?.[0]?.channelId) || '';
+
+      // Resolve optimal posting times — use cached value if < 7 days old, else recalculate
+      const chDoc = (user.youtubeChannels || []).find(c => c.channelId === channelId) || user.youtubeChannels?.[0];
+      const cacheAge = chDoc?.optimalTimesCalculatedAt
+        ? Date.now() - new Date(chDoc.optimalTimesCalculatedAt).getTime() : Infinity;
+      let optimalTimes = (chDoc?.optimalPostingTimes?.length && cacheAge < 7 * 24 * 60 * 60 * 1000)
+        ? chDoc.optimalPostingTimes
+        : (await getOptimalPostingTimes(String(calendar.userId), channelId, nicheName, user.plan).catch(() => null))?.times;
+      if (!optimalTimes?.length) optimalTimes = pickSpreadSlots(NICHE_DEFAULT_TIMES.default, count);
+
+      const getSlotTime = (idx) => {
+        const hhmm = optimalTimes[idx % optimalTimes.length];
+        return `${today}T${hhmm}:00`;
+      };
+
+      const yesterdayCtx = await getYesterdayPerformance(String(calendar.userId), channelId);
       const genRes = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content:
@@ -4717,7 +4888,7 @@ Return JSON: { "titles": [${count} strings] }` }],
           title: titles[v] || `${nicheName} Short #${v + 1}`,
           type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
           status: 'pending', posted: false, retryCount: 0,
-          scheduledPostTime: assignPostingTime(today, v + 1, count),
+          scheduledPostTime: getSlotTime(v),
           generatedAt,
         });
       }
@@ -4743,7 +4914,7 @@ Return JSON: { "title": "string" }` }],
           day: 1, date: today, title: lfTitle,
           type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
           status: 'pending', posted: false, retryCount: 0,
-          scheduledPostTime: assignPostingTime(today, 1, 1),
+          scheduledPostTime: getSlotTime(0),
           generatedAt,
         });
       }
@@ -5284,6 +5455,29 @@ app.get('/api/admin/pipeline-stats', requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/admin/channel-timings — per-channel optimal posting times for admin visibility
+app.get('/api/admin/channel-timings', requireAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ 'youtubeChannels.0': { $exists: true } })
+      .select('email plan youtubeChannels').lean();
+    const rows = [];
+    for (const u of users) {
+      for (const ch of (u.youtubeChannels || [])) {
+        rows.push({
+          email:             u.email,
+          plan:              u.plan,
+          channelId:         ch.channelId,
+          channelName:       ch.channelName,
+          optimalTimes:      ch.optimalPostingTimes || [],
+          source:            ch.optimalTimesSource  || 'not_calculated',
+          calculatedAt:      ch.optimalTimesCalculatedAt || null,
+        });
+      }
+    }
+    res.json({ success: true, channels: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/admin/run-pipeline — manually trigger daily generation + scheduled posting (admin only)
 app.post('/api/admin/run-pipeline', requireAdmin, async (req, res) => {
   try {
@@ -5494,6 +5688,26 @@ function registerCronJobs() {
       } catch (err) { console.error('[Analytics] Error:', err); }
     });
   }
+
+  // Monday 3 AM UTC — recalculate optimal posting times for all active channels
+  cron.schedule('0 3 * * 1', async () => {
+    console.log('[Timing] Weekly recalculation of optimal posting times starting...');
+    try {
+      const users = await User.find({ 'youtubeChannels.0': { $exists: true } }).lean();
+      let updated = 0;
+      for (const user of users) {
+        const nicheName = user.nicheName || user.youtubeChannels?.[0]?.nicheName || '';
+        if (!nicheName) continue;
+        for (const ch of (user.youtubeChannels || [])) {
+          if (!ch.channelId) continue;
+          await getOptimalPostingTimes(String(user._id), ch.channelId, nicheName, user.plan)
+            .catch(e => console.warn(`[Timing] Weekly recalc failed for ${ch.channelId}:`, e.message));
+          updated++;
+        }
+      }
+      console.log(`[Timing] Weekly recalculation complete — ${updated} channel(s) updated`);
+    } catch (e) { console.error('[Timing] Weekly cron failed:', e.message); }
+  }, { timezone: 'UTC' });
 
   // Monthly footage reset — 1st of each month at 00:05 UTC
   // Clears usedFootageIds so clips can be reused after ~30 days
