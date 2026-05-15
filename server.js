@@ -732,19 +732,38 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 // YOUTUBE CHANNEL ROUTES
 // =============================================================================
 
-// GET /api/channels — list user's connected channels
+// GET /api/channels — list user's connected channels + plan-aware niche quota
 app.get('/api/channels', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     const channels = (user.youtubeChannels || []).map(ch => ({
-      channelId:      ch.channelId      || '',
-      channelName:    ch.channelName    || 'My Channel',
+      channelId:       ch.channelId       || '',
+      channelName:     ch.channelName     || 'My Channel',
       subscriberCount: ch.subscriberCount || 0,
-      nicheId:        ch.nicheId        || user.nicheId   || null,
-      nicheName:      ch.nicheName      || user.nicheName || null,
-      paused:         ch.paused         || false,
+      nicheId:         ch.nicheId         || user.nicheId   || null,
+      nicheName:       ch.nicheName       || user.nicheName || null,
+      paused:          ch.paused          || false,
     }));
-    res.json({ channels, count: channels.length });
+
+    const quota        = planNicheQuota(user.plan);
+    const changesUsed  = user.nicheChangesUsed || 0;
+    const isUnlimited  = quota === Infinity;
+    const remaining    = isUnlimited ? null : Math.max(0, quota - changesUsed);
+    const planLocked   = user.plan === 'trial';
+
+    res.json({
+      channels,
+      count: channels.length,
+      plan: user.plan,
+      nicheQuota: {
+        plan:       user.plan,
+        unlimited:  isUnlimited,
+        locked:     planLocked,
+        quota:      isUnlimited ? 'unlimited' : quota,
+        used:       changesUsed,
+        remaining:  isUnlimited ? null : remaining,
+      },
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -984,7 +1003,7 @@ app.post('/api/billing/promo', requireAuth, async (req, res) => {
     const validPlans = ['shorts_pro', 'growth', 'agency'];
     if (promoCode !== 'VRL-X9K2-M7QP-4TZW') return res.status(400).json({ success: false, error: 'Invalid promo code' });
     if (!validPlans.includes(plan)) return res.status(400).json({ success: false, error: 'Invalid plan' });
-    await User.findByIdAndUpdate(req.user.id, { plan });
+    await User.findByIdAndUpdate(req.user.id, { plan, planUpdatedAt: new Date() });
     res.json({ success: true, plan });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });

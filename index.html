@@ -899,13 +899,13 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
     Click to connect your YouTube channel<br><span style="font-size:.71rem">You will be redirected to Google to grant posting permissions</span>
   </div>
-  <div class="card-block" style="margin-top:12px">
+  <div class="card-block" style="margin-top:12px" id="niche-quota-block">
     <h4>Niche changes remaining this year</h4>
     <div style="display:flex;gap:10px;margin-top:.5rem;align-items:center">
-      <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="width:0%;height:100%;background:var(--purple);border-radius:3px"></div></div>
-      <span style="font-size:.73rem;color:var(--text3)">0 of 0 used (locked on Starter)</span>
+      <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div id="niche-quota-bar" style="width:0%;height:100%;background:var(--purple);border-radius:3px"></div></div>
+      <span id="niche-quota-label" style="font-size:.73rem;color:var(--text3)">Loading…</span>
     </div>
-    <p style="font-size:.72rem;color:var(--text3);margin-top:.6rem">Upgrade to Shorts Pro or above to unlock niche changes</p>
+    <p id="niche-quota-hint" style="font-size:.72rem;color:var(--text3);margin-top:.6rem"></p>
   </div>
 </div>
 
@@ -1980,21 +1980,47 @@ async function initChannels() {
       <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
       No channels connected yet<br><span style="font-size:.71rem">Click to connect your YouTube channel via Google OAuth</span>
     </div>`;
-    return;
+  } else {
+    el.innerHTML = channels.map(ch => `
+      <div class="channel-card" data-channel-id="${ch.channelId||ch._id||''}">
+        <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
+        <div class="ch-info">
+          <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
+          ${ch.nicheName ? `<span style="display:inline-block;background:#1D9E75;color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;font-weight:500;margin:4px 0 2px">${ch.nicheName}</span>` : ''}
+          <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers' : 'No subscribers data'}${ch.paused ? ' · Paused' : ''}</p>
+        </div>
+        <div class="ch-actions">
+          <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
+          <button class="act act-ok" onclick="dashPage('analytics',null)">Analytics</button>
+        </div>
+      </div>`).join('');
   }
-  el.innerHTML = channels.map(ch => `
-    <div class="channel-card" data-channel-id="${ch.channelId||ch._id||''}">
-      <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
-      <div class="ch-info">
-        <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
-        ${ch.nicheName ? `<span style="display:inline-block;background:#1D9E75;color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;font-weight:500;margin:4px 0 2px">${ch.nicheName}</span>` : ''}
-        <p class="ch-meta">${ch.subscriberCount ? ch.subscriberCount.toLocaleString()+' subscribers' : 'No subscribers data'}${ch.paused ? ' · Paused' : ''}</p>
-      </div>
-      <div class="ch-actions">
-        <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
-        <button class="act act-ok" onclick="dashPage('analytics',null)">Analytics</button>
-      </div>
-    </div>`).join('');
+
+  // Render niche quota block based on the plan returned by /api/channels
+  const q     = data?.nicheQuota;
+  const label = document.getElementById('niche-quota-label');
+  const bar   = document.getElementById('niche-quota-bar');
+  const hint  = document.getElementById('niche-quota-hint');
+  if (q && label && bar && hint) {
+    if (q.unlimited) {
+      label.textContent = 'Unlimited niche changes';
+      label.style.color = 'var(--green)';
+      bar.style.width   = '100%';
+      bar.style.background = 'var(--green)';
+      hint.textContent  = `Your ${q.plan.replace('_', ' ')} plan includes unlimited niche changes per year.`;
+    } else if (q.locked) {
+      label.textContent = '0 changes available (Trial plan)';
+      label.style.color = 'var(--text3)';
+      bar.style.width   = '0%';
+      hint.textContent  = 'Upgrade to Shorts Pro or above to unlock niche changes.';
+    } else {
+      const pct = q.quota > 0 ? Math.round((q.used / q.quota) * 100) : 0;
+      label.textContent = `${q.remaining} of ${q.quota} remaining`;
+      label.style.color = q.remaining === 0 ? '#f87171' : 'var(--text2)';
+      bar.style.width   = pct + '%';
+      hint.textContent  = q.remaining === 0 ? 'Niche change limit reached for this year.' : `${q.used} change${q.used !== 1 ? 's' : ''} used this year.`;
+    }
+  }
 }
 
 // ════════════════════════════════════════════
