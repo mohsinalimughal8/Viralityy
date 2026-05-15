@@ -123,6 +123,7 @@ async function runStartupSlotCheck() {
     console.log(`[AutoPost Audit] YOUTUBE_API_KEY:       ${process.env.YOUTUBE_API_KEY       ? 'SET' : 'MISSING ⚠'}`);
     console.log(`[AutoPost Audit] YOUTUBE_CLIENT_ID:     ${process.env.YOUTUBE_CLIENT_ID     ? 'SET' : 'MISSING ⚠'}`);
     console.log(`[AutoPost Audit] YOUTUBE_CLIENT_SECRET: ${process.env.YOUTUBE_CLIENT_SECRET ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[AutoPost Audit] GOOGLE_TTS_API_KEY:    ${process.env.GOOGLE_TTS_API_KEY    ? 'SET' : 'MISSING ⚠'}`);
     console.log(`[AutoPost Audit] Active calendars: ${calendars.length}`);
 
     for (const cal of calendars) {
@@ -970,8 +971,17 @@ const NICHE_CPM_BENCHMARKS = {
   Gaming: 4, Music: 4, default: 6,
 };
 
-// ── Discovery seed keywords — broad topics to probe in parallel
-const DISCOVERY_SEEDS = ['shorts', 'facts', 'motivation', 'finance', 'health', 'technology', 'psychology', 'lifestyle'];
+// ── Discovery seed keywords — specific high-value topics to probe in parallel
+const DISCOVERY_SEEDS = [
+  'psychology facts', 'personal finance tips', 'ai tools', 'stoicism',
+  'health longevity', 'entrepreneurship', 'true crime', 'mindfulness',
+];
+
+// ── Category base scores for the simplified scoring formula
+const CATEGORY_BASE_SCORES = {
+  Finance: 74, Technology: 75, Education: 72, Wellness: 71,
+  Business: 74, Entertainment: 70, default: 68,
+};
 
 function slugify(str) {
   return str.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
@@ -983,8 +993,7 @@ function normaliseNicheScore(raw) {
 }
 
 // ── YouTube video search — returns enriched video objects
-async function ytSearch(keyword, { days = 7, maxResults = 25, order = 'viewCount' } = {}) {
-  // Always read inline — never cache at module load time
+async function ytSearch(keyword, { days = 30, maxResults = 20, order = 'viewCount' } = {}) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) {
     console.warn(`[Niche] ytSearch("${keyword}"): YOUTUBE_API_KEY not set`);
@@ -992,12 +1001,20 @@ async function ytSearch(keyword, { days = 7, maxResults = 25, order = 'viewCount
   }
   try {
     const publishedAfter = new Date(Date.now() - days * 86_400_000).toISOString();
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id,snippet&q=${encodeURIComponent(keyword)}&type=video&order=${order}&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=${maxResults}&key=${apiKey}&relevanceLanguage=en`;
+    const searchParams = new URLSearchParams({
+      part: 'snippet', q: keyword, type: 'video', order,
+      publishedAfter, maxResults: String(maxResults), key: apiKey,
+    });
+    const searchUrl = `https://www.googleapis.com/youtube/v3/search?${searchParams}`;
     const searchResp = await axios.get(searchUrl, { timeout: 12_000 });
+    console.log(`[Niche] ytSearch("${keyword}"): HTTP ${searchResp.status}, items=${searchResp.data.items?.length ?? 0}`);
     const items = searchResp.data.items || [];
+    if (items.length > 0) {
+      console.log(`[Niche] ytSearch("${keyword}"): first result title = "${items[0].snippet?.title}"`);
+    }
     const videoIds = items.map(i => i.id?.videoId).filter(Boolean);
     if (!videoIds.length) {
-      console.warn(`[Niche] ytSearch("${keyword}"): 0 videos returned from YouTube (order=${order}, days=${days})`);
+      console.warn(`[Niche] ytSearch("${keyword}"): 0 video IDs returned (order=${order}, days=${days})`);
       return [];
     }
 
@@ -1012,10 +1029,12 @@ async function ytSearch(keyword, { days = 7, maxResults = 25, order = 'viewCount
       likes:       parseInt(v.statistics?.likeCount    || '0', 10),
       publishedAt: v.snippet?.publishedAt  || '',
     }));
-    console.log(`[Niche] ytSearch("${keyword}"): ${videos.length} videos, top views=${videos[0]?.views ?? 0}`);
+    console.log(`[Niche] ytSearch("${keyword}"): ${videos.length} videos enriched, top views=${videos[0]?.views ?? 0}`);
     return videos;
   } catch (err) {
-    console.error(`[Niche] ytSearch("${keyword}") failed:`, err.response?.data?.error?.message || err.message);
+    const ytErr = err.response?.data?.error?.message || err.message;
+    console.error(`[Niche] ytSearch("${keyword}") failed: ${ytErr}`);
+    if (err.response?.data) console.error(`[Niche] ytSearch full error:`, JSON.stringify(err.response.data).slice(0, 400));
     return [];
   }
 }
@@ -1063,7 +1082,6 @@ async function fetchGoogleTrends() {
 
 // ── OpenAI niche clustering — returns array of niche objects
 async function clusterWithAI(videos, keyword) {
-  // Always read inline — never cache at module load time
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) {
     console.warn('[Niche] clusterWithAI: OPENAI_API_KEY not set');
@@ -1076,28 +1094,35 @@ async function clusterWithAI(videos, keyword) {
   try {
     const { OpenAI } = require('openai');
     const openai = new OpenAI({ apiKey: openaiKey });
-    console.log(`[Niche] clusterWithAI("${keyword}"): sending ${Math.min(videos.length, 30)} videos to GPT-4o-mini`);
     const topVids = videos
       .sort((a, b) => b.views - a.views)
-      .slice(0, 30)
-      .map(v => `"${v.title.replace(/"/g, "'")}" – ${v.views.toLocaleString()} views`)
-      .join('\n');
+      .slice(0, 20)
+      .map(v => `"${v.title.replace(/"/g, "'")}"`)
+      .join(', ');
 
-    const prompt = `Based on these trending YouTube videos published in the last 7 days:\n${topVids}\n\nIdentify the top 10 distinct content niches. For each niche return exactly this JSON structure:\n{\n  "name": "short descriptive niche name",\n  "category": "Finance|Technology|Health|Education|Lifestyle|Entertainment|Business|Fitness|Gaming|Other",\n  "why_its_trending": "one sentence explanation",\n  "content_angle": "best video angle e.g. beginner tutorials / shocking facts / expert tips",\n  "competition_level": "low|medium|high",\n  "estimated_cpm_range": "$X-$Y",\n  "growth_potential": "high|medium|low",\n  "representative_titles": ["title1", "title2"]\n}\n\nReturn ONLY a valid JSON array of 10 objects. No markdown, no extra text.`;
+    console.log(`[Niche] clusterWithAI("${keyword}"): sending ${Math.min(videos.length, 20)} titles to GPT-4o-mini`);
+
+    const prompt = `Here are the top trending YouTube videos for the keyword "${keyword}": ${topVids}. Identify the top 5 distinct content niches these videos belong to. For each niche return a JSON array with: name, category, why_its_trending, competition (low/medium/high), cpm_range (e.g. '$5-$18'), trend (Hot/Rising/Stable). Return ONLY a valid JSON array, no other text.`;
 
     const resp = await openai.chat.completions.create({
       model:       'gpt-4o-mini',
       messages:    [{ role: 'user', content: prompt }],
       temperature: 0.3,
-      max_tokens:  2500,
+      max_tokens:  1200,
     });
     logAPIUsage('openai', 'niche_cluster', 'system', resp.usage?.total_tokens || 0,
       ((resp.usage?.prompt_tokens || 0) * API_COSTS.openai_input) +
       ((resp.usage?.completion_tokens || 0) * API_COSTS.openai_output), true);
 
-    const raw     = resp.choices[0]?.message?.content?.trim() || '[]';
-    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    const parsed  = JSON.parse(cleaned);
+    const rawText = resp.choices[0]?.message?.content?.trim() || '[]';
+    const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (parseErr) {
+      console.error(`[Niche] clusterWithAI("${keyword}"): JSON parse failed — raw response:\n${rawText.slice(0, 500)}`);
+      return null;
+    }
     console.log(`[Niche] clusterWithAI("${keyword}"): got ${parsed.length} niches from AI`);
     return parsed;
   } catch (err) {
@@ -1106,53 +1131,36 @@ async function clusterWithAI(videos, keyword) {
   }
 }
 
-// ── Score a single AI-identified niche against live video data
+// ── Score a single AI-identified niche using category base + view boost + trend boost
 function scoreNiche(niche, allVideos, trendingTerms) {
-  const nameLower = niche.name.toLowerCase();
-  const firstWord = nameLower.split(/\s+/)[0];
+  const category = niche.category || 'Other';
 
-  // trend_score: avg views of top 5 matching videos (0-40 pts)
-  const matching = allVideos
-    .filter(v => v.title.toLowerCase().includes(firstWord) || (v.tags || []).some(t => t.toLowerCase().includes(firstWord)))
-    .sort((a, b) => b.views - a.views);
-  const top5     = matching.slice(0, 5);
-  const avgViews = top5.length ? top5.reduce((s, v) => s + v.views, 0) / top5.length : 30_000;
-  const trend_score = Math.round(Math.min(avgViews / 500_000, 1) * 40);
+  // Base score from category
+  const base = CATEGORY_BASE_SCORES[category] ?? CATEGORY_BASE_SCORES.default;
 
-  // volume_score: video count last 7 days (0-30 pts)
-  const volume_score = Math.round(Math.min(matching.length / 15, 1) * 30);
+  // View boost: based on the top video in the pool
+  const maxViews = allVideos.length ? Math.max(...allVideos.map(v => v.views)) : 0;
+  const viewBoost = maxViews > 1_000_000 ? 10 : maxViews > 500_000 ? 7 : maxViews > 100_000 ? 5 : 0;
 
-  // cpm_score: category benchmark (0-20 pts)
-  const cpmBench = NICHE_CPM_BENCHMARKS[niche.category] || NICHE_CPM_BENCHMARKS.default;
-  const cpm_score = Math.round((cpmBench / Math.max(...Object.values(NICHE_CPM_BENCHMARKS))) * 20);
+  // Trend boost: niche name keyword appears in Google Trends RSS
+  const nameWords = niche.name.toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+  const trendBoost = trendingTerms.some(t => nameWords.some(w => t.includes(w))) ? 8 : 0;
 
-  // competition_score (0-10 pts)
-  const compMap = { low: 10, medium: 6, high: 2 };
-  const competition_score = compMap[niche.competition_level] || 6;
-
-  // virality_boost: Google Trends match (+5 pts)
-  const nameWords    = nameLower.split(/\s+/).filter(w => w.length > 3);
-  const virality_boost = trendingTerms.some(t => nameWords.some(w => t.includes(w))) ? 5 : 0;
-
-  const total         = trend_score + volume_score + cpm_score + competition_score + virality_boost;
-  const combined_score = normaliseNicheScore(total);
+  const raw            = base + viewBoost + trendBoost;
+  const combined_score = normaliseNicheScore(raw);
 
   return {
-    niche_id:       slugify(niche.name),
-    name:           niche.name,
-    category:       niche.category || 'Other',
+    niche_id:        slugify(niche.name),
+    name:            niche.name,
+    category,
     combined_score,
-    why_its_trending:     niche.why_its_trending    || '',
-    content_angle:        niche.content_angle       || '',
-    cpm_range:            niche.estimated_cpm_range || `$${cpmBench - 2}–$${cpmBench + 5}`,
-    competition:          niche.competition_level   || 'medium',
-    growth_potential:     niche.growth_potential    || 'medium',
-    trend_boost:          trend_score,
-    virality_boost,
-    score_breakdown:      { trend_score, volume_score, cpm_score, competition_score, virality_boost },
-    representative_titles: niche.representative_titles || [],
-    live_data:            true,
-    analysed_at:          new Date().toISOString(),
+    why_its_trending: niche.why_its_trending || '',
+    cpm_range:        niche.cpm_range         || `$${(NICHE_CPM_BENCHMARKS[category] || 6) - 2}–$${(NICHE_CPM_BENCHMARKS[category] || 6) + 5}`,
+    competition:      niche.competition       || 'medium',
+    trend:            niche.trend             || 'Rising',
+    score_breakdown:  { base, viewBoost, trendBoost, maxViews },
+    live_data:        true,
+    analysed_at:      new Date().toISOString(),
   };
 }
 
@@ -1177,32 +1185,16 @@ async function discoverNiches(keyword, plan = 'combo_pro') {
     // 3. OpenAI clustering
     const aiNiches = await clusterWithAI(allVideos, keyword);
     if (!aiNiches || !aiNiches.length) {
-      // No AI result — return basic scored fallback from video data alone
-      if (!allVideos.length) return [];
-      const fallback = suggestions.slice(0, 10).map(kw => ({
-        niche_id:      slugify(kw),
-        name:          kw.split(' ').map(w => w[0]?.toUpperCase() + w.slice(1)).join(' '),
-        category:      'Other',
-        combined_score: normaliseNicheScore(30),
-        why_its_trending: `Trending YouTube search related to "${keyword}"`,
-        content_angle: 'educational facts and tips',
-        cpm_range:     '$6–$12',
-        competition:   'medium',
-        growth_potential: 'medium',
-        trend_boost:   0,
-        virality_boost: 0,
-        score_breakdown: {},
-        representative_titles: [],
-        live_data: false,
-        analysed_at: new Date().toISOString(),
-      }));
-      return fallback;
+      console.warn(`[Niche] discoverNiches("${keyword}"): AI returned no niches`);
+      return [];
     }
 
-    // 4. Score each AI niche
+    // 4. Score each AI niche, keep only those scoring >= 90
     const scored = aiNiches.map(n => scoreNiche(n, allVideos, trendingTerms));
     scored.sort((a, b) => b.combined_score - a.combined_score);
-    return scored.slice(0, 10);
+    const qualified = scored.filter(n => n.combined_score >= 90);
+    console.log(`[Niche] discoverNiches("${keyword}"): ${scored.length} scored, ${qualified.length} >= 90`);
+    return qualified.slice(0, 10);
   };
 
   try {
@@ -1229,45 +1221,48 @@ const STATIC_FALLBACK_NICHES = [
   { niche_id: 'language',         name: 'Language Learning',              category: 'Education',        combined_score: 90, competition: 'low',    cpm_range: '$6-$20',  why_its_trending: 'Global audience appeal',                   verdict: 'hot', live_data_used: false },
 ];
 
+// Returns true if two niche names share their primary significant keyword
+function nicheNamesSimilar(a, b) {
+  const sig = s => s.toLowerCase().split(/\s+/).find(w => w.length >= 4) || s.toLowerCase().slice(0, 4);
+  return sig(a) === sig(b);
+}
+
 // ── Top niches across all seed categories — cached 6h in MongoDB
 async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
-  const cacheCol  = agentCol('niche_cache');
-  const cacheKey  = `top_niches_${plan}_${new Date().toISOString().slice(0, 13)}`; // hourly bucket
+  const cacheCol = agentCol('niche_cache');
+  const cacheKey = 'discover_cache';
 
   if (!forceRefresh) {
-    const cached = await cacheCol.findOne({ cacheKey }).catch(() => null);
-    if (cached?.niches?.length) {
-      return { niches: cached.niches, fromCache: true, cachedAt: cached.cachedAt };
-    }
-    // Also accept a result from any of the last 6 hourly buckets
     const sixHoursAgo = new Date(Date.now() - 6 * 3_600_000).toISOString();
-    const recent = await cacheCol.findOne(
-      { cacheKey: /^top_niches_/, cachedAt: { $gt: sixHoursAgo } },
-      { sort: { cachedAt: -1 } }
-    ).catch(() => null);
-    if (recent?.niches?.length) {
-      return { niches: recent.niches, fromCache: true, cachedAt: recent.cachedAt };
+    const cached = await cacheCol.findOne({ cacheKey, cachedAt: { $gt: sixHoursAgo } }).catch(() => null);
+    if (cached?.niches?.length) {
+      console.log(`[Niche] discoverTopNiches: cache hit (${cached.niches.length} niches, age=${Math.round((Date.now() - new Date(cached.cachedAt)) / 60000)}min)`);
+      return { niches: cached.niches, fromCache: true, cachedAt: cached.cachedAt };
     }
   }
 
-  // Run discovery for all seeds in parallel
-  const results = await Promise.all(
-    DISCOVERY_SEEDS.map(seed => discoverNiches(seed, plan).catch(() => []))
-  );
-
-  // Deduplicate by niche_id, keep highest score
-  const byId = {};
-  results.flat().forEach(n => {
-    if (!byId[n.niche_id] || n.combined_score > byId[n.niche_id].combined_score) {
-      byId[n.niche_id] = n;
+  // Run all 8 seeds in parallel — never fail if one seed errors
+  console.log(`[Niche] discoverTopNiches: running ${DISCOVERY_SEEDS.length} seeds with Promise.allSettled`);
+  const settled = await Promise.allSettled(DISCOVERY_SEEDS.map(seed => discoverNiches(seed, plan)));
+  const results = settled.map((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn(`[Niche] seed "${DISCOVERY_SEEDS[i]}" rejected: ${r.reason?.message}`);
+      return [];
     }
+    return r.value || [];
   });
-  const all = Object.values(byId).sort((a, b) => b.combined_score - a.combined_score);
-  const top = all.slice(0, 20);
 
-  // Static fallback — returned when YouTube/OpenAI keys are missing or discovery fails
+  // Combine, deduplicate by name similarity (highest score wins), sort, return top 10
+  const all = results.flat().sort((a, b) => b.combined_score - a.combined_score);
+  const deduped = [];
+  for (const n of all) {
+    if (!deduped.some(d => nicheNamesSimilar(d.name, n.name))) deduped.push(n);
+  }
+  const top = deduped.slice(0, 10);
+
+  // Static fallback when APIs fail or all seeds score below threshold
   if (!top.length) {
-    console.warn('[Niche] discoverTopNiches: all seeds returned empty — using static fallback niches');
+    console.warn('[Niche] discoverTopNiches: all seeds returned empty — using static fallback');
     return { niches: STATIC_FALLBACK_NICHES, fromCache: false, cachedAt: new Date().toISOString(), fallback: true };
   }
 
@@ -1278,6 +1273,7 @@ async function discoverTopNiches(plan = 'combo_pro', forceRefresh = false) {
     { upsert: true }
   ).catch(() => {});
 
+  console.log(`[Niche] discoverTopNiches: ${top.length} niches cached (scores: ${top.map(n => n.combined_score).join(', ')})`);
   return { niches: top, fromCache: false, cachedAt };
 }
 
@@ -1318,7 +1314,7 @@ app.get('/api/niches/browse', requireAuth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/niches/search  — keyword-specific real-time discovery
+// POST /api/niches/search  — keyword-specific real-time discovery (no static fallback)
 // Body: { keyword: "stoicism", plan: "combo_pro" }
 // ---------------------------------------------------------------------------
 app.post('/api/niches/search', requireAuth, async (req, res) => {
@@ -1330,48 +1326,42 @@ app.post('/api/niches/search', requireAuth, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const kw           = keyword.trim().toLowerCase();
-    const plan         = bodyPlan || user.plan || 'shorts_starter';
-    const cacheCol     = agentCol('niche_cache');
-    const cacheHourKey = `search_${slugify(kw)}_${new Date().toISOString().slice(0, 13)}`;
-
-    // Instant fallback: filter static niches by keyword match
-    const fallbackMatches = STATIC_FALLBACK_NICHES.filter(n =>
-      (n.name     || '').toLowerCase().includes(kw) ||
-      (n.category || '').toLowerCase().includes(kw) ||
-      (n.niche_id || '').toLowerCase().includes(kw)
-    );
+    const kw       = keyword.trim().toLowerCase();
+    const plan     = bodyPlan || user.plan || 'shorts_starter';
+    const cacheCol = agentCol('niche_cache');
+    const cacheKey = `search_${slugify(kw)}`;
 
     // 1-hour cache check
-    const cached = await cacheCol.findOne({ cacheKey: cacheHourKey }).catch(() => null);
+    const oneHourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    const cached = await cacheCol.findOne({ cacheKey, cachedAt: { $gt: oneHourAgo } }).catch(() => null);
     if (cached?.niches?.length) {
+      console.log(`[Niche] search("${kw}"): cache hit (${cached.niches.length} niches)`);
       return res.json({ success: true, niches: cached.niches, result: cached.niches[0] || null, count: cached.niches.length, fromCache: true });
     }
 
-    // Race real-time discovery against 10s timeout — always return something
+    // Real-time discovery — run discoverNiches directly, no static fallback
+    console.log(`[Niche] search("${kw}"): running real-time discovery`);
     let niches = [];
     try {
       niches = await Promise.race([
         discoverNiches(kw, plan),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('10s timeout')), 10_000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('30s timeout')), 30_000)),
       ]);
     } catch (e) {
-      console.warn(`[Niche] search("${kw}") timed out or failed — returning fallback: ${e.message}`);
+      console.warn(`[Niche] search("${kw}") timed out or errored: ${e.message}`);
     }
 
     if (niches.length) {
       await cacheCol.updateOne(
-        { cacheKey: cacheHourKey },
-        { $set: { cacheKey: cacheHourKey, niches, cachedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000) } },
+        { cacheKey },
+        { $set: { cacheKey, niches, cachedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000) } },
         { upsert: true }
       ).catch(() => {});
     }
 
-    const result = niches.length ? niches
-      : fallbackMatches.length   ? fallbackMatches
-      :                            STATIC_FALLBACK_NICHES.slice(0, 5);
-
-    res.json({ success: true, niches: result, result: result[0] || null, count: result.length, fromCache: false, fallback: !niches.length });
+    const top = niches.slice(0, 10);
+    console.log(`[Niche] search("${kw}"): returning ${top.length} real-time niches`);
+    res.json({ success: true, niches: top, result: top[0] || null, count: top.length, fromCache: false, live_data: true });
   } catch (err) {
     console.error('[Niche] /api/niches/search error:', err);
     res.status(500).json({ error: 'Failed to search niche' });
