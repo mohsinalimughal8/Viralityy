@@ -1214,13 +1214,22 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     <!-- Overview tab -->
     <div id="adm-pane-overview" class="adm-pane">
       <div id="adm-alerts-banner" style="display:none;margin-bottom:1rem;padding:10px 14px;border-radius:8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fca5a5;font-size:.82rem"></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:1.5rem">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:1.5rem">
         <div class="adm-card"><p class="adm-val" id="adm-totalusers">—</p><p class="adm-lbl">Total users</p></div>
-        <div class="adm-card"><p class="adm-val" id="adm-posted-today">—</p><p class="adm-lbl">Videos posted today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-active-today">—</p><p class="adm-lbl">Active today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-posted-today">—</p><p class="adm-lbl">Posted today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-total-ever">—</p><p class="adm-lbl">Total videos ever</p></div>
         <div class="adm-card"><p class="adm-val" id="adm-cost-today">—</p><p class="adm-lbl">Cost today (USD)</p></div>
-        <div class="adm-card"><p class="adm-val" id="adm-quota-pct">—</p><p class="adm-lbl">YouTube quota used</p></div>
+        <div class="adm-card">
+          <p class="adm-val" id="adm-quota-pct">—</p>
+          <p class="adm-lbl">YouTube quota used</p>
+          <div style="margin-top:6px;background:#1f2937;border-radius:4px;height:4px;overflow:hidden">
+            <div id="adm-quota-bar" style="height:4px;border-radius:4px;background:#6366f1;width:0%;transition:width .4s"></div>
+          </div>
+        </div>
       </div>
-      <div id="adm-plan-breakdown" style="font-size:.8rem;color:#6b7280"></div>
+      <div id="adm-plan-breakdown" style="font-size:.8rem;color:#6b7280;margin-bottom:1rem"></div>
+      <div id="adm-quota-breakdown" style="font-size:.78rem;color:#6b7280"></div>
     </div>
 
     <!-- API Usage tab -->
@@ -1235,12 +1244,14 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
     <!-- Pipeline tab -->
     <div id="adm-pane-pipeline" class="adm-pane" style="display:none">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
         <div class="adm-card"><p class="adm-val" id="adm-generated">—</p><p class="adm-lbl">Generated today</p></div>
         <div class="adm-card"><p class="adm-val" id="adm-pipe-posted">—</p><p class="adm-lbl">Posted today</p></div>
+        <div class="adm-card"><p class="adm-val" id="adm-pipe-thumbs">—</p><p class="adm-lbl">Thumbnails today</p></div>
         <div class="adm-card"><p class="adm-val" id="adm-failed">—</p><p class="adm-lbl">Failed today</p></div>
         <div class="adm-card"><p class="adm-val" id="adm-success-rate">—</p><p class="adm-lbl">Success rate</p></div>
       </div>
+      <div id="adm-pipeline-live" style="margin-top:1.25rem"></div>
       <div id="adm-channel-timings" style="margin-top:1.25rem"></div>
     </div>
 
@@ -1441,20 +1452,34 @@ function admTab(name) {
 }
 
 async function admLoadOverview() {
-  const [ov, quota] = await Promise.all([
+  const [ov, quota, alerts] = await Promise.all([
     adminApiCall('/api/admin/overview'),
     adminApiCall('/api/admin/youtube-quota'),
+    adminApiCall('/api/admin/alerts'),
   ]);
   if (!ov?.success) return;
-  document.getElementById('adm-totalusers').textContent  = ov.totalUsers ?? '—';
+  document.getElementById('adm-totalusers').textContent   = ov.totalUsers ?? '—';
+  document.getElementById('adm-active-today').textContent = ov.activeToday ?? '—';
   document.getElementById('adm-posted-today').textContent = ov.videosPostedToday ?? '—';
-  document.getElementById('adm-cost-today').textContent  = ov.totalCostToday != null ? '$' + ov.totalCostToday.toFixed(4) : '—';
-  document.getElementById('adm-quota-pct').textContent   = quota?.percentUsed != null ? quota.percentUsed + '%' : '—';
+  document.getElementById('adm-total-ever').textContent   = ov.totalVideosEver ?? '—';
+  document.getElementById('adm-cost-today').textContent   = ov.totalCostToday != null ? '$' + ov.totalCostToday.toFixed(4) : '—';
+  const pct = quota?.percentUsed ?? (ov.quotaUsedToday != null ? parseFloat(((ov.quotaUsedToday / 10000) * 100).toFixed(1)) : null);
+  document.getElementById('adm-quota-pct').textContent    = pct != null ? pct + '%' : '—';
+  const bar = document.getElementById('adm-quota-bar');
+  if (bar && pct != null) {
+    bar.style.width      = Math.min(pct, 100) + '%';
+    bar.style.background = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#6366f1';
+  }
   const pb = ov.perPlanBreakdown || {};
   document.getElementById('adm-plan-breakdown').innerHTML =
     Object.entries(pb).map(([plan, n]) => `<span style="margin-right:14px"><b style="color:#e5e7eb">${n}</b> ${plan}</span>`).join('');
+  // Quota breakdown by action
+  if (quota?.byAction?.length) {
+    document.getElementById('adm-quota-breakdown').innerHTML =
+      '<p style="margin:0 0 4px;color:#4b5563;font-size:.72rem">Quota by action today:</p>' +
+      quota.byAction.map(a => `<span style="margin-right:12px"><b style="color:#9ca3af">${a.units}</b> ${a.action} (${a.calls}×)</span>`).join('');
+  }
   // Alerts banner
-  const alerts = await adminApiCall('/api/admin/alerts');
   const banner = document.getElementById('adm-alerts-banner');
   if (alerts?.alertCount > 0) {
     banner.style.display = 'block';
@@ -1467,20 +1492,26 @@ async function admLoadApiUsage() {
   el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">Loading…</p>';
   const data = await adminApiCall('/api/admin/api-usage');
   if (!data?.usage) { el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">No data</p>'; return; }
-  const statusBadge = (rate) => {
+  const statusBadge = (rate, isStatic) => {
+    if (isStatic) return '<span class="adm-badge" style="background:rgba(99,102,241,.12);color:#818cf8">Infra</span>';
+    if (rate == null) return '<span class="adm-badge" style="background:#1f2937;color:#6b7280">—</span>';
     if (rate >= 0.95) return '<span class="adm-badge adm-badge-ok">OK</span>';
     if (rate >= 0.80) return '<span class="adm-badge adm-badge-warn">Degraded</span>';
     return '<span class="adm-badge adm-badge-err">Error</span>';
   };
-  el.innerHTML = `<table class="adm-tbl">
-    <thead><tr><th>Service</th><th>Calls (24h)</th><th>Tokens / Units</th><th>Cost (24h)</th><th>Success rate</th><th>Status</th></tr></thead>
-    <tbody>${data.usage.map(r => `<tr>
+  const fmtTs = iso => iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—';
+  const today = new Date().toISOString().slice(0, 10);
+  el.innerHTML = `<p style="font-size:.72rem;color:#6b7280;margin:0 0 .6rem">API usage for ${today}</p>
+  <table class="adm-tbl">
+    <thead><tr><th>Service</th><th>Calls today</th><th>Tokens / Units</th><th>Cost today</th><th>Success rate</th><th>Last used</th><th>Status</th></tr></thead>
+    <tbody>${data.usage.map(r => `<tr style="${r.isStatic ? 'opacity:.55' : ''}">
       <td style="font-weight:500;color:#e5e7eb">${r.service}</td>
-      <td>${r.calls}</td>
-      <td>${r.tokensUsed.toLocaleString()}</td>
-      <td>$${r.totalCost.toFixed(4)}</td>
-      <td>${(r.successRate * 100).toFixed(1)}%</td>
-      <td>${statusBadge(r.successRate)}</td>
+      <td>${r.calls ?? '—'}</td>
+      <td>${r.tokensUsed != null ? r.tokensUsed.toLocaleString() : '—'}</td>
+      <td>${r.totalCost != null ? '$' + r.totalCost.toFixed(4) : r.note ?? '—'}</td>
+      <td>${r.successRate != null ? (r.successRate * 100).toFixed(1) + '%' : '—'}</td>
+      <td style="font-family:monospace;font-size:.72rem;color:#9ca3af">${fmtTs(r.lastUsed)}</td>
+      <td>${statusBadge(r.successRate, r.isStatic)}</td>
     </tr>`).join('')}</tbody>
   </table>`;
 }
@@ -1514,11 +1545,36 @@ async function admLoadPipeline() {
     adminApiCall('/api/admin/channel-timings'),
   ]);
   if (data?.success) {
-    document.getElementById('adm-generated').textContent   = data.videosGeneratedToday ?? '—';
-    document.getElementById('adm-pipe-posted').textContent = data.videosPostedToday ?? '—';
-    document.getElementById('adm-failed').textContent      = data.failureCount ?? '—';
-    document.getElementById('adm-success-rate').textContent = data.successRate != null
+    document.getElementById('adm-generated').textContent      = data.videosGeneratedToday ?? '—';
+    document.getElementById('adm-pipe-posted').textContent    = data.videosPostedToday ?? '—';
+    document.getElementById('adm-pipe-thumbs').textContent    = data.thumbnailsGeneratedToday ?? '—';
+    document.getElementById('adm-failed').textContent         = data.failureCount ?? '—';
+    document.getElementById('adm-success-rate').textContent   = data.successRate != null
       ? (data.successRate * 100).toFixed(1) + '%' : '—';
+
+    // Real-time live status panel
+    const liveEl = document.getElementById('adm-pipeline-live');
+    if (liveEl) {
+      const fmtTs = iso => iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+      const processing = data.currentlyProcessing || [];
+      const liveHtml = [];
+      if (processing.length > 0) {
+        liveHtml.push(`<div style="padding:10px 14px;border-radius:8px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);margin-bottom:8px">
+          <p style="font-size:.75rem;color:#818cf8;margin:0 0 6px;font-weight:600">PROCESSING NOW (${processing.length})</p>
+          ${processing.map(e => `<div style="font-size:.78rem;color:#d1d5db;margin-bottom:3px">
+            <span style="color:#6366f1;font-weight:600">[${e.step}]</span>
+            <span style="color:#e5e7eb"> ${e.title}</span>
+            <span style="color:#6b7280;font-size:.7rem"> · started ${fmtTs(e.startedAt)}</span>
+          </div>`).join('')}
+        </div>`);
+      } else {
+        liveHtml.push(`<div style="font-size:.78rem;color:#6b7280;margin-bottom:8px">No videos currently processing.</div>`);
+      }
+      if (data.lastCompletedAt) liveHtml.push(`<p style="font-size:.72rem;color:#6b7280;margin:0 0 4px">Last completed: <span style="color:#34d399">${fmtTs(data.lastCompletedAt)}</span></p>`);
+      if (data.lastError) liveHtml.push(`<p style="font-size:.72rem;color:#f87171;margin:0 0 4px">Last error: ${data.lastError.message} <span style="color:#6b7280">(${data.lastError.title}, ${fmtTs(data.lastError.at)})</span></p>`);
+      if (data.nextScheduledSlot) liveHtml.push(`<p style="font-size:.72rem;color:#6b7280;margin:0">Next slot: <span style="color:#9ca3af">${data.nextScheduledSlot.title || data.nextScheduledSlot.date}</span></p>`);
+      liveEl.innerHTML = liveHtml.join('');
+    }
   }
   const timingsEl = document.getElementById('adm-channel-timings');
   if (timingsEl && timings?.channels?.length) {

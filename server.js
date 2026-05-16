@@ -90,6 +90,22 @@ const YOUTUBE_QUOTA_COSTS = {
 };
 const YOUTUBE_DAILY_LIMIT = 9000; // 1000-unit safety buffer below the 10,000 hard cap
 
+// ─── In-memory pipeline status — reset on restart, updated by runJITPipelineForSlot ───
+const PIPELINE_STATUS = {
+  currentlyProcessing: [], // [{slotId, title, userId, startedAt, step}]
+  lastCompletedAt:     null,
+  lastError:           null,
+  todayDate:           '',
+  todayStats:          { generated: 0, posted: 0, failed: 0, thumbnails: 0 },
+};
+function pipelineEnsureTodayStats() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (PIPELINE_STATUS.todayDate !== today) {
+    PIPELINE_STATUS.todayDate  = today;
+    PIPELINE_STATUS.todayStats = { generated: 0, posted: 0, failed: 0, thumbnails: 0 };
+  }
+}
+
 // ─── Scientific posting times based on YouTube Shorts algorithm research ───
 // Optimal daily posting windows; slots distributed across these based on daily video count.
 const POSTING_TIMES_BY_COUNT = {
@@ -4617,25 +4633,34 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
   const setStatus = (fields) => slotsCol.updateOne({ _id: slotId }, { $set: fields }).catch(() => {});
 
+  // Track in PIPELINE_STATUS
+  pipelineEnsureTodayStats();
+  const psEntry = { slotId: String(slotId), title: slotDoc.title, userId: String(slotDoc.userId), startedAt: new Date().toISOString(), step: '1/5' };
+  PIPELINE_STATUS.currentlyProcessing.push(psEntry);
+  const psUpdate = (step) => { psEntry.step = step; };
+
   try {
     // 1/5 Script
-    console.log(`[JIT] 1/5 Script — "${slotDoc.title}"`);
+    psUpdate('1/5'); console.log(`[JIT] 1/5 Script — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-script' });
     const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type);
     const script     = scriptData.script;
     await setStatus({ scriptText: script, scriptCaptions: scriptData.captions, cachedScript: script.slice(0, 2000), pipelineStatus: 'script-done' });
+    PIPELINE_STATUS.todayStats.generated++;
     console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
 
     // 2/5 Thumbnail (non-fatal — pipeline continues even if this fails)
-    console.log(`[JIT] 2/5 Thumbnail — "${slotDoc.title}"`);
+    psUpdate('2/5'); console.log(`[JIT] 2/5 Thumbnail — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-thumbnail' });
     thumbPath = await generateThumbnail(slotDoc.title, nicheName, slotDoc.type, String(slotId));
-    if (thumbPath) await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done' });
-    else await setStatus({ pipelineStatus: 'thumbnail-skipped' });
+    if (thumbPath) {
+      await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done' });
+      PIPELINE_STATUS.todayStats.thumbnails++;
+    } else await setStatus({ pipelineStatus: 'thumbnail-skipped' });
     console.log(`[JIT] 2/5 Done — ${thumbPath ? thumbPath : 'skipped'}`);
 
     // 3/5 Voiceover
-    console.log(`[JIT] 3/5 Voiceover — "${slotDoc.title}"`);
+    psUpdate('3/5'); console.log(`[JIT] 3/5 Voiceover — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-voiceover' });
     const voResult = await pipelineGenerateVoiceover(script, String(slotDoc.userId));
     audioPath = voResult.audioPath;
@@ -4644,7 +4669,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     console.log(`[JIT] 3/5 Done`);
 
     // 4/5 Footage
-    console.log(`[JIT] 4/5 Footage — "${slotDoc.title}"`);
+    psUpdate('4/5'); console.log(`[JIT] 4/5 Footage — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'fetching-footage' });
     const footageClips = await pipelineFetchMultipleFootage(slotDoc.title, script, nicheName, String(slotDoc.userId));
     await setStatus({
@@ -4678,6 +4703,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     }
 
     // 5/5 Assemble + Upload
+    psUpdate('5/5');
     const finalCaptions = (isShort && captions.length === 0)
       ? buildFallbackCaptions(script, footageClips.length * 6)
       : captions;
@@ -4716,9 +4742,15 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     fs.unlink(outPath, () => {});
     if (audioPath) { fs.unlink(audioPath, () => {}); audioPath = null; }
     // thumbPath is deleted inside doThumbUpload (whether upload succeeds or fails)
+    PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
+    PIPELINE_STATUS.lastCompletedAt = new Date().toISOString();
+    PIPELINE_STATUS.todayStats.posted++;
     console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
     return ytId;
   } catch (err) {
+    PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
+    PIPELINE_STATUS.lastError = { message: err.message, slotId: String(slotId), title: slotDoc.title, at: new Date().toISOString() };
+    PIPELINE_STATUS.todayStats.failed++;
     if (audioPath) { require('fs').unlink(audioPath, () => {}); }
     if (thumbPath) { require('fs').unlink(thumbPath, () => {}); }
     require('fs').unlink(outPath, () => {});
@@ -5458,9 +5490,10 @@ app.post('/api/admin/auth', requireAuth, async (req, res) => {
 // GET /api/admin/overview — high-level platform snapshot
 app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   try {
-    const today    = new Date().toISOString().slice(0, 10);
+    const today      = new Date().toISOString().slice(0, 10);
     const monthStart = new Date().toISOString().slice(0, 7) + '-01';
-    const todayStart = new Date(today + 'T00:00:00.000Z');
+    const todayStart = today + 'T00:00:00.000Z';
+    const tomorrowStart = new Date(new Date(todayStart).getTime() + 86400000).toISOString();
 
     const usageCol  = agentCol('apiUsage');
     const slotsCol  = agentCol('calendar_slots');
@@ -5468,18 +5501,22 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
 
     const [
       totalUsers,
-      activeToday,
       videosPostedToday,
+      totalVideosEver,
+      activeUsersTodayDocs,
       costTodayDocs,
       costMonthDocs,
       quotaTodayDocs,
       quotaByUserDocs,
     ] = await Promise.all([
       User.countDocuments(),
-      User.countDocuments({ updatedAt: { $gte: todayStart } }),
-      slotsCol.countDocuments({ posted: true, date: today }),
+      // Count slots posted today by postedAt timestamp (accurate across midnight)
+      slotsCol.countDocuments({ posted: true, postedAt: { $gte: todayStart, $lt: tomorrowStart } }),
+      slotsCol.countDocuments({ posted: true }),
+      // Active today = distinct userIds who posted a video today
+      slotsCol.distinct('userId', { posted: true, postedAt: { $gte: todayStart, $lt: tomorrowStart } }),
       usageCol.aggregate([
-        { $match: { timestamp: { $gte: today + 'T00:00:00.000Z' } } },
+        { $match: { timestamp: { $gte: todayStart } } },
         { $group: { _id: null, total: { $sum: '$estimatedCost' } } },
       ]).toArray(),
       usageCol.aggregate([
@@ -5501,6 +5538,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     const totalCostThisMonth  = costMonthDocs[0]?.total || 0;
     const quotaUsedToday      = quotaTodayDocs[0]?.total || 0;
     const quotaByUser         = Object.fromEntries(quotaByUserDocs.map(r => [r._id || 'system', r.units]));
+    const activeToday         = activeUsersTodayDocs.length;
 
     const now = new Date();
     const nextResetAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
@@ -5515,11 +5553,12 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       totalUsers,
       activeToday,
       videosPostedToday,
+      totalVideosEver,
       totalCostToday:     parseFloat(totalCostToday.toFixed(6)),
       totalCostThisMonth: parseFloat(totalCostThisMonth.toFixed(6)),
       perPlanBreakdown,
       quotaUsedToday,
-      quotaRemaining:     Math.max(0, 10000 - quotaUsedToday),
+      quotaRemaining:     Math.max(0, YOUTUBE_DAILY_LIMIT - quotaUsedToday),
       quotaByUser,
       nextResetAt,
     });
@@ -5529,10 +5568,11 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/api-usage — last 24 h grouped by service
+// GET /api/admin/api-usage — today's usage grouped by service, plus static infra entries
 app.get('/api/admin/api-usage', requireAdmin, async (req, res) => {
   try {
-    const since   = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const today    = new Date().toISOString().slice(0, 10);
+    const since    = today + 'T00:00:00.000Z';
     const usageCol = agentCol('apiUsage');
     const rows = await usageCol.aggregate([
       { $match: { timestamp: { $gte: since } } },
@@ -5542,6 +5582,7 @@ app.get('/api/admin/api-usage', requireAdmin, async (req, res) => {
         tokensUsed:   { $sum: '$tokensUsed' },
         totalCost:    { $sum: '$estimatedCost' },
         successCount: { $sum: { $cond: ['$success', 1, 0] } },
+        lastUsed:     { $max: '$timestamp' },
       }},
       { $sort: { totalCost: -1 } },
     ]).toArray();
@@ -5552,51 +5593,70 @@ app.get('/api/admin/api-usage', requireAdmin, async (req, res) => {
       tokensUsed:  r.tokensUsed,
       totalCost:   parseFloat(r.totalCost.toFixed(6)),
       successRate: r.calls > 0 ? parseFloat((r.successCount / r.calls).toFixed(4)) : 0,
+      lastUsed:    r.lastUsed || null,
+      isStatic:    false,
     }));
 
-    res.json({ success: true, since, usage: result });
+    // Static infra services that don't log to apiUsage — shown for completeness
+    const staticInfra = [
+      { service: 'railway',  calls: null, tokensUsed: 0, totalCost: null, successRate: null, lastUsed: null, isStatic: true, note: 'Flat monthly — see Railway dashboard' },
+      { service: 'mongodb',  calls: null, tokensUsed: 0, totalCost: null, successRate: null, lastUsed: null, isStatic: true, note: 'Atlas cluster — see Atlas billing' },
+      { service: 'pexels',   calls: null, tokensUsed: 0, totalCost: null, successRate: null, lastUsed: null, isStatic: true, note: 'Free tier API — no cost' },
+    ];
+
+    res.json({ success: true, since, usage: [...result, ...staticInfra] });
   } catch (err) {
     console.error('[Admin] API usage error:', err.message);
     res.status(500).json({ error: 'Internal error' });
   }
 });
 
-// GET /api/admin/youtube-quota — daily quota consumption estimate
+// GET /api/admin/youtube-quota — daily quota from youtubeQuota collection with action breakdown
 app.get('/api/admin/youtube-quota', requireAdmin, async (req, res) => {
   try {
     const today    = new Date().toISOString().slice(0, 10);
-    const usageCol = agentCol('apiUsage');
-    const rows = await usageCol.aggregate([
-      { $match: { service: 'youtube', timestamp: { $gte: today + 'T00:00:00.000Z' } } },
-      { $group: { _id: null, used: { $sum: '$tokensUsed' } } },
-    ]).toArray();
+    const quotaCol = agentCol('youtubeQuota');
 
-    const used        = rows[0]?.used || 0;
-    const limit       = API_COSTS.youtube_daily_quota;
+    const [totalDocs, byActionDocs] = await Promise.all([
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: null, used: { $sum: '$units' } } },
+      ]).toArray(),
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: '$action', units: { $sum: '$units' }, calls: { $sum: 1 } } },
+        { $sort: { units: -1 } },
+      ]).toArray(),
+    ]);
+
+    const used        = totalDocs[0]?.used || 0;
+    const limit       = YOUTUBE_DAILY_LIMIT;
+    const hardLimit   = 10000;
     const remaining   = Math.max(0, limit - used);
-    const percentUsed = parseFloat(((used / limit) * 100).toFixed(2));
+    const percentUsed = parseFloat(((used / hardLimit) * 100).toFixed(2));
+    const byAction    = byActionDocs.map(r => ({ action: r._id, units: r.units, calls: r.calls }));
 
-    // Reset at midnight UTC
-    const now    = new Date();
-    const resetAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
-      .toISOString();
+    const now = new Date();
+    const resetAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
 
-    res.json({ success: true, used, limit, remaining, percentUsed, resetAt });
+    res.json({ success: true, used, limit, hardLimit, remaining, percentUsed, byAction, resetAt });
   } catch (err) {
     console.error('[Admin] YouTube quota error:', err.message);
     res.status(500).json({ error: 'Internal error' });
   }
 });
 
-// GET /api/admin/users — all users with cost + activity summary, sorted by monthly cost desc
+// GET /api/admin/users — all real users sorted by videos posted desc
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const monthStart = new Date().toISOString().slice(0, 7) + '-01T00:00:00.000Z';
     const usageCol   = agentCol('apiUsage');
     const slotsCol   = agentCol('calendar_slots');
 
+    // Exclude test/diagnostic accounts
     const [users, costByUser] = await Promise.all([
-      User.find().select('email plan createdAt updatedAt youtubeChannels').lean(),
+      User.find({ email: { $not: /test|diag|_test_|viralityy\.com$/i } })
+        .select('email plan createdAt updatedAt youtubeChannels').lean(),
       usageCol.aggregate([
         { $match: { timestamp: { $gte: monthStart }, userId: { $ne: null } } },
         { $group: { _id: '$userId', cost: { $sum: '$estimatedCost' } } },
@@ -5617,7 +5677,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
       };
     }));
 
-    userRows.sort((a, b) => b.apiCostThisMonth - a.apiCostThisMonth);
+    userRows.sort((a, b) => b.videosPosted - a.videosPosted);
     res.json({ success: true, count: userRows.length, users: userRows });
   } catch (err) {
     console.error('[Admin] Users error:', err.message);
@@ -5692,36 +5752,44 @@ app.get('/api/admin/alerts', requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/pipeline-stats — today's pipeline performance summary
+// GET /api/admin/pipeline-stats — today's pipeline performance + real-time status
 app.get('/api/admin/pipeline-stats', requireAdmin, async (req, res) => {
   try {
     const today    = new Date().toISOString().slice(0, 10);
+    const todayStart   = today + 'T00:00:00.000Z';
+    const tomorrowStart = new Date(new Date(todayStart).getTime() + 86400000).toISOString();
+    const nowIso   = new Date().toISOString();
     const slotsCol = agentCol('calendar_slots');
-    const usageCol = agentCol('apiUsage');
 
-    const [todaySlots, failedSlots, pipelineCalls] = await Promise.all([
-      slotsCol.find({ date: today }).toArray(),
+    pipelineEnsureTodayStats();
+
+    const [videosPostedToday, failedSlots, nextSlotDoc] = await Promise.all([
+      // Count posts by postedAt timestamp for accuracy
+      slotsCol.countDocuments({ posted: true, postedAt: { $gte: todayStart, $lt: tomorrowStart } }),
       slotsCol.countDocuments({ date: today, pipelineStatus: 'failed' }),
-      usageCol.find({
-        service: 'openai', action: 'script_short',
-        timestamp: { $gte: today + 'T00:00:00.000Z' },
-      }).toArray(),
+      // Next upcoming slot not yet posted or rescheduled
+      slotsCol.findOne(
+        { posted: false, status: { $in: ['scheduled', 'pending'] }, scheduledFor: { $gt: nowIso } },
+        { sort: { scheduledFor: 1 }, projection: { title: 1, scheduledFor: 1, date: 1 } }
+      ),
     ]);
 
-    const videosGeneratedToday = todaySlots.filter(s => s.pipelineStatus === 'ready' || s.status === 'ready').length;
-    const videosPostedToday    = todaySlots.filter(s => s.posted).length;
-    const totalAttempted       = pipelineCalls.length;
-    const successfulCalls      = pipelineCalls.filter(c => c.success).length;
-    const successRate          = totalAttempted > 0
-      ? parseFloat((successfulCalls / totalAttempted).toFixed(4)) : null;
+    const ps = PIPELINE_STATUS;
+    const totalAttempted = ps.todayStats.posted + ps.todayStats.failed;
+    const successRate    = totalAttempted > 0
+      ? parseFloat((ps.todayStats.posted / totalAttempted).toFixed(4)) : null;
 
     res.json({
       success: true,
-      videosGeneratedToday,
+      videosGeneratedToday: ps.todayStats.generated,
       videosPostedToday,
-      failureCount:    failedSlots,
-      avgGenerationTimeMs: null, // tracked via pipelineStartedAt/previewReadyAt — reserved for future
+      thumbnailsGeneratedToday: ps.todayStats.thumbnails,
+      failureCount:       failedSlots,
       successRate,
+      currentlyProcessing: ps.currentlyProcessing,
+      lastCompletedAt:    ps.lastCompletedAt,
+      lastError:          ps.lastError,
+      nextScheduledSlot:  nextSlotDoc ? { title: nextSlotDoc.title, scheduledFor: nextSlotDoc.scheduledFor, date: nextSlotDoc.date } : null,
     });
   } catch (err) {
     console.error('[Admin] Pipeline stats error:', err.message);
