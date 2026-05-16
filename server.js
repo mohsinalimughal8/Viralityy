@@ -5624,6 +5624,77 @@ app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
 });
 
 // =============================================================================
+// TEST ROUTE — admin-only, does NOT touch the content calendar or scheduled slots
+// =============================================================================
+
+// POST /api/test/post-short — generate + post one Short to "All & Everything" channel.
+// Protected by admin JWT. Returns YouTube URL when done (synchronous — may take ~2 min).
+app.post('/api/test/post-short', requireAdmin, async (req, res) => {
+  try {
+    const { OpenAI } = require('openai');
+    const fs = require('fs');
+
+    const TITLE = 'The Power of Habit: How to Build Routines That Stick';
+    const NICHE = 'Psychology & Human Behaviour';
+
+    // Find the admin user via ADMIN_EMAIL env var
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
+
+    const user = await User.findOne({ email: adminEmail });
+    if (!user) return res.status(404).json({ error: `No user found for ADMIN_EMAIL: ${adminEmail}` });
+
+    // Locate "All & Everything" channel; fall back to first channel if not found by name
+    const channel = (user.youtubeChannels || []).find(ch =>
+      /all.*everything/i.test(ch.channelName || '')
+    ) || user.youtubeChannels?.[0];
+    if (!channel) return res.status(404).json({ error: 'No YouTube channel found for this user' });
+
+    console.log(`[TestPost] Channel: "${channel.channelName}" (${channel.channelId})`);
+
+    // Step 1: Generate script via OpenAI
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OPENAI_API_KEY not configured' });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    console.log(`[TestPost] Generating script for "${TITLE}"...`);
+    const structured = await generateStructuredScript(TITLE, NICHE, 'Short', openai);
+    const script = structured.fullScript || TITLE;
+    console.log(`[TestPost] Script ready (${script.length} chars)`);
+
+    // Step 2: Voiceover via Google TTS REST API
+    console.log('[TestPost] Generating voiceover...');
+    const { audioPath, captions } = await pipelineGenerateVoiceover(script, String(user._id));
+    console.log(`[TestPost] Voiceover: ${audioPath}`);
+
+    // Step 3: Fetch 5 unique Pexels clips
+    console.log('[TestPost] Fetching Pexels footage...');
+    const footageClips = await pipelineFetchMultipleFootage(TITLE, script, NICHE, String(user._id));
+    console.log(`[TestPost] ${footageClips.length} clips fetched`);
+
+    // Step 4: Assemble video with SRT captions (FontSize=22, Bold, MarginV=120)
+    const outPath = `/tmp/vly_testpost_${Date.now()}.mp4`;
+    console.log('[TestPost] Assembling video...');
+    await pipelineAssembleVideo(footageClips, audioPath, outPath, captions, true);
+    console.log(`[TestPost] Assembled: ${outPath}`);
+
+    // Step 5: Upload to YouTube as a Short with #Shorts in title
+    const uploadTitle = TITLE.includes('#Shorts') ? TITLE : `${TITLE} #Shorts`;
+    const uploadDesc  = `${script.slice(0, 4750)}\n\n#Shorts #YouTubeShorts #viral #psychology #habits`;
+    console.log(`[TestPost] Uploading to YouTube...`);
+    const ytId = await pipelineUploadToYouTube(outPath, uploadTitle, uploadDesc, channel, true);
+
+    fs.unlink(outPath, () => {});
+    fs.unlink(audioPath, () => {});
+
+    const ytUrl = `https://youtu.be/${ytId}`;
+    console.log(`[TestPost] ✓ ${ytUrl}`);
+    res.json({ success: true, youtubeUrl: ytUrl, youtubeVideoId: ytId, channel: channel.channelName, title: uploadTitle });
+  } catch (err) {
+    console.error('[TestPost] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // CRON REGISTRATION — called once after MongoDB is connected
 // All cron jobs live here so they can safely access the database.
 // =============================================================================
