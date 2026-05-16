@@ -379,6 +379,11 @@ const userSchema = new mongoose.Schema({
   autoPost:        { type: Boolean, default: true },
   timezone:        { type: String },
   usedFootageIds:  { type: [String], default: [] },
+  blocked:         { type: Boolean, default: false },
+  blockedAt:       { type: Date },
+  blockedReason:   { type: String },
+  unblockedAt:     { type: Date },
+  sessionVersion:  { type: Number, default: 0 },
   createdAt:       { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -583,14 +588,26 @@ passport.deserializeUser(async (id, done) => { try { done(null, await User.findB
 // =============================================================================
 // HELPERS
 // =============================================================================
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (token) {
+    let decoded;
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = { id: decoded.userId };
-      return next();
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch { return res.status(401).json({ error: 'Invalid token' }); }
+
+    try {
+      const user = await User.findById(decoded.userId).select('blocked sessionVersion').lean();
+      if (!user) return res.status(401).json({ error: 'Invalid token' });
+      if (user.blocked) return res.status(403).json({ error: 'Account suspended. Contact support@viralityy.com' });
+      // sessionVersion mismatch means token was invalidated (e.g. user was blocked then unblocked)
+      if ((user.sessionVersion || 0) !== (decoded.sessionVersion || 0)) {
+        return res.status(401).json({ error: 'Session expired. Please log in again.' });
+      }
+    } catch { return res.status(500).json({ error: 'Auth check failed' }); }
+
+    req.user = { id: decoded.userId };
+    return next();
   }
   if (req.isAuthenticated()) return next();
   return res.status(401).json({ error: 'Authentication required' });
@@ -757,7 +774,7 @@ app.get('/auth/google/callback',
   },
   (req, res) => {
   try {
-    const token = jwt.sign({ userId: req.user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: req.user.id, sessionVersion: req.user.sessionVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
     const frontendUrl = process.env.FRONTEND_URL || 'https://viralityy.pages.dev';
 
     const pending = req.user.pendingOAuthChannels || [];
@@ -809,7 +826,7 @@ app.post('/api/auth/register', async (req, res) => {
       ...(ref && { referredBy: ref }),
     });
 
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: user.id, sessionVersion: 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan, trialEndsAt: user.trialEndsAt } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -824,7 +841,9 @@ app.post('/api/auth/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    if (user.blocked) return res.status(403).json({ error: 'Account suspended. Contact support@viralityy.com' });
+
+    const token = jwt.sign({ userId: user.id, sessionVersion: user.sessionVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan, trialEndsAt: user.trialEndsAt } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5345,6 +5364,11 @@ async function runScheduledPosting() {
       await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'failed', pipelineError: 'User not found', failedAt: nowIso } }).catch(() => {});
       continue;
     }
+    if (user.blocked) {
+      console.warn(`[PostingCron] User ${user.email} is blocked — skipping slot "${fresh.title}"`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'skipped', pipelineStatus: 'user-blocked', pipelineError: 'User account suspended' } }).catch(() => {});
+      continue;
+    }
 
     try {
       console.log(`[PostingCron] JIT pipeline starting for "${fresh.title}" (due ${fresh.scheduledPostTime})`);
@@ -5656,7 +5680,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
     // Exclude test/diagnostic accounts
     const [users, costByUser] = await Promise.all([
       User.find({ email: { $not: /test|diag|_test_|viralityy\.com$/i } })
-        .select('email plan createdAt updatedAt youtubeChannels').lean(),
+        .select('email plan createdAt updatedAt youtubeChannels blocked blockedAt blockedReason').lean(),
       usageCol.aggregate([
         { $match: { timestamp: { $gte: monthStart }, userId: { $ne: null } } },
         { $group: { _id: '$userId', cost: { $sum: '$estimatedCost' } } },
@@ -5668,12 +5692,15 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
     const userRows = await Promise.all(users.map(async u => {
       const videosPosted = await slotsCol.countDocuments({ userId: String(u._id), posted: true }).catch(() => 0);
       return {
+        id:                String(u._id),
         email:             u.email,
         plan:              u.plan,
         videosPosted,
         apiCostThisMonth:  parseFloat((costMap[String(u._id)] || 0).toFixed(6)),
         lastActive:        u.updatedAt || u.createdAt,
         channelsCount:     (u.youtubeChannels || []).length,
+        blocked:           !!u.blocked,
+        blockedReason:     u.blockedReason || null,
       };
     }));
 
@@ -5818,6 +5845,90 @@ app.get('/api/admin/channel-timings', requireAdmin, async (req, res) => {
     }
     res.json({ success: true, channels: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/users/:userId/block — suspend a user account
+app.post('/api/admin/users/:userId/block', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason } = req.body || {};
+    const adminEmail = process.env.ADMIN_EMAIL;
+
+    const user = await User.findById(userId).select('email sessionVersion').lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.email === adminEmail) return res.status(400).json({ error: 'Cannot block the admin account' });
+
+    const newVersion = (user.sessionVersion || 0) + 1;
+    await User.findByIdAndUpdate(userId, {
+      blocked:        true,
+      blockedAt:      new Date(),
+      blockedReason:  reason || 'Blocked by admin',
+      sessionVersion: newVersion,
+    });
+
+    agentCol('adminAlerts').insertOne({
+      type:        'user_blocked',
+      userId:      String(userId),
+      userEmail:   user.email,
+      reason:      reason || 'Blocked by admin',
+      adminAction: true,
+      timestamp:   new Date().toISOString(),
+    }).catch(() => {});
+
+    console.log(`[Admin] Blocked user ${user.email} (reason: ${reason || 'none'})`);
+    res.json({ success: true, message: 'User blocked' });
+  } catch (err) {
+    console.error('[Admin] Block error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// POST /api/admin/users/:userId/unblock — restore a suspended user account
+app.post('/api/admin/users/:userId/unblock', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = await User.findById(userId).select('email sessionVersion').lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Bump sessionVersion so re-issued tokens after unblock are fresh
+    await User.findByIdAndUpdate(userId, {
+      blocked:        false,
+      unblockedAt:    new Date(),
+      sessionVersion: (user.sessionVersion || 0) + 1,
+    });
+
+    console.log(`[Admin] Unblocked user ${user.email}`);
+    res.json({ success: true, message: 'User unblocked' });
+  } catch (err) {
+    console.error('[Admin] Unblock error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// DELETE /api/admin/users/:userId — permanently remove a user and all their data
+app.delete('/api/admin/users/:userId', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const adminEmail = process.env.ADMIN_EMAIL;
+
+    const user = await User.findById(userId).select('email').lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.email === adminEmail) return res.status(400).json({ error: 'Cannot delete the admin account' });
+
+    const userIdStr = String(userId);
+    const [slotsRes, usageRes] = await Promise.all([
+      agentCol('calendar_slots').deleteMany({ userId: userIdStr }),
+      agentCol('apiUsage').deleteMany({ userId: userIdStr }),
+    ]);
+
+    await User.findByIdAndDelete(userId);
+
+    console.log(`[Admin] Deleted user ${user.email} — slots: ${slotsRes.deletedCount}, usage: ${usageRes.deletedCount}`);
+    res.json({ success: true, message: 'User and all data removed' });
+  } catch (err) {
+    console.error('[Admin] Delete user error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
 });
 
 // POST /api/admin/run-pipeline — manually trigger daily generation + scheduled posting (admin only)
