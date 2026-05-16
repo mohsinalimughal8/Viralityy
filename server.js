@@ -275,6 +275,8 @@ async function runStartupSlotCheck() {
     console.log(`[Startup] YOUTUBE_CLIENT_ID:     ${process.env.YOUTUBE_CLIENT_ID     ? 'SET' : 'MISSING ⚠'}`);
     console.log(`[Startup] YOUTUBE_CLIENT_SECRET: ${process.env.YOUTUBE_CLIENT_SECRET ? 'SET' : 'MISSING ⚠'}`);
     console.log(`[Startup] GOOGLE_TTS_API_KEY:    ${process.env.GOOGLE_TTS_API_KEY    ? 'SET' : 'MISSING ⚠'}`);
+    console.log('[AutoPost Audit] ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? 'SET' : 'MISSING ⚠');
+    console.log('[AutoPost Audit] ADMIN_PASSWORD:', process.env.ADMIN_PASSWORD ? 'SET' : 'MISSING ⚠');
 
     // Reset any slots that were stuck mid-pipeline when the server went down.
     // Never pre-generate or run any pipeline at startup.
@@ -550,14 +552,14 @@ function hashIp(ip) {
 // Admin JWT middleware — separate secret from user JWT; returns 403 with no details on failure
 function requireAdmin(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(403).json({ error: 'Forbidden' });
+  if (!token) return res.status(403).json({ error: 'Access denied' });
   try {
     const decoded = jwt.verify(token, process.env.ADMIN_PASSWORD || 'admin_secret_unset');
-    if (!decoded.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    if (decoded.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     req.adminUser = decoded;
     return next();
   } catch {
-    return res.status(403).json({ error: 'Forbidden' });
+    return res.status(403).json({ error: 'Access denied' });
   }
 }
 
@@ -5216,33 +5218,24 @@ app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
 // Access via POST /api/admin/auth first, then pass the returned token as Bearer.
 // =============================================================================
 
-// POST /api/admin/auth — exchange ADMIN_PASSWORD for a short-lived admin JWT
-app.post('/api/admin/auth', async (req, res) => {
+// POST /api/admin/auth — verify regular user JWT + ADMIN_PASSWORD, return short-lived admin JWT
+app.post('/api/admin/auth', requireAuth, async (req, res) => {
   try {
     const { password } = req.body || {};
     const adminPass  = process.env.ADMIN_PASSWORD;
     const adminEmail = process.env.ADMIN_EMAIL;
-    if (!adminPass) return res.status(503).json({ error: 'Admin not configured' });
+    if (!adminPass || !adminEmail) return res.status(503).json({ error: 'Admin not configured' });
 
-    // Verify the token from the regular user session to confirm identity
-    const userToken = req.headers.authorization?.split(' ')[1];
-    let callerEmail = null;
-    if (userToken) {
-      try { callerEmail = (jwt.verify(userToken, process.env.JWT_SECRET) || {}).email; } catch {}
-      if (!callerEmail) {
-        try {
-          const uid = jwt.verify(userToken, process.env.JWT_SECRET).userId;
-          const u   = await User.findById(uid).select('email').lean();
-          callerEmail = u?.email;
-        } catch {}
-      }
+    // Confirm the logged-in user's email matches ADMIN_EMAIL
+    const userDoc = await User.findById(req.user.id).select('email').lean();
+    if (!userDoc || userDoc.email !== adminEmail) {
+      return res.status(403).json({ error: 'Access denied' });
     }
-    if (adminEmail && callerEmail !== adminEmail) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    if (password !== adminPass) return res.status(403).json({ error: 'Forbidden' });
 
-    const adminJwt = jwt.sign({ isAdmin: true, email: callerEmail }, adminPass, { expiresIn: '8h' });
+    // Confirm the supplied password matches ADMIN_PASSWORD
+    if (password !== adminPass) return res.status(403).json({ error: 'Access denied' });
+
+    const adminJwt = jwt.sign({ userId: req.user.id, role: 'admin' }, adminPass, { expiresIn: '8h' });
     res.json({ success: true, token: adminJwt, expiresIn: '8h' });
   } catch (err) {
     console.error('[Admin] Auth error:', err.message);
