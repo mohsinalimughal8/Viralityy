@@ -845,13 +845,52 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="sidebar-footer">
     <div class="sidebar-user" onclick="openAccountSettings()">
       <div class="user-av">MA</div>
-      <div><p class="user-name"></p><p class="user-plan"></p><p class="user-tz" style="font-size:.6rem;color:var(--text3);margin-top:1px"></p></div>
+      <div style="min-width:0">
+        <p class="user-name"></p>
+        <p class="user-plan"></p>
+        <p id="sub-status-pill" style="font-size:.6rem;margin-top:2px"></p>
+        <p class="user-tz" style="font-size:.6rem;color:var(--text3);margin-top:1px"></p>
+      </div>
     </div>
     <div style="margin-top:8px;padding:0 .5rem">
       <div class="sidebar-item" style="color:var(--text3);font-size:.75rem" onclick="logout()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</div>
     </div>
   </div>
 </nav>
+
+<!-- Subscription expiry overlay — shown when subscriptionStatus === 'expired' -->
+<div id="sub-expiry-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:8000;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:2rem">
+  <div style="max-width:520px;background:#111;border:1px solid #333;border-radius:16px;padding:2.5rem 2rem">
+    <p style="font-size:2rem;margin:0 0 .5rem">🔒</p>
+    <h2 style="font-size:1.3rem;font-weight:700;color:#e5e7eb;margin:0 0 .5rem">Your subscription has expired</h2>
+    <p style="font-size:.85rem;color:#9ca3af;margin:0 0 1.5rem">Upgrade to continue posting videos automatically.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1.5rem;text-align:left">
+      <div style="border:1px solid #222;border-radius:10px;padding:1rem">
+        <p style="font-size:.75rem;font-weight:700;color:#e5e7eb;margin:0 0 2px">Starter</p>
+        <p style="font-size:1.1rem;font-weight:700;color:#6366f1;margin:0 0 4px">$49<span style="font-size:.7rem;color:#6b7280">/mo</span></p>
+        <p style="font-size:.7rem;color:#6b7280;margin:0">3 Shorts/day · 1 channel</p>
+      </div>
+      <div style="border:1px solid #333;border-radius:10px;padding:1rem;background:rgba(99,102,241,.06)">
+        <p style="font-size:.75rem;font-weight:700;color:#e5e7eb;margin:0 0 2px">Growth</p>
+        <p style="font-size:1.1rem;font-weight:700;color:#6366f1;margin:0 0 4px">$99<span style="font-size:.7rem;color:#6b7280">/mo</span></p>
+        <p style="font-size:.7rem;color:#6b7280;margin:0">10 Shorts + long-form · 3 ch</p>
+      </div>
+      <div style="border:1px solid #222;border-radius:10px;padding:1rem">
+        <p style="font-size:.75rem;font-weight:700;color:#e5e7eb;margin:0 0 2px">Agency</p>
+        <p style="font-size:1.1rem;font-weight:700;color:#6366f1;margin:0 0 4px">$249<span style="font-size:.7rem;color:#6b7280">/mo</span></p>
+        <p style="font-size:.7rem;color:#6b7280;margin:0">10 Shorts + long-form · 5 ch</p>
+      </div>
+    </div>
+    <button onclick="openAccountSettings();document.getElementById('sub-expiry-overlay').style.display='none'"
+      style="width:100%;padding:12px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;margin-bottom:.75rem">
+      Upgrade now →
+    </button>
+    <button onclick="document.getElementById('sub-expiry-overlay').style.display='none'"
+      style="width:100%;padding:10px;background:transparent;color:#6b7280;border:1px solid #333;border-radius:8px;font-size:.82rem;cursor:pointer">
+      View analytics (read-only)
+    </button>
+  </div>
+</div>
 
 <!-- MAIN CONTENT -->
 <div class="dash-main">
@@ -1541,15 +1580,23 @@ async function admLoadUsers() {
   if (!data?.users) { el.innerHTML = '<p style="color:#6b7280;font-size:.8rem;padding:1rem">No data</p>'; return; }
   const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '—';
   const adminEmail = sessionStorage.getItem('vly_admin_email') || '';
+  const subBadge = (s) => {
+    if (s === 'active')    return '<span class="adm-badge adm-badge-ok">Active</span>';
+    if (s === 'trial')     return '<span class="adm-badge" style="background:rgba(99,102,241,.15);color:#a5b4fc">Trial</span>';
+    if (s === 'cancelled') return '<span class="adm-badge adm-badge-warn">Cancelled</span>';
+    if (s === 'past_due')  return '<span class="adm-badge adm-badge-warn">Past due</span>';
+    if (s === 'expired')   return '<span class="adm-badge adm-badge-err">Expired</span>';
+    return '<span class="adm-badge" style="background:#1f2937;color:#6b7280">—</span>';
+  };
   el.innerHTML = `<table class="adm-tbl">
-    <thead><tr><th>Email</th><th>Plan</th><th>Status</th><th>Videos posted</th><th>Cost this month</th><th>Last active</th><th>Channels</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Email</th><th>Plan</th><th>Sub status</th><th>Account</th><th>Videos</th><th>Revenue</th><th>End date</th><th>Days left</th><th>Actions</th></tr></thead>
     <tbody>${data.users.map(u => {
-      const highCost = u.apiCostThisMonth > 5;
       const isAdmin  = u.email === adminEmail;
-      const rowStyle = u.blocked ? 'background:rgba(239,68,68,.06)' : highCost ? 'background:rgba(239,68,68,.03)' : '';
-      const statusBadge = u.blocked
+      const rowStyle = u.blocked ? 'background:rgba(239,68,68,.06)' : u.subscriptionStatus==='expired' ? 'background:rgba(239,68,68,.04)' : '';
+      const accountBadge = u.blocked
         ? '<span class="adm-badge adm-badge-err">BLOCKED</span>'
-        : '<span class="adm-badge adm-badge-ok">Active</span>';
+        : '<span class="adm-badge adm-badge-ok">OK</span>';
+      const daysColor = (u.daysRemaining != null && u.daysRemaining <= 3) ? 'color:#f87171;font-weight:600' : '';
       const actionBtns = isAdmin ? '<span style="font-size:.7rem;color:#6b7280">Admin</span>' : `
         ${u.blocked
           ? `<button onclick="admUnblockUser('${u.id}','${u.email}')" style="padding:3px 10px;border-radius:4px;border:1px solid #16a34a;background:rgba(22,163,74,.12);color:#4ade80;font-size:.7rem;cursor:pointer;margin-right:4px">Unblock</button>`
@@ -1557,13 +1604,14 @@ async function admLoadUsers() {
         }
         <button onclick="admRemoveUser('${u.id}','${u.email}')" style="padding:3px 10px;border-radius:4px;border:1px solid #dc2626;background:rgba(220,38,38,.12);color:#f87171;font-size:.7rem;cursor:pointer">Remove</button>`;
       return `<tr style="${rowStyle}">
-        <td style="color:${u.blocked?'#9ca3af':'#e5e7eb'};font-weight:500">${u.email}</td>
-        <td><span class="adm-badge ${u.plan==='agency'||u.plan==='growth'?'adm-badge-ok':u.plan==='trial'?'adm-badge-warn':'adm-badge-ok'}">${u.plan}</span></td>
-        <td>${statusBadge}</td>
+        <td style="color:${u.blocked?'#9ca3af':'#e5e7eb'};font-weight:500;max-width:180px;overflow:hidden;text-overflow:ellipsis">${u.email}</td>
+        <td><span class="adm-badge adm-badge-ok">${u.plan}</span> <span style="font-size:.68rem;color:#6b7280">$${u.planPrice}/mo</span></td>
+        <td>${subBadge(u.subscriptionStatus)}</td>
+        <td>${accountBadge}</td>
         <td>${u.videosPosted}</td>
-        <td style="${highCost?'color:#f87171;font-weight:600':''}">$${u.apiCostThisMonth.toFixed(4)}</td>
-        <td>${fmtDate(u.lastActive)}</td>
-        <td>${u.channelsCount}</td>
+        <td style="color:${u.totalRevenue>0?'#34d399':'#6b7280'}">$${u.totalRevenue.toFixed(2)}</td>
+        <td style="font-size:.72rem;color:#9ca3af">${u.subscriptionEndDate ? fmtDate(u.subscriptionEndDate) : '—'}</td>
+        <td style="${daysColor}">${u.daysRemaining != null ? u.daysRemaining + 'd' : '—'}</td>
         <td style="white-space:nowrap">${actionBtns}</td>
       </tr>`;
     }).join('')}</tbody>
@@ -1960,14 +2008,70 @@ function empty(id, msg) {
 
 function updateUserUI() {
   if (!CURRENT_USER) return;
-  const nameEl = document.querySelector('.user-name');
-  const planEl = document.querySelector('.user-plan');
-  const tzEl   = document.querySelector('.user-tz');
-  const avEl   = document.querySelector('.user-av');
+  const nameEl   = document.querySelector('.user-name');
+  const planEl   = document.querySelector('.user-plan');
+  const tzEl     = document.querySelector('.user-tz');
+  const avEl     = document.querySelector('.user-av');
+  const pillEl   = document.getElementById('sub-status-pill');
   if (nameEl) nameEl.textContent = CURRENT_USER.name || CURRENT_USER.email || 'User';
-  if (planEl) planEl.textContent = (CURRENT_USER.plan || 'trial') + ' plan';
   if (tzEl)   tzEl.textContent   = userTZ;
   if (avEl)   avEl.textContent   = (CURRENT_USER.name || CURRENT_USER.email || 'U').slice(0,2).toUpperCase();
+
+  const plan   = CURRENT_USER.plan || 'trial';
+  const status = CURRENT_USER.subscriptionStatus || 'trial';
+  if (planEl) planEl.textContent = plan + ' plan';
+
+  if (pillEl) {
+    if (status === 'trial') {
+      const days = CURRENT_USER.trialDaysLeft ?? CURRENT_USER.trialEndsAt
+        ? Math.max(0, Math.ceil((new Date(CURRENT_USER.trialEndsAt) - Date.now()) / 86400000)) : 7;
+      pillEl.style.color = days <= 2 ? '#f87171' : '#fbbf24';
+      pillEl.textContent = days > 0 ? `Trial: ${days}d left` : 'Trial expired';
+    } else if (status === 'active') {
+      const d = CURRENT_USER.subscriptionRenewsAt || CURRENT_USER.subscriptionEndDate;
+      pillEl.style.color = '#34d399';
+      pillEl.textContent = d ? `Renews ${new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}` : 'Active';
+    } else if (status === 'cancelled') {
+      const d = CURRENT_USER.subscriptionEndDate;
+      pillEl.style.color = '#f59e0b';
+      pillEl.textContent = d ? `Ends ${new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}` : 'Cancelled';
+    } else if (status === 'past_due') {
+      pillEl.style.color = '#ef4444';
+      pillEl.textContent = 'Payment failed';
+    } else if (status === 'expired') {
+      pillEl.style.color = '#ef4444';
+      pillEl.textContent = 'Expired — upgrade';
+    } else {
+      pillEl.textContent = '';
+    }
+  }
+}
+
+async function checkSubscriptionStatus() {
+  // Fetch fresh subscription data and gate features for expired users
+  try {
+    const data = await apiCall('/api/auth/me');
+    if (!data?.user) return;
+    // Merge fresh subscription fields into CURRENT_USER
+    CURRENT_USER.subscriptionStatus   = data.subscriptionStatus;
+    CURRENT_USER.trialDaysLeft        = data.trialDaysLeft;
+    CURRENT_USER.subscriptionEndDate  = data.subscriptionEndDate;
+    CURRENT_USER.subscriptionRenewsAt = data.subscriptionRenewsAt;
+    CURRENT_USER.trialEndsAt          = data.user.trialEndsAt;
+    localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
+    updateUserUI();
+
+    if (data.subscriptionStatus === 'expired') {
+      // Gate feature-heavy pages — allow analytics and dashboard overview only
+      const overlay = document.getElementById('sub-expiry-overlay');
+      if (overlay) overlay.style.display = 'flex';
+      // Disable sidebar items for gated features
+      ['planner','preview','research','quality','learning','competitors'].forEach(id => {
+        const el = document.querySelector(`[onclick="dashPage('${id}',this)"]`);
+        if (el) { el.style.opacity = '.35'; el.style.pointerEvents = 'none'; }
+      });
+    }
+  } catch (_) {}
 }
 
 async function initDashboard() {
@@ -1975,6 +2079,7 @@ async function initDashboard() {
   dashInited = true;
   captureTimezone();
   updateUserUI();
+  checkSubscriptionStatus(); // async — updates sidebar pill + gates expired users
   await initOverview();
 }
 

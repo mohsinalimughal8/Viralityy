@@ -366,6 +366,13 @@ const userSchema = new mongoose.Schema({
   trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
   stripeCustomerId:     { type: String },
   stripeSubscriptionId: { type: String },
+  subscriptionStatus:   { type: String, enum: ['active', 'cancelled', 'expired', 'trial', 'past_due'], default: 'trial' },
+  subscriptionStartDate:  { type: Date },
+  subscriptionEndDate:    { type: Date },
+  subscriptionRenewsAt:   { type: Date },
+  lemonSqueezyCustomerId:     { type: String },
+  lemonSqueezySubscriptionId: { type: String },
+  billingHistory: [{ date: Date, amount: Number, plan: String, status: String, invoiceId: String }],
   youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date }],
   pendingOAuthChannels: [{ channelId: String, channelName: String, thumbnail: String, subscriberCount: Number }],
   googleAccessToken:  String,
@@ -705,11 +712,11 @@ async function checkYoutubeQuota(unitsNeeded, userId) {
 }
 
 const PLAN_CONFIG = {
-  trial:      { shortsPerDay: 1,  longFormPerWeek: 0, channels: 1 },
-  starter:    { shortsPerDay: 3,  longFormPerWeek: 0, channels: 1 },
-  shorts_pro: { shortsPerDay: 7,  longFormPerWeek: 0, channels: 1 },
-  growth:     { shortsPerDay: 10, longFormPerWeek: 1,  channels: 3 },
-  agency:     { shortsPerDay: 10, longFormPerWeek: 1,  channels: 5 },
+  trial:      { videosPerDay: 1,  shortsPerDay: 1,  longFormPerWeek: 0, channels: 1, price: 0 },
+  starter:    { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 49 },
+  shorts_pro: { videosPerDay: 7,  shortsPerDay: 7,  longFormPerWeek: 0, channels: 1, price: 79 },
+  growth:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 3, price: 99 },
+  agency:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 5, price: 249 },
 };
 
 function planNicheQuota(plan) {
@@ -717,8 +724,26 @@ function planNicheQuota(plan) {
 }
 
 function isPlanActive(user) {
-  if (user.plan === 'trial') return new Date() < new Date(user.trialEndsAt);
-  return !!user.stripeSubscriptionId;
+  const status = user.subscriptionStatus;
+  if (status === 'active')    return true;
+  if (status === 'past_due')  return true; // keep access during payment retry window
+  if (status === 'trial')     return new Date() < new Date(user.trialEndsAt);
+  if (status === 'cancelled') return !!(user.subscriptionEndDate && new Date() < new Date(user.subscriptionEndDate));
+  if (status === 'expired')   return false;
+  // Legacy: users created before subscriptionStatus field existed
+  if (!status && user.plan !== 'trial') return !!(user.stripeSubscriptionId) || true;
+  return new Date() < new Date(user.trialEndsAt);
+}
+
+function subscriptionDaysRemaining(user) {
+  const status = user.subscriptionStatus;
+  if (status === 'trial' || !status) {
+    return Math.max(0, Math.ceil((new Date(user.trialEndsAt) - Date.now()) / 86400000));
+  }
+  if (user.subscriptionEndDate) {
+    return Math.max(0, Math.ceil((new Date(user.subscriptionEndDate) - Date.now()) / 86400000));
+  }
+  return null;
 }
 
 function generateAffiliateCode() {
@@ -818,16 +843,18 @@ app.post('/api/auth/register', async (req, res) => {
     const affiliateCode = generateAffiliateCode();
 
     const ref = typeof req.body.ref === 'string' && req.body.ref.trim() ? req.body.ref.trim() : null;
+    const trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const user = await User.create({
       name, email: email.toLowerCase(), passwordHash, affiliateCode,
       plan: 'trial',
+      subscriptionStatus: 'trial',
       trialStartedAt: new Date(),
-      trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      trialEndsAt: trialEnd,
       ...(ref && { referredBy: ref }),
     });
 
     const token = jwt.sign({ userId: user.id, sessionVersion: 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan, trialEndsAt: user.trialEndsAt } });
+    res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan, subscriptionStatus: 'trial', trialEndsAt: user.trialEndsAt } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -844,7 +871,12 @@ app.post('/api/auth/login', async (req, res) => {
     if (user.blocked) return res.status(403).json({ error: 'Account suspended. Contact support@viralityy.com' });
 
     const token = jwt.sign({ userId: user.id, sessionVersion: user.sessionVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan, trialEndsAt: user.trialEndsAt } });
+    res.json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan,
+      subscriptionStatus: user.subscriptionStatus || 'trial',
+      trialEndsAt: user.trialEndsAt,
+      subscriptionEndDate: user.subscriptionEndDate || null,
+      subscriptionRenewsAt: user.subscriptionRenewsAt || null,
+    } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -853,7 +885,18 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-passwordHash');
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ user, planActive: isPlanActive(user), trialDaysLeft: Math.max(0, Math.ceil((new Date(user.trialEndsAt) - Date.now()) / 86400000)) });
+    const status = user.subscriptionStatus || 'trial';
+    const daysLeft = subscriptionDaysRemaining(user);
+    res.json({
+      user,
+      planActive:         isPlanActive(user),
+      subscriptionStatus: status,
+      daysRemaining:      daysLeft,
+      trialDaysLeft:      status === 'trial' ? Math.max(0, Math.ceil((new Date(user.trialEndsAt) - Date.now()) / 86400000)) : null,
+      subscriptionEndDate:   user.subscriptionEndDate || null,
+      subscriptionRenewsAt:  user.subscriptionRenewsAt || null,
+      planPrice:             PLAN_CONFIG[user.plan]?.price ?? 0,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1191,8 +1234,16 @@ app.post('/api/billing/promo', requireAuth, async (req, res) => {
     const validPlans = ['shorts_pro', 'growth', 'agency'];
     if (promoCode !== 'VRL-X9K2-M7QP-4TZW') return res.status(400).json({ success: false, error: 'Invalid promo code' });
     if (!validPlans.includes(plan)) return res.status(400).json({ success: false, error: 'Invalid plan' });
-    await User.findByIdAndUpdate(req.user.id, { plan, planUpdatedAt: new Date() });
-    res.json({ success: true, plan });
+    const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await User.findByIdAndUpdate(req.user.id, {
+      plan,
+      planUpdatedAt:        new Date(),
+      subscriptionStatus:   'active',
+      subscriptionStartDate: new Date(),
+      subscriptionEndDate:  endDate,
+      subscriptionRenewsAt: endDate,
+    });
+    res.json({ success: true, plan, subscriptionStatus: 'active', subscriptionEndDate: endDate });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
@@ -1240,6 +1291,88 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
     }
     res.json({ received: true });
   } catch (err) { console.error('Webhook handler error:', err); res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/billing/webhook — LemonSqueezy webhook handler (ready for billing integration)
+app.post('/api/billing/webhook', express.json(), async (req, res) => {
+  const event = req.body;
+  const eventName = event?.meta?.event_name || 'unknown';
+  console.log(`[LemonSqueezy] Webhook: ${eventName}`);
+
+  try {
+    const attrs    = event?.data?.attributes || {};
+    const userId   = event?.meta?.custom_data?.userId || null;
+    const lsSubId  = event?.data?.id || null;
+    const lsCustId = attrs.customer_id ? String(attrs.customer_id) : null;
+    const planKey  = event?.meta?.custom_data?.planKey || '';
+    const plan     = (['starter','shorts_pro','growth','agency'].includes(planKey)) ? planKey : 'starter';
+
+    switch (eventName) {
+      case 'subscription_created': {
+        if (userId) {
+          const endDate = attrs.ends_at ? new Date(attrs.ends_at) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+          await User.findByIdAndUpdate(userId, {
+            plan,
+            subscriptionStatus:         'active',
+            subscriptionStartDate:      new Date(),
+            subscriptionEndDate:        endDate,
+            subscriptionRenewsAt:       endDate,
+            lemonSqueezySubscriptionId: lsSubId,
+            lemonSqueezyCustomerId:     lsCustId,
+          });
+          console.log(`[LemonSqueezy] subscription_created — user ${userId} → ${plan}`);
+        }
+        break;
+      }
+      case 'subscription_renewed': {
+        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
+        if (user) {
+          const endDate = attrs.ends_at ? new Date(attrs.ends_at) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+          const histEntry = { date: new Date(), amount: (attrs.total || 0) / 100, plan: user.plan, status: 'paid', invoiceId: attrs.order_id ? String(attrs.order_id) : null };
+          await User.findByIdAndUpdate(user._id, {
+            subscriptionStatus:   'active',
+            subscriptionEndDate:  endDate,
+            subscriptionRenewsAt: endDate,
+            $push: { billingHistory: histEntry },
+          });
+          console.log(`[LemonSqueezy] subscription_renewed — user ${user.email}`);
+        }
+        break;
+      }
+      case 'subscription_cancelled': {
+        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
+        if (user) {
+          // Access continues until subscriptionEndDate
+          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'cancelled' });
+          console.log(`[LemonSqueezy] subscription_cancelled — user ${user.email} (access until ${user.subscriptionEndDate})`);
+        }
+        break;
+      }
+      case 'subscription_expired': {
+        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
+        if (user) {
+          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired', plan: 'trial' });
+          console.log(`[LemonSqueezy] subscription_expired — user ${user.email}`);
+        }
+        break;
+      }
+      case 'subscription_payment_failed': {
+        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
+        if (user) {
+          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'past_due' });
+          agentCol('adminAlerts').insertOne({ type: 'payment_failed', userEmail: user.email, userId: String(user._id), timestamp: new Date().toISOString(), resolved: false }).catch(() => {});
+          console.log(`[LemonSqueezy] payment_failed — user ${user.email} → past_due`);
+        }
+        break;
+      }
+      default:
+        console.log(`[LemonSqueezy] Unhandled event: ${eventName}`);
+    }
+  } catch (err) {
+    console.error('[LemonSqueezy] Webhook handler error:', err.message);
+  }
+
+  res.status(200).json({ received: true });
 });
 
 // =============================================================================
@@ -5160,6 +5293,25 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
       }
       const user = await User.findById(calendar.userId).catch(() => null);
       if (!user) continue;
+
+      // Subscription enforcement — never generate for expired/cancelled users
+      const subStatus = user.subscriptionStatus || (user.plan !== 'trial' ? 'active' : 'trial');
+      const now = new Date();
+      if (subStatus === 'expired' || subStatus === 'cancelled') {
+        console.log(`[Pipeline] Skipping ${subStatus} user ${user.email}`);
+        continue;
+      }
+      if (subStatus === 'active' && user.subscriptionEndDate && now > new Date(user.subscriptionEndDate)) {
+        await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired' }).catch(() => {});
+        console.log(`[Pipeline] Subscription expired for ${user.email} — skipping`);
+        continue;
+      }
+      if ((subStatus === 'trial' || !user.subscriptionStatus) && user.trialEndsAt && now > new Date(user.trialEndsAt)) {
+        await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired' }).catch(() => {});
+        console.log(`[Pipeline] Trial expired for ${user.email} — skipping`);
+        continue;
+      }
+
       const config    = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
       const nicheName = calendar.nicheName || user.nicheName || '';
       if (!nicheName) { console.warn(`[DailyGen] No niche for user ${calendar.userId} — skipping`); continue; }
@@ -5680,7 +5832,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
     // Exclude test/diagnostic accounts
     const [users, costByUser] = await Promise.all([
       User.find({ email: { $not: /test|diag|_test_|viralityy\.com$/i } })
-        .select('email plan createdAt updatedAt youtubeChannels blocked blockedAt blockedReason').lean(),
+        .select('email plan createdAt updatedAt youtubeChannels blocked blockedAt blockedReason subscriptionStatus subscriptionStartDate subscriptionEndDate subscriptionRenewsAt billingHistory trialEndsAt').lean(),
       usageCol.aggregate([
         { $match: { timestamp: { $gte: monthStart }, userId: { $ne: null } } },
         { $group: { _id: '$userId', cost: { $sum: '$estimatedCost' } } },
@@ -5691,16 +5843,27 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
     const userRows = await Promise.all(users.map(async u => {
       const videosPosted = await slotsCol.countDocuments({ userId: String(u._id), posted: true }).catch(() => 0);
+      const subStatus  = u.subscriptionStatus || 'trial';
+      const endDate    = u.subscriptionEndDate || u.trialEndsAt || null;
+      const daysLeft   = endDate ? Math.ceil((new Date(endDate) - Date.now()) / 86400000) : null;
+      const planCfg    = PLAN_CONFIG[u.plan] || PLAN_CONFIG.trial;
+      const revenue    = (u.billingHistory || []).reduce((s, h) => s + (h.amount || 0), 0);
       return {
-        id:                String(u._id),
-        email:             u.email,
-        plan:              u.plan,
+        id:                    String(u._id),
+        email:                 u.email,
+        plan:                  u.plan,
+        planPrice:             planCfg.price,
         videosPosted,
-        apiCostThisMonth:  parseFloat((costMap[String(u._id)] || 0).toFixed(6)),
-        lastActive:        u.updatedAt || u.createdAt,
-        channelsCount:     (u.youtubeChannels || []).length,
-        blocked:           !!u.blocked,
-        blockedReason:     u.blockedReason || null,
+        apiCostThisMonth:      parseFloat((costMap[String(u._id)] || 0).toFixed(6)),
+        lastActive:            u.updatedAt || u.createdAt,
+        channelsCount:         (u.youtubeChannels || []).length,
+        blocked:               !!u.blocked,
+        blockedReason:         u.blockedReason || null,
+        subscriptionStatus:    subStatus,
+        subscriptionStartDate: u.subscriptionStartDate || null,
+        subscriptionEndDate:   endDate,
+        daysRemaining:         daysLeft,
+        totalRevenue:          parseFloat(revenue.toFixed(2)),
       };
     }));
 
@@ -6440,6 +6603,26 @@ function registerCronJobs() {
     } catch (e) {
       console.error('[MonthlyReset] Failed:', e.message);
     }
+  }, { timezone: 'UTC' });
+
+  // Trial expiry check — 1 AM UTC daily
+  cron.schedule('0 1 * * *', async () => {
+    console.log('[Trial] Running daily expiry check...');
+    try {
+      const now = new Date();
+      const expired = await User.find({
+        $or: [
+          { subscriptionStatus: 'trial', trialEndsAt: { $lt: now } },
+          { subscriptionStatus: 'active', subscriptionEndDate: { $lt: now } },
+        ],
+      }).select('email plan trialEndsAt subscriptionEndDate subscriptionStatus').lean();
+
+      for (const u of expired) {
+        await User.findByIdAndUpdate(u._id, { subscriptionStatus: 'expired' });
+        console.log(`[Trial] Expired: ${u.email} (was ${u.subscriptionStatus})`);
+      }
+      if (expired.length > 0) console.log(`[Trial] ${expired.length} subscription(s) expired and stopped`);
+    } catch (e) { console.error('[Trial] Expiry cron error:', e.message); }
   }, { timezone: 'UTC' });
 
   // Daily YouTube quota reset log — midnight UTC
