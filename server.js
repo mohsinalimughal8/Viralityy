@@ -5622,7 +5622,7 @@ app.post('/api/content/post-now/:slotId', requireAuth, async (req, res) => {
 
 // POST /api/test/post-short — generate + post one Short to "All & Everything" channel.
 // Protected by admin JWT. Returns YouTube URL when done (synchronous — may take ~2 min).
-app.post('/api/test/post-short', requireAdmin, async (req, res) => {
+app.post('/api/test/post-short', requireAuth, async (req, res) => {
   try {
     const { OpenAI } = require('openai');
     const fs = require('fs');
@@ -5630,11 +5630,11 @@ app.post('/api/test/post-short', requireAdmin, async (req, res) => {
     const TITLE = 'The Power of Habit: How to Build Routines That Stick';
     const NICHE = 'Psychology & Human Behaviour';
 
-    // Find the admin user via ADMIN_EMAIL env var
     const adminEmail = process.env.ADMIN_EMAIL;
     if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
 
-    const user = await User.findOne({ email: adminEmail });
+    const user = await User.findById(req.user.id);
+    if (!user || user.email !== adminEmail) return res.status(403).json({ error: 'Access denied' });
     if (!user) return res.status(404).json({ error: `No user found for ADMIN_EMAIL: ${adminEmail}` });
 
     // Locate "All & Everything" channel; fall back to first channel if not found by name
@@ -5689,7 +5689,7 @@ app.post('/api/test/post-short', requireAdmin, async (req, res) => {
 
 // POST /api/test/post-longform — admin-only. Generates and posts a 16:9 long-form video.
 // Does NOT affect the content calendar or scheduled slots.
-app.post('/api/test/post-longform', requireAdmin, async (req, res) => {
+app.post('/api/test/post-longform', requireAuth, async (req, res) => {
   try {
     const { OpenAI } = require('openai');
     const fs = require('fs');
@@ -5698,10 +5698,10 @@ app.post('/api/test/post-longform', requireAdmin, async (req, res) => {
     const NICHE = 'Psychology & Human Behaviour';
     const TAGS  = ['psychology', 'human behaviour', 'self improvement', 'mental health', 'educational'];
 
-    // Find the admin user and their first YouTube channel
     const adminEmail = process.env.ADMIN_EMAIL;
     if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
-    const user = await User.findOne({ email: adminEmail });
+    const user = await User.findById(req.user.id);
+    if (!user || user.email !== adminEmail) return res.status(403).json({ error: 'Access denied' });
     if (!user) return res.status(404).json({ error: `No user found for ADMIN_EMAIL: ${adminEmail}` });
     const channel = (user.youtubeChannels || []).find(ch =>
       /all.*everything/i.test(ch.channelName || '')
