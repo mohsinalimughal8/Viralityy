@@ -80,6 +80,16 @@ const API_COSTS = {
   youtube_daily_quota: 10000,      // total daily quota units
 };
 
+const YOUTUBE_QUOTA_COSTS = {
+  upload:    1600,
+  search:     100,
+  channels:     1,
+  analytics:   10,
+  captions:    50,
+  default:      1,
+};
+const YOUTUBE_DAILY_LIMIT = 9000; // 1000-unit safety buffer below the 10,000 hard cap
+
 // ─── Scientific posting times based on YouTube Shorts algorithm research ───
 // Optimal daily posting windows; slots distributed across these based on daily video count.
 const POSTING_TIMES_BY_COUNT = {
@@ -163,6 +173,11 @@ async function fetchChannelAnalyticsHours(userId, channelId) {
   const user = await User.findById(userId).lean();
   const ch = (user?.youtubeChannels || []).find(c => c.channelId === channelId) || user?.youtubeChannels?.[0];
   if (!ch?.accessToken) return null;
+  const analyticsQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.analytics, userId).catch(() => ({ allowed: true }));
+  if (!analyticsQC.allowed) {
+    console.warn(`[Quota] fetchChannelAnalyticsHours skipped for ${userId}: ${analyticsQC.reason}`);
+    return null;
+  }
   const { google } = require('googleapis');
   const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
   oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
@@ -175,6 +190,7 @@ async function fetchChannelAnalyticsHours(userId, channelId) {
   });
   const rows = res.data?.rows || [];
   if (!rows.length) return null;
+  logYoutubeQuota('analytics', YOUTUBE_QUOTA_COSTS.analytics, userId).catch(() => {});
   return [...rows].sort((a, b) => b[1] - a[1]).slice(0, 7)
     .map(r => `${String(r[0]).padStart(2, '0')}:00`);
 }
@@ -182,10 +198,16 @@ async function fetchChannelAnalyticsHours(userId, channelId) {
 async function fetchNichePublishHours(nicheName) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return null;
+  const searchQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null).catch(() => ({ allowed: true }));
+  if (!searchQC.allowed) {
+    console.warn(`[Quota] fetchNichePublishHours skipped: ${searchQC.reason}`);
+    return null;
+  }
   const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(nicheName)}&order=viewCount&type=video&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=20&key=${apiKey}`;
   const res = await fetch(url);
   if (!res.ok) return null;
+  logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
   const data = await res.json();
   const hourCounts = {};
   for (const item of (data.items || [])) {
@@ -401,15 +423,22 @@ app.get('/health', async (req, res) => {
   const today        = new Date().toISOString().slice(0, 10);
   const startOfToday = today + 'T00:00:00.000Z';
   let pipeline = { error: 'unavailable' };
+  let youtubeQuotaUsed = 0;
   try {
-    const slotsCol = agentCol('calendar_slots');
-    const [gen, ready, posted, failed, processing] = await Promise.all([
+    const slotsCol  = agentCol('calendar_slots');
+    const quotaCol  = agentCol('youtubeQuota');
+    const [gen, ready, posted, failed, processing, quotaResult] = await Promise.all([
       slotsCol.countDocuments({ date: today }),
       slotsCol.countDocuments({ date: today, status: 'scheduled', posted: false }),
       slotsCol.countDocuments({ status: 'posted', postedAt: { $gte: startOfToday } }),
       slotsCol.countDocuments({ date: today, status: 'failed' }),
       slotsCol.countDocuments({ date: today, status: 'processing' }),
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: null, total: { $sum: '$units' } } },
+      ]).toArray(),
     ]);
+    youtubeQuotaUsed = quotaResult[0]?.total || 0;
     const nextSlot = await slotsCol
       .find({ date: today, status: { $in: ['scheduled', 'processing'] }, posted: false })
       .sort({ scheduledPostTime: 1 })
@@ -428,6 +457,9 @@ app.get('/health', async (req, res) => {
     };
   } catch { /* pipeline stays { error: 'unavailable' } */ }
 
+  const now = new Date();
+  const nextQuotaReset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+
   res.json({
     status:  'ok',
     uptime:  process.uptime(),
@@ -437,6 +469,9 @@ app.get('/health', async (req, res) => {
     youtube: !!process.env.YOUTUBE_API_KEY   ? 'configured' : 'not configured',
     openai:  !!process.env.OPENAI_API_KEY    ? 'configured' : 'not configured',
     pipeline,
+    youtubeQuotaUsed,
+    youtubeQuotaRemaining: Math.max(0, 10000 - youtubeQuotaUsed),
+    youtubeQuotaResetAt:   nextQuotaReset,
   });
 });
 
@@ -577,6 +612,63 @@ async function logAPIUsage(service, action, userId, tokens, cost, success) {
       timestamp:      new Date().toISOString(),
     });
   } catch { /* non-fatal — never crash the caller */ }
+}
+
+// Log a YouTube Data API quota consumption event to the youtubeQuota collection.
+async function logYoutubeQuota(action, units, userId) {
+  try {
+    await agentCol('youtubeQuota').insertOne({
+      date:      new Date().toISOString().slice(0, 10),
+      units,
+      action,
+      userId:    userId ? String(userId) : null,
+      timestamp: new Date(),
+    });
+  } catch { /* non-fatal */ }
+}
+
+// Returns { allowed, reason, used, userUsed }. Fails open on DB errors — never blocks the caller.
+async function checkYoutubeQuota(unitsNeeded, userId) {
+  try {
+    const today  = new Date().toISOString().slice(0, 10);
+    const col    = agentCol('youtubeQuota');
+
+    // Sum all quota used today across all users
+    const totalResult = await col.aggregate([
+      { $match: { date: today } },
+      { $group: { _id: null, total: { $sum: '$units' } } },
+    ]).toArray();
+    const totalUsed = totalResult[0]?.total || 0;
+
+    console.log(`[Quota] Check: ${totalUsed} used + ${unitsNeeded} needed / ${YOUTUBE_DAILY_LIMIT} limit`);
+
+    if (totalUsed + unitsNeeded > YOUTUBE_DAILY_LIMIT) {
+      console.warn(`[Quota] Daily quota nearly exhausted — ${totalUsed}/${YOUTUBE_DAILY_LIMIT} units used`);
+      return { allowed: false, reason: 'Daily quota nearly exhausted', used: totalUsed };
+    }
+
+    // Per-user fair-share check (only when userId provided and multiple users exist)
+    if (userId) {
+      const activeUsers = await User.countDocuments({ 'youtubeChannels.0': { $exists: true } }).catch(() => 1);
+      const perUserShare = Math.floor(YOUTUBE_DAILY_LIMIT / Math.max(activeUsers, 1));
+
+      const userResult = await col.aggregate([
+        { $match: { date: today, userId: String(userId) } },
+        { $group: { _id: null, total: { $sum: '$units' } } },
+      ]).toArray();
+      const userUsed = userResult[0]?.total || 0;
+
+      if (userUsed + unitsNeeded > perUserShare) {
+        console.warn(`[Quota] User ${userId} share exhausted — ${userUsed}/${perUserShare} units`);
+        return { allowed: false, reason: `User quota share exhausted (${userUsed}/${perUserShare} units)`, used: totalUsed, userUsed };
+      }
+    }
+
+    return { allowed: true, used: totalUsed };
+  } catch (err) {
+    console.warn('[Quota] Check error (allowing by default):', err.message);
+    return { allowed: true, used: 0 }; // fail open — never block the pipeline on a DB error
+  }
 }
 
 const PLAN_CONFIG = {
@@ -759,7 +851,10 @@ app.get('/api/channels', requireAuth, async (req, res) => {
           stats = { subscriberCount: cached.subscriberCount, viewCount: cached.viewCount, videoCount: cached.videoCount };
         } else if (process.env.YOUTUBE_API_KEY) {
           // 2. Fetch fresh stats from YouTube Data API
-          try {
+          const statsQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.channels, req.user.id).catch(() => ({ allowed: true }));
+          if (!statsQC.allowed) {
+            console.warn(`[Quota] Channel stats fetch skipped for ${channelId}: ${statsQC.reason}`);
+          } else try {
             const ytRes  = await fetch(
               `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${encodeURIComponent(channelId)}&key=${process.env.YOUTUBE_API_KEY}`
             );
@@ -771,6 +866,7 @@ app.get('/api/channels', requireAuth, async (req, res) => {
                 viewCount:       parseInt(s.viewCount       || 0, 10),
                 videoCount:      parseInt(s.videoCount      || 0, 10),
               };
+              logYoutubeQuota('channels', YOUTUBE_QUOTA_COSTS.channels, req.user.id).catch(() => {});
               // 3. Write to cache
               await statsCol.updateOne(
                 { channelId },
@@ -4368,6 +4464,10 @@ async function pipelineRefreshToken(channel) {
 
 // Step 6 — Upload assembled video to YouTube
 async function pipelineUploadToYouTube(videoPath, title, description, channel, isShort = true) {
+  // Quota guard — throws so callers can reschedule rather than silently dropping the upload
+  const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, null).catch(() => ({ allowed: true }));
+  if (!uploadQC.allowed) throw new Error(`YouTube quota check failed: ${uploadQC.reason}`);
+
   const { google } = require('googleapis');
   const oauth2 = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID,
@@ -4405,6 +4505,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   try {
     const videoId = await tryUpload(channel.accessToken);
     logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, true);
+    logYoutubeQuota('upload', YOUTUBE_QUOTA_COSTS.upload, null).catch(() => {});
     return videoId;
   } catch (err) {
     if (err.code === 401 || err.status === 401 || /invalid_grant|token/.test(err.message)) {
@@ -4414,6 +4515,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       try {
         const videoId = await tryUpload(newToken);
         logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, true);
+        logYoutubeQuota('upload', YOUTUBE_QUOTA_COSTS.upload, null).catch(() => {});
         return videoId;
       } catch (retryErr) {
         logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, false);
@@ -4470,6 +4572,26 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       pipelineStatus:   'footage-done',
     });
     console.log(`[JIT] 3/4 Done — ${footageClips.length} clips`);
+
+    // Quota gate — check before committing to assembly + upload (1600 units)
+    const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, String(slotDoc.userId));
+    if (!uploadQC.allowed) {
+      console.warn(`[Quota] Insufficient quota for upload — slot rescheduled: ${uploadQC.reason}`);
+      const slotDate   = slotDoc.date || new Date().toISOString().slice(0, 10);
+      const tomorrow   = new Date(slotDate + 'T00:00:00Z');
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+      const newDate    = tomorrow.toISOString().slice(0, 10);
+      await setStatus({
+        status:           'scheduled',
+        date:             newDate,
+        pipelineStatus:   'rescheduled-quota',
+        rescheduleReason: uploadQC.reason,
+        rescheduledAt:    new Date().toISOString(),
+      });
+      if (audioPath) { require('fs').unlink(audioPath, () => {}); audioPath = null; }
+      console.log(`[Quota] "${slotDoc.title}" rescheduled to ${newDate}`);
+      return null;
+    }
 
     // 4/4 Assemble + Upload
     const finalCaptions = (isShort && captions.length === 0)
@@ -5252,6 +5374,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
 
     const usageCol  = agentCol('apiUsage');
     const slotsCol  = agentCol('calendar_slots');
+    const quotaCol  = agentCol('youtubeQuota');
 
     const [
       totalUsers,
@@ -5259,6 +5382,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       videosPostedToday,
       costTodayDocs,
       costMonthDocs,
+      quotaTodayDocs,
+      quotaByUserDocs,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ updatedAt: { $gte: todayStart } }),
@@ -5271,10 +5396,24 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
         { $match: { timestamp: { $gte: monthStart + 'T00:00:00.000Z' } } },
         { $group: { _id: null, total: { $sum: '$estimatedCost' } } },
       ]).toArray(),
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: null, total: { $sum: '$units' } } },
+      ]).toArray(),
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: '$userId', units: { $sum: '$units' } } },
+        { $sort: { units: -1 } },
+      ]).toArray(),
     ]);
 
     const totalCostToday      = costTodayDocs[0]?.total || 0;
     const totalCostThisMonth  = costMonthDocs[0]?.total || 0;
+    const quotaUsedToday      = quotaTodayDocs[0]?.total || 0;
+    const quotaByUser         = Object.fromEntries(quotaByUserDocs.map(r => [r._id || 'system', r.units]));
+
+    const now = new Date();
+    const nextResetAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
 
     const planBreakdown = await User.aggregate([
       { $group: { _id: '$plan', count: { $sum: 1 } } },
@@ -5289,6 +5428,10 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       totalCostToday:     parseFloat(totalCostToday.toFixed(6)),
       totalCostThisMonth: parseFloat(totalCostThisMonth.toFixed(6)),
       perPlanBreakdown,
+      quotaUsedToday,
+      quotaRemaining:     Math.max(0, 10000 - quotaUsedToday),
+      quotaByUser,
+      nextResetAt,
     });
   } catch (err) {
     console.error('[Admin] Overview error:', err.message);
@@ -5417,16 +5560,39 @@ app.get('/api/admin/alerts', requireAdmin, async (req, res) => {
       }
     }
 
-    // YouTube quota
-    const ytRow = costRows.find(r => r._id === 'youtube');
-    const ytUsed = ytRow ? await usageCol.aggregate([
-      { $match: { service: 'youtube', timestamp: { $gte: today + 'T00:00:00.000Z' } } },
-      { $group: { _id: null, used: { $sum: '$tokensUsed' } } },
-    ]).toArray().then(r => r[0]?.used || 0) : 0;
-    const quotaPct = (ytUsed / API_COSTS.youtube_daily_quota) * 100;
+    // YouTube quota — read from dedicated youtubeQuota collection
+    const quotaCol = agentCol('youtubeQuota');
+    const ytUsed = await quotaCol.aggregate([
+      { $match: { date: today } },
+      { $group: { _id: null, total: { $sum: '$units' } } },
+    ]).toArray().then(r => r[0]?.total || 0);
+
+    const quotaPct = (ytUsed / 10000) * 100;
     if (quotaPct > 80) {
       alerts.push({ type: 'quota', severity: 'high', service: 'youtube',
-        message: `YouTube quota at ${quotaPct.toFixed(1)}% (${ytUsed}/${API_COSTS.youtube_daily_quota} units)` });
+        message: `YouTube quota at ${quotaPct.toFixed(1)}% (${ytUsed}/10000 units)` });
+    }
+
+    // 3-consecutive-days high-quota alert
+    const threeDayTotals = await Promise.all([1, 2, 3].map(async daysAgo => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - daysAgo);
+      const dateStr = d.toISOString().slice(0, 10);
+      return quotaCol.aggregate([
+        { $match: { date: dateStr } },
+        { $group: { _id: null, total: { $sum: '$units' } } },
+      ]).toArray().then(r => r[0]?.total || 0);
+    }));
+    if (threeDayTotals.every(t => t > 8000)) {
+      alerts.push({
+        type: 'quota_sustained', severity: 'high', service: 'youtube',
+        message: 'Consider requesting YouTube API quota increase at console.cloud.google.com — quota exceeded 8000 units for 3 consecutive days',
+      });
+      agentCol('adminAlerts').updateOne(
+        { type: 'quota_sustained' },
+        { $set: { type: 'quota_sustained', message: 'YouTube quota >8000 for 3 consecutive days — request increase', createdAt: new Date(), resolved: false } },
+        { upsert: true }
+      ).catch(() => {});
     }
 
     res.json({ success: true, alertCount: alerts.length, alerts });
@@ -6005,6 +6171,16 @@ function registerCronJobs() {
     } catch (e) {
       console.error('[MonthlyReset] Failed:', e.message);
     }
+  }, { timezone: 'UTC' });
+
+  // Daily YouTube quota reset log — midnight UTC
+  cron.schedule('0 0 * * *', async () => {
+    console.log('[Quota] Daily quota reset — 10,000 units available');
+    // Delete quota records older than 7 days to keep the collection lean
+    const cutoff = new Date();
+    cutoff.setUTCDate(cutoff.getUTCDate() - 7);
+    const cutoffDate = cutoff.toISOString().slice(0, 10);
+    agentCol('youtubeQuota').deleteMany({ date: { $lt: cutoffDate } }).catch(() => {});
   }, { timezone: 'UTC' });
 
   cronJobsRegistered = true;
