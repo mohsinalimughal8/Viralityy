@@ -4911,10 +4911,19 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
         : (await getOptimalPostingTimes(String(calendar.userId), channelId, nicheName, user.plan).catch(() => null))?.times;
       if (!optimalTimes?.length) optimalTimes = pickSpreadSlots(NICHE_DEFAULT_TIMES.default, count);
 
-      const getSlotTime = (idx) => {
-        const hhmm = optimalTimes[idx % optimalTimes.length];
-        return `${today}T${hhmm}:00`;
-      };
+      // Guarantee exactly `count` unique times for short slots.
+      // The cached optimalTimes may have been saved when the plan had fewer slots/day —
+      // expand the pool and re-pick if we don't have enough distinct entries.
+      if (optimalTimes.length < count) {
+        const expandedPool = [...new Set([
+          ...optimalTimes,
+          ...(POSTING_TIMES_BY_COUNT[Math.min(count, 7)] || []),
+          ...NICHE_DEFAULT_TIMES.default,
+        ])];
+        optimalTimes = pickSpreadSlots(expandedPool, count);
+      }
+      // Use the first `count` entries (pickSpreadSlots already spreads them evenly)
+      const shortTimes = optimalTimes.slice(0, count);
 
       const yesterdayCtx = await getYesterdayPerformance(String(calendar.userId), channelId);
       const genRes = await openai.chat.completions.create({
@@ -4943,7 +4952,7 @@ Return JSON: { "titles": [${count} strings] }` }],
           title: titles[v] || `${nicheName} Short #${v + 1}`,
           type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
           status: 'scheduled', posted: false, retryCount: 0,
-          scheduledPostTime: getSlotTime(v),
+          scheduledPostTime: `${today}T${shortTimes[v]}:00`,
           generatedAt,
         });
       }
@@ -4964,26 +4973,34 @@ Return JSON: { "title": "string" }` }],
           lf_in * API_COSTS.openai_input + lf_out * API_COSTS.openai_output, true);
         let lfTitle = `Deep Dive: ${nicheName}`;
         try { lfTitle = JSON.parse(lfRes.choices[0].message.content).title || lfTitle; } catch {}
+
+        // Pick a time not already used by any short slot
+        const shortTimesSet = new Set(shortTimes);
+        const lfTime = ['08:00','10:00','14:00','16:00','20:00','22:00','23:00']
+          .find(t => !shortTimesSet.has(t)) || '08:00';
         newSlots.push({
           userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
           day: 1, date: today, title: lfTitle,
           type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
           status: 'scheduled', posted: false, retryCount: 0,
-          scheduledPostTime: getSlotTime(0),
+          scheduledPostTime: `${today}T${lfTime}:00`,
           generatedAt,
         });
       }
+
+      // Sort by scheduledPostTime ascending so the JIT cron processes them in order
+      newSlots.sort((a, b) => a.scheduledPostTime.localeCompare(b.scheduledPostTime));
 
       await slotsCol.deleteMany({ userId: String(calendar.userId), date: today, posted: { $ne: true } });
       if (newSlots.length) await slotsCol.insertMany(newSlots);
 
       const kept   = (calendar.slots || []).filter(s => s.date !== today || s.posted);
       const merged = [...kept, ...newSlots].sort((a, b) =>
-        (a.date || '') < (b.date || '') ? -1 : (a.date || '') > (b.date || '') ? 1 : (a.videoIndex || 0) - (b.videoIndex || 0)
+        (a.scheduledPostTime || '') < (b.scheduledPostTime || '') ? -1 : 1
       );
       await calCol.updateOne({ _id: calendar._id }, { $set: { slots: merged } });
       generated++;
-      console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${calendar.userId} | plan: ${user.plan}`);
+      console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${calendar.userId} | plan: ${user.plan} | times: ${newSlots.map(s => s.scheduledPostTime.slice(11, 16)).join(', ')}`);
       console.log(`[DailyGen] ${newSlots.length} slot(s) saved — PostingCron will start pipeline 30 min before each scheduledPostTime`);
     } catch (err) {
       console.error(`[DailyGen] Failed for calendar ${calendar._id}:`, err.message);
