@@ -5694,6 +5694,203 @@ app.post('/api/test/post-short', requireAdmin, async (req, res) => {
   }
 });
 
+// POST /api/test/post-longform — admin-only. Generates and posts a 16:9 long-form video.
+// Does NOT affect the content calendar or scheduled slots.
+app.post('/api/test/post-longform', requireAdmin, async (req, res) => {
+  try {
+    const { OpenAI } = require('openai');
+    const fs = require('fs');
+
+    const TITLE = 'The Complete Guide to Understanding Human Psychology';
+    const NICHE = 'Psychology & Human Behaviour';
+    const TAGS  = ['psychology', 'human behaviour', 'self improvement', 'mental health', 'educational'];
+
+    // Find the admin user and their first YouTube channel
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
+    const user = await User.findOne({ email: adminEmail });
+    if (!user) return res.status(404).json({ error: `No user found for ADMIN_EMAIL: ${adminEmail}` });
+    const channel = (user.youtubeChannels || []).find(ch =>
+      /all.*everything/i.test(ch.channelName || '')
+    ) || user.youtubeChannels?.[0];
+    if (!channel) return res.status(404).json({ error: 'No YouTube channel found for this user' });
+    console.log(`[TestLF] Channel: "${channel.channelName}" (${channel.channelId})`);
+
+    // Step 1: Generate structured long-form script (500-700 words, 3-5 min)
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OPENAI_API_KEY not configured' });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    console.log(`[TestLF] Generating script for "${TITLE}"...`);
+    const res2 = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{
+        role: 'user',
+        content: `You are a YouTube long-form content strategist for a "${NICHE}" channel.
+Write a 500-700 word spoken script for the video titled: "${TITLE}"
+
+Structure it with clear sections:
+- Intro (hook the viewer in 30 seconds)
+- Main Point 1: What is Human Psychology?
+- Main Point 2: The Science of Behaviour
+- Main Point 3: How Emotions Drive Decisions
+- Main Point 4: The Power of the Subconscious Mind
+- Main Point 5: Applying Psychology in Everyday Life
+- Conclusion (summarise + call to action to subscribe)
+
+Return valid JSON with exactly these fields:
+{
+  "hook": "Opening 2-3 sentences that immediately grab attention",
+  "mainPoints": ["summary of point 1","summary of point 2","summary of point 3","summary of point 4","summary of point 5"],
+  "cta": "Subscribe call-to-action sentence",
+  "estimatedDuration": "4:30",
+  "fullScript": "Complete 500-700 word natural spoken script with all sections, no stage directions"
+}`,
+      }],
+      temperature: 0.75,
+      response_format: { type: 'json_object' },
+    });
+    const structured = JSON.parse(res2.choices[0].message.content);
+    const script = structured.fullScript || TITLE;
+    console.log(`[TestLF] Script ready: ${script.split(/\s+/).length} words`);
+
+    // Step 2: Voiceover via Google TTS REST API
+    console.log('[TestLF] Generating voiceover...');
+    const { audioPath } = await pipelineGenerateVoiceover(script, String(user._id));
+    console.log(`[TestLF] Voiceover: ${audioPath}`);
+
+    // Step 3: Fetch 10 unique landscape Pexels clips (2 per section × 5 main points)
+    if (!process.env.PEXELS_API_KEY) return res.status(503).json({ error: 'PEXELS_API_KEY not configured' });
+    const pexelsKey = process.env.PEXELS_API_KEY;
+    const sectionQueries = [
+      'human brain psychology', 'people thinking mindset',
+      'science research laboratory', 'human behaviour study',
+      'emotions facial expressions', 'decision making choices',
+      'subconscious mind meditation', 'brain waves focus',
+      'everyday life psychology', 'self improvement growth',
+    ];
+    console.log('[TestLF] Fetching 10 landscape Pexels clips...');
+    const footageClips = [];
+    const pickedIds = new Set();
+    for (const query of sectionQueries) {
+      let found = false;
+      for (let page = 1; page <= 3 && !found; page++) {
+        try {
+          const params = new URLSearchParams({ query, per_page: '10', orientation: 'landscape', page: String(page) });
+          const pxRes  = await fetch(`https://api.pexels.com/videos/search?${params}`, {
+            headers: { Authorization: pexelsKey },
+          });
+          const data   = await pxRes.json();
+          const videos = (data.videos || []).filter(v => v.duration >= 5 && !pickedIds.has(String(v.id)));
+          if (!videos.length) continue;
+          const video = videos[0];
+          const file  = (video.video_files || []).find(f => f.quality === 'hd') || video.video_files?.[0];
+          if (!file?.link) continue;
+          pickedIds.add(String(video.id));
+          footageClips.push({ id: String(video.id), url: file.link, duration: video.duration, query });
+          console.log(`[TestLF] Clip "${query}": id=${video.id}`);
+          found = true;
+        } catch (e) {
+          console.warn(`[TestLF] Pexels failed for "${query}" p${page}:`, e.message);
+        }
+      }
+      if (!found) console.warn(`[TestLF] No clip found for "${query}"`);
+    }
+    if (!footageClips.length) throw new Error('No Pexels footage clips fetched');
+    console.log(`[TestLF] ${footageClips.length} clips fetched`);
+
+    // Step 4: Assemble 1920x1080 16:9 video with no captions
+    const runId   = Date.now();
+    const outPath = `/tmp/vly_lf_test_${runId}.mp4`;
+    const clipPaths = footageClips.map((_, i) => `/tmp/vly_lf_clip_${runId}_${i}.mp4`);
+    const musicUrl  = ROYALTY_FREE_MUSIC[Math.floor(Math.random() * ROYALTY_FREE_MUSIC.length)];
+    const musicPath = `/tmp/vly_lf_music_${runId}.mp3`;
+
+    console.log('[TestLF] Downloading clips...');
+    await Promise.all(footageClips.map((clip, i) =>
+      new Promise((resolve, reject) => {
+        exec(`curl -sL --max-time 60 -o "${clipPaths[i]}" "${clip.url}"`, { timeout: 90000 },
+          err => err ? reject(new Error(`Clip ${i} download failed: ${err.message}`)) : resolve());
+      })
+    ));
+
+    let hasMus = false;
+    try {
+      await new Promise((resolve, reject) => {
+        exec(`curl -sL --max-time 30 -o "${musicPath}" "${musicUrl}"`, { timeout: 45000 },
+          err => err ? reject(err) : resolve());
+      });
+      hasMus = fs.existsSync(musicPath) && fs.statSync(musicPath).size > 1000;
+    } catch (e) {
+      console.warn('[TestLF] Music download failed (non-fatal):', e.message);
+    }
+
+    // Build 1920x1080 filter: scale landscape, 6s per clip, concat, mix audio
+    const n = clipPaths.length;
+    const baseParts = [];
+    for (let i = 0; i < n; i++) {
+      baseParts.push(
+        `[${i}:v]scale=1920:1080:force_original_aspect_ratio=increase,` +
+        `crop=1920:1080,setsar=1,trim=0:6,setpts=PTS-STARTPTS[v${i}]`
+      );
+    }
+    const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
+    baseParts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
+    baseParts.push('[vcat]null[vout]');
+    const voiceIdx    = n;
+    const audioFilter = hasMus
+      ? `[${voiceIdx}:a][${n + 1}:a]amix=inputs=2:duration=shortest:weights=1 0.15[aout]`
+      : `[${voiceIdx}:a]volume=1.0[aout]`;
+    baseParts.push(audioFilter);
+    const filterStr = baseParts.join(';');
+
+    console.log('[TestLF] Assembling 1920x1080 video...');
+    await new Promise((resolve, reject) => {
+      const args = ['-y'];
+      for (const p of clipPaths) args.push('-i', p);
+      args.push('-i', audioPath);
+      if (hasMus) args.push('-i', musicPath);
+      args.push('-filter_complex', filterStr);
+      args.push('-map', '[vout]', '-map', '[aout]');
+      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23');
+      args.push('-c:a', 'aac', '-b:a', '128k');
+      args.push('-movflags', '+faststart');
+      args.push('-shortest');
+      args.push(outPath);
+      const ff = spawn('ffmpeg', args);
+      const errLines = [];
+      ff.stderr.on('data', d => errLines.push(...d.toString().split('\n')));
+      ff.on('close', code => {
+        if (code !== 0) {
+          reject(new Error(`ffmpeg failed (exit ${code}):\n${errLines.filter(l => l.trim()).slice(-5).join('\n')}`));
+        } else resolve();
+      });
+      ff.on('error', err => reject(new Error(`ffmpeg spawn error: ${err.message}`)));
+    });
+    console.log(`[TestLF] Assembled: ${outPath}`);
+
+    // Cleanup temp files
+    const cleanup = () => {
+      for (const p of clipPaths) fs.unlink(p, () => {});
+      if (hasMus) fs.unlink(musicPath, () => {});
+      fs.unlink(audioPath, () => {});
+      fs.unlink(outPath, () => {});
+    };
+
+    // Step 5: Upload as a regular (non-Short) video
+    const description = `${script.slice(0, 4750)}\n\n` +
+      `${TAGS.map(t => '#' + t.replace(/\s+/g, '')).join(' ')}`;
+    console.log('[TestLF] Uploading to YouTube (long-form)...');
+    const ytId = await pipelineUploadToYouTube(outPath, TITLE, description, channel, false);
+    cleanup();
+
+    const ytUrl = `https://youtu.be/${ytId}`;
+    console.log(`[TestLF] ✓ ${ytUrl}`);
+    res.json({ success: true, youtubeUrl: ytUrl, youtubeVideoId: ytId, channel: channel.channelName, title: TITLE, clips: footageClips.length });
+  } catch (err) {
+    console.error('[TestLF] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // =============================================================================
 // CRON REGISTRATION — called once after MongoDB is connected
 // All cron jobs live here so they can safely access the database.
