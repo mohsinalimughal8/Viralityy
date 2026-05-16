@@ -4463,12 +4463,14 @@ async function pipelineRefreshToken(channel) {
 }
 
 // Step 6 — Upload assembled video to YouTube
-async function pipelineUploadToYouTube(videoPath, title, description, channel, isShort = true) {
+// options = { thumbPath, userId } — both optional; thumbPath triggers a thumbnails.set call post-upload.
+async function pipelineUploadToYouTube(videoPath, title, description, channel, isShort = true, options = {}) {
   // Quota guard — throws so callers can reschedule rather than silently dropping the upload
   const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, null).catch(() => ({ allowed: true }));
   if (!uploadQC.allowed) throw new Error(`YouTube quota check failed: ${uploadQC.reason}`);
 
   const { google } = require('googleapis');
+  const fs = require('fs');
   const oauth2 = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID,
     process.env.YOUTUBE_CLIENT_SECRET
@@ -4497,15 +4499,40 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
         },
         status: { privacyStatus: 'public', madeForKids: false },
       },
-      media: { body: require('fs').createReadStream(videoPath) },
+      media: { body: fs.createReadStream(videoPath) },
     });
     return res.data.id;
+  };
+
+  // Upload custom thumbnail after the video is live — non-fatal on any error.
+  const doThumbUpload = async (videoId, accessToken) => {
+    const { thumbPath, userId } = options;
+    if (!thumbPath || !fs.existsSync(thumbPath)) return;
+    try {
+      const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => ({ allowed: true }));
+      if (!thumbQC.allowed) { console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload'); return; }
+      oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
+      const yt = google.youtube({ version: 'v3', auth: oauth2 });
+      await yt.thumbnails.set({
+        videoId,
+        media: { mimeType: 'image/jpeg', body: fs.createReadStream(thumbPath) },
+      });
+      logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
+      logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
+      console.log(`[Thumbnail] ✓ Uploaded for video ${videoId}`);
+    } catch (e) {
+      console.warn(`[Thumbnail] Upload failed (non-fatal): ${e.message}`);
+      logAPIUsage('youtube', 'thumbnail_upload', options.userId || null, 0, 0, false).catch(() => {});
+    } finally {
+      fs.unlink(thumbPath, () => {});
+    }
   };
 
   try {
     const videoId = await tryUpload(channel.accessToken);
     logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, true);
     logYoutubeQuota('upload', YOUTUBE_QUOTA_COSTS.upload, null).catch(() => {});
+    await doThumbUpload(videoId, channel.accessToken);
     return videoId;
   } catch (err) {
     if (err.code === 401 || err.status === 401 || /invalid_grant|token/.test(err.message)) {
@@ -4516,6 +4543,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
         const videoId = await tryUpload(newToken);
         logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, true);
         logYoutubeQuota('upload', YOUTUBE_QUOTA_COSTS.upload, null).catch(() => {});
+        await doThumbUpload(videoId, newToken);
         return videoId;
       } catch (retryErr) {
         logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, false);
@@ -4524,6 +4552,52 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
     }
     logAPIUsage('youtube', 'video_upload', null, API_COSTS.youtube_upload, 0, false);
     throw err;
+  }
+}
+
+// Generate a YouTube thumbnail via Google Imagen 4 Fast.
+// Returns the local /tmp path on success, null on any failure (never throws).
+async function generateThumbnail(title, nicheName, videoType, slotId) {
+  const apiKey = process.env.GOOGLE_TTS_API_KEY;
+  if (!apiKey) { console.warn('[Thumbnail] GOOGLE_TTS_API_KEY not set — skipping'); return null; }
+  try {
+    const isShort    = (videoType || 'Short').toLowerCase() !== 'long-form';
+    const shortTitle = title.split(/\s+/).slice(0, 5).join(' ');
+    const aspectRatio = isShort ? '9:16' : '16:9';
+    const prompt = isShort
+      ? `YouTube Shorts thumbnail, vertical format, bold white text '${shortTitle}' with thick black outline centered in frame, vibrant high-contrast background representing ${nicheName}, dramatic lighting, eye-catching colors, professional YouTube design, no faces, clean composition, highly clickable thumbnail style`
+      : `YouTube thumbnail, horizontal format, bold white text '${shortTitle}' with thick black outline on left or right side, dramatic scene representing ${nicheName}, bright contrasting colors, professional YouTube thumbnail design, high CTR optimized composition, cinematic quality`;
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-fast:generateImages?key=${apiKey}`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          prompt,
+          parameters: { sampleCount: 1, aspectRatio, safetyFilterLevel: 'block_only_high' },
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const data       = await res.json();
+    const imageBytes = data.candidates?.[0]?.image?.imageBytes;
+    if (!imageBytes) throw new Error('No imageBytes in Imagen response');
+
+    const thumbPath = `/tmp/vly_thumb_${slotId}.jpg`;
+    require('fs').writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
+    logAPIUsage('imagen4', 'thumbnail', null, 0, 0.02, true).catch(() => {});
+    console.log(`[Thumbnail] ✓ ${thumbPath}`);
+    return thumbPath;
+  } catch (err) {
+    console.warn(`[Thumbnail] Generation failed (non-fatal): ${err.message}`);
+    logAPIUsage('imagen4', 'thumbnail', null, 0, 0, false).catch(() => {});
+    return null;
   }
 }
 
@@ -4539,29 +4613,38 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
   const isShort   = (slotDoc.type || 'Short').toLowerCase() !== 'long-form';
   const outPath   = `/tmp/vly_jit_${String(slotDoc.userId)}_${slotId}.mp4`;
   let audioPath   = null;
+  let thumbPath   = null;
 
   const setStatus = (fields) => slotsCol.updateOne({ _id: slotId }, { $set: fields }).catch(() => {});
 
   try {
-    // 1/4 Script
-    console.log(`[JIT] 1/4 Script — "${slotDoc.title}"`);
+    // 1/5 Script
+    console.log(`[JIT] 1/5 Script — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-script' });
     const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type);
     const script     = scriptData.script;
     await setStatus({ scriptText: script, scriptCaptions: scriptData.captions, cachedScript: script.slice(0, 2000), pipelineStatus: 'script-done' });
-    console.log(`[JIT] 1/4 Done — ${scriptData.wordCount} words`);
+    console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
 
-    // 2/4 Voiceover
-    console.log(`[JIT] 2/4 Voiceover — "${slotDoc.title}"`);
+    // 2/5 Thumbnail (non-fatal — pipeline continues even if this fails)
+    console.log(`[JIT] 2/5 Thumbnail — "${slotDoc.title}"`);
+    await setStatus({ pipelineStatus: 'generating-thumbnail' });
+    thumbPath = await generateThumbnail(slotDoc.title, nicheName, slotDoc.type, String(slotId));
+    if (thumbPath) await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done' });
+    else await setStatus({ pipelineStatus: 'thumbnail-skipped' });
+    console.log(`[JIT] 2/5 Done — ${thumbPath ? thumbPath : 'skipped'}`);
+
+    // 3/5 Voiceover
+    console.log(`[JIT] 3/5 Voiceover — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-voiceover' });
     const voResult = await pipelineGenerateVoiceover(script, String(slotDoc.userId));
     audioPath = voResult.audioPath;
     const captions = voResult.captions.length > 0 ? voResult.captions : scriptData.captions;
     await setStatus({ voiceoverGenerated: true, pipelineStatus: 'voiceover-done' });
-    console.log(`[JIT] 2/4 Done`);
+    console.log(`[JIT] 3/5 Done`);
 
-    // 3/4 Footage
-    console.log(`[JIT] 3/4 Footage — "${slotDoc.title}"`);
+    // 4/5 Footage
+    console.log(`[JIT] 4/5 Footage — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'fetching-footage' });
     const footageClips = await pipelineFetchMultipleFootage(slotDoc.title, script, nicheName, String(slotDoc.userId));
     await setStatus({
@@ -4571,7 +4654,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       footageIds:       footageClips.map(c => c.id || ''),
       pipelineStatus:   'footage-done',
     });
-    console.log(`[JIT] 3/4 Done — ${footageClips.length} clips`);
+    console.log(`[JIT] 4/5 Done — ${footageClips.length} clips`);
 
     // Quota gate — check before committing to assembly + upload (1600 units)
     const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, String(slotDoc.userId));
@@ -4588,17 +4671,18 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
         rescheduleReason: uploadQC.reason,
         rescheduledAt:    new Date().toISOString(),
       });
-      if (audioPath) { require('fs').unlink(audioPath, () => {}); audioPath = null; }
+      if (audioPath) { fs.unlink(audioPath, () => {}); audioPath = null; }
+      if (thumbPath) { fs.unlink(thumbPath, () => {}); thumbPath = null; }
       console.log(`[Quota] "${slotDoc.title}" rescheduled to ${newDate}`);
       return null;
     }
 
-    // 4/4 Assemble + Upload
+    // 5/5 Assemble + Upload
     const finalCaptions = (isShort && captions.length === 0)
       ? buildFallbackCaptions(script, footageClips.length * 6)
       : captions;
 
-    console.log(`[JIT] 4/4 Assembling "${slotDoc.title}" → ${outPath}`);
+    console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath}`);
     await setStatus({ pipelineStatus: 'assembling' });
     await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort);
 
@@ -4609,7 +4693,10 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     console.log(`[JIT] Uploading "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'uploading' });
     const description = script.slice(0, 4800) || slotDoc.title;
-    const ytId = await pipelineUploadToYouTube(outPath, slotDoc.title, description, channel, isShort);
+    const ytId = await pipelineUploadToYouTube(outPath, slotDoc.title, description, channel, isShort, {
+      thumbPath,
+      userId: String(slotDoc.userId),
+    });
 
     await setStatus({
       status:         'posted',
@@ -4618,6 +4705,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       youtubeVideoId: ytId,
       pipelineStatus: 'posted',
       assembledPath:  null,
+      thumbnailPath:  null,
       pipelineError:  null,
     });
 
@@ -4627,10 +4715,12 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     }
     fs.unlink(outPath, () => {});
     if (audioPath) { fs.unlink(audioPath, () => {}); audioPath = null; }
+    // thumbPath is deleted inside doThumbUpload (whether upload succeeds or fails)
     console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
     return ytId;
   } catch (err) {
     if (audioPath) { require('fs').unlink(audioPath, () => {}); }
+    if (thumbPath) { require('fs').unlink(thumbPath, () => {}); }
     require('fs').unlink(outPath, () => {});
     throw err;
   }
