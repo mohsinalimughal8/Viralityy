@@ -4731,44 +4731,54 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   }
 }
 
-// Generate a YouTube thumbnail via Google Imagen 4 Fast.
+// Generate a YouTube thumbnail via Google Imagen 4 (imagen-4-0-generate-001).
 // Returns the local /tmp path on success, null on any failure (never throws).
 async function generateThumbnail(title, nicheName, videoType, slotId) {
+  const fs     = require('fs');
   const apiKey = process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) { console.warn('[Thumbnail] GOOGLE_TTS_API_KEY not set — skipping'); return null; }
   try {
-    const isShort    = (videoType || 'Short').toLowerCase() !== 'long-form';
-    const shortTitle = title.split(/\s+/).slice(0, 5).join(' ');
+    const isShort     = (videoType || 'Short').toLowerCase() !== 'long-form';
+    const shortTitle  = title.split(/\s+/).slice(0, 5).join(' ');
     const aspectRatio = isShort ? '9:16' : '16:9';
     const prompt = isShort
-      ? `YouTube Shorts thumbnail, vertical format, bold white text '${shortTitle}' with thick black outline centered in frame, vibrant high-contrast background representing ${nicheName}, dramatic lighting, eye-catching colors, professional YouTube design, no faces, clean composition, highly clickable thumbnail style`
-      : `YouTube thumbnail, horizontal format, bold white text '${shortTitle}' with thick black outline on left or right side, dramatic scene representing ${nicheName}, bright contrasting colors, professional YouTube thumbnail design, high CTR optimized composition, cinematic quality`;
+      ? `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`
+      : `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`;
+
+    console.log(`[Thumbnail] Requesting Imagen 4 — aspect ${aspectRatio}, niche: ${nicheName}`);
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-fast:generateImages?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-0-generate-001:generateImages?key=${apiKey}`,
       {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           prompt,
-          parameters: { sampleCount: 1, aspectRatio, safetyFilterLevel: 'block_only_high' },
+          generationConfig: { sampleCount: 1, aspectRatio },
         }),
       }
     );
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 200)}`);
+      throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 300)}`);
     }
 
     const data       = await res.json();
-    const imageBytes = data.candidates?.[0]?.image?.imageBytes;
-    if (!imageBytes) throw new Error('No imageBytes in Imagen response');
+    // Imagen API returns predictions[0].bytesBase64Encoded
+    const imageBytes = data.predictions?.[0]?.bytesBase64Encoded;
+    if (!imageBytes) {
+      console.warn('[Thumbnail] Unexpected response shape:', JSON.stringify(data).slice(0, 300));
+      throw new Error('No bytesBase64Encoded in Imagen response');
+    }
 
     const thumbPath = `/tmp/vly_thumb_${slotId}.jpg`;
-    require('fs').writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
+    fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
+    const sizeBytes = fs.statSync(thumbPath).size;
+    console.log(`[Thumbnail] Generated: ${thumbPath}, Size: ${sizeBytes} bytes (AI image, not video frame)`);
+    if (sizeBytes < 1000) throw new Error(`Thumbnail suspiciously small: ${sizeBytes} bytes`);
+
     logAPIUsage('imagen4', 'thumbnail', null, 0, 0.02, true).catch(() => {});
-    console.log(`[Thumbnail] ✓ ${thumbPath}`);
     return thumbPath;
   } catch (err) {
     console.warn(`[Thumbnail] Generation failed (non-fatal): ${err.message}`);
