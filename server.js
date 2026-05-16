@@ -4466,16 +4466,24 @@ async function pipelineFetchMultipleFootage(title, script, nicheName = '', userI
 // Build caption segments from raw script text when the script generator didn't produce them.
 // Splits into 4-word chunks and distributes timestamps evenly across totalDuration seconds.
 function buildFallbackCaptions(scriptText, totalDuration) {
-  const words  = String(scriptText || '').trim().split(/\s+/).filter(Boolean);
-  const chunks = [];
-  for (let i = 0; i < words.length; i += 4) chunks.push(words.slice(i, i + 4).join(' '));
-  if (!chunks.length) return [];
-  const segDur = totalDuration / chunks.length;
-  return chunks.map((text, i) => ({
-    text,
-    start: parseFloat((i * segDur).toFixed(2)),
-    end:   parseFloat(((i + 1) * segDur).toFixed(2)),
-  }));
+  const words = String(scriptText || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length || totalDuration <= 0) return [];
+
+  // Time per word based on actual audio duration
+  const timePerWord = totalDuration / words.length;
+
+  // Group into 3-word segments; each segment starts 0.1s early so text
+  // appears just before the word is spoken (natural pre-roll feel)
+  const WORDS_PER_SEG = 3;
+  const BUFFER = 0.1;
+  const captions = [];
+  for (let i = 0; i < words.length; i += WORDS_PER_SEG) {
+    const text  = words.slice(i, i + WORDS_PER_SEG).join(' ');
+    const start = parseFloat(Math.max(0, i * timePerWord - BUFFER).toFixed(2));
+    const end   = parseFloat(Math.min(totalDuration, (i + WORDS_PER_SEG) * timePerWord).toFixed(2));
+    captions.push({ text, start, end });
+  }
+  return captions;
 }
 
 function generateSRTFile(captions, slotId) {
