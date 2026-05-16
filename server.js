@@ -4319,7 +4319,7 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   try {
     // First attempt: with SRT subtitles filter (Shorts only)
     if (srtPath) {
-      const subsFilter = `[vcat]subtitles='${srtPath}':force_style='FontSize=18\\,PrimaryColour=&Hffffff\\,OutlineColour=&H000000\\,Outline=2\\,Alignment=2'[vout]`;
+      const subsFilter = `[vcat]subtitles='${srtPath}':force_style='FontSize=22\\,Bold=1\\,PrimaryColour=&Hffffff\\,OutlineColour=&H000000\\,Outline=2\\,Shadow=1\\,BorderStyle=3\\,BackColour=&H80000000\\,Alignment=2\\,MarginV=120'[vout]`;
       const filterWithSubs = [...baseParts, subsFilter, audioFilter].join(';');
       try {
         await runFFmpeg(filterWithSubs, 'subs');
