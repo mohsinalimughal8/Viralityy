@@ -4464,26 +4464,65 @@ async function pipelineFetchMultipleFootage(title, script, nicheName = '', userI
 }
 
 // Build caption segments from raw script text when the script generator didn't produce them.
-// Splits into 4-word chunks and distributes timestamps evenly across totalDuration seconds.
+// Splits on sentence/clause boundaries; timing is proportional to word count vs totalDuration.
 function buildFallbackCaptions(scriptText, totalDuration) {
-  const words = String(scriptText || '').trim().split(/\s+/).filter(Boolean);
-  if (!words.length || totalDuration <= 0) return [];
+  const text = String(scriptText || '').trim();
+  if (!text || totalDuration <= 0) return [];
 
-  const timePerWord = totalDuration / words.length;
   const BUFFER      = 0.05; // 50 ms pre-roll — caption appears just before word is spoken
-  const MAX_SEGS    = 10;
+  const PAUSE_WORDS = new Set(['and', 'but', 'so', 'because', 'or', 'yet', 'while', 'when', 'if', 'then']);
 
-  // Use 6 words per segment; if the script is long, increase chunk size to stay at ≤10 segments
-  const WORDS_PER_SEG = Math.max(6, Math.ceil(words.length / MAX_SEGS));
+  // Split on sentence-ending punctuation and commas
+  const rawSentences = text
+    .split(/[.!?,]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
 
-  const captions = [];
-  for (let i = 0; i < words.length && captions.length < MAX_SEGS; i += WORDS_PER_SEG) {
-    const chunk = words.slice(i, i + WORDS_PER_SEG);
-    const text  = chunk.join(' ');
-    const start = parseFloat(Math.max(0, i * timePerWord - BUFFER).toFixed(3));
-    const end   = parseFloat(Math.min(totalDuration, (i + chunk.length) * timePerWord).toFixed(3));
-    captions.push({ text, start, end });
+  // Each sentence is one chunk; if > 8 words split at nearest natural pause word
+  const chunks = [];
+  for (const sentence of rawSentences) {
+    const words = sentence.split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+
+    if (words.length <= 8) {
+      chunks.push(words);
+    } else {
+      const mid = Math.ceil(words.length / 2);
+      let splitIdx = -1;
+      for (let delta = 0; delta <= mid && splitIdx === -1; delta++) {
+        for (const idx of [mid - delta, mid + delta]) {
+          if (idx > 1 && idx < words.length - 1 && PAUSE_WORDS.has(words[idx].toLowerCase())) {
+            splitIdx = idx;
+            break;
+          }
+        }
+      }
+      if (splitIdx === -1) splitIdx = mid;
+      chunks.push(words.slice(0, splitIdx));
+      if (words.slice(splitIdx).length > 0) chunks.push(words.slice(splitIdx));
+    }
   }
+
+  if (!chunks.length) return [];
+
+  // timePerWord = totalDuration / totalWords
+  const totalWords  = chunks.reduce((sum, c) => sum + c.length, 0);
+  const timePerWord = totalDuration / Math.max(totalWords, 1);
+
+  // Next chunk starts exactly where previous ends (no gap); 0.05s pre-roll applied to each start
+  const captions = [];
+  let wordOffset = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk      = chunks[i];
+    const nextOffset = wordOffset + chunk.length;
+    const start      = parseFloat(Math.max(0, wordOffset * timePerWord - BUFFER).toFixed(3));
+    const end        = i < chunks.length - 1
+      ? parseFloat(Math.max(start + 0.1, nextOffset * timePerWord - BUFFER).toFixed(3))
+      : parseFloat(totalDuration.toFixed(3));
+    captions.push({ text: chunk.join(' '), start, end });
+    wordOffset = nextOffset;
+  }
+
   return captions;
 }
 
@@ -4498,29 +4537,44 @@ function sanitizeCaptionText(text) {
 }
 
 // Build an array of ffmpeg drawtext filter strings for two-color two-line captions.
-// Each caption segment produces: line1 (white, FontSize=26) + optional line2 (yellow #FFE500, FontSize=28).
-// The filters are chained with ',' inside filter_complex so they apply sequentially on the same stream.
+// Each caption segment produces: line1 (white bold, fontsize=45) + optional line2 (yellow, fontsize=40).
+// Both lines share the same enable= window so they appear/disappear as one unit.
 function buildDrawtextFilters(captions) {
   const filters = [];
   for (const cap of captions) {
     const words = String(cap.text).trim().split(/\s+/).filter(Boolean);
-    const line1 = sanitizeCaptionText(words.slice(0, 3).join(' '));
-    const line2 = sanitizeCaptionText(words.slice(3).join(' '));
     const s = cap.start.toFixed(3);
     const e = cap.end.toFixed(3);
 
+    let line1Words, line2Words;
+    if (words.length <= 4) {
+      // 4 words or fewer: all on line 1, line 2 empty
+      line1Words = words;
+      line2Words = [];
+    } else {
+      // Split into two halves — line 1 rounded up, minimum 2 words per line
+      let splitIdx = Math.ceil(words.length / 2);
+      if (splitIdx < 2) splitIdx = 2;
+      if (words.length - splitIdx < 2) splitIdx = words.length - 2;
+      line1Words = words.slice(0, splitIdx);
+      line2Words = words.slice(splitIdx);
+    }
+
+    const line1 = sanitizeCaptionText(line1Words.join(' '));
+    const line2 = sanitizeCaptionText(line2Words.join(' '));
+
     if (!line1) continue;
 
-    // Line 1 — white context words, positioned at 72% height minus one line height
+    // Line 1 — white, bold, fontsize=45
     filters.push(
-      `drawtext=text='${line1}':fontsize=40:fontcolor=white:borderw=4:bordercolor=black` +
-      `:x=(w-text_w)/2:y=h*0.72-40:enable='between(t,${s},${e})'`
+      `drawtext=text='${line1}':fontsize=45:bold=1:fontcolor=white:borderw=4:bordercolor=black` +
+      `:x=(w-text_w)/2:y=h*0.72-45:enable='between(t,${s},${e})'`
     );
 
-    // Line 2 — yellow emphasis words (only if they exist)
+    // Line 2 — yellow, regular weight, fontsize=40
     if (line2) {
       filters.push(
-        `drawtext=text='${line2}':fontsize=36:fontcolor=#FFE500:borderw=4:bordercolor=black` +
+        `drawtext=text='${line2}':fontsize=40:bold=0:fontcolor=#FFE500:borderw=4:bordercolor=black` +
         `:x=(w-text_w)/2:y=h*0.72+10:enable='between(t,${s},${e})'`
       );
     }
