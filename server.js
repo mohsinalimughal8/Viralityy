@@ -4513,14 +4513,14 @@ function buildDrawtextFilters(captions) {
 
     // Line 1 — white context words, positioned at 72% height minus one line height
     filters.push(
-      `drawtext=text='${line1}':fontsize=36:fontcolor=white:borderw=4:bordercolor=black` +
+      `drawtext=text='${line1}':fontsize=40:fontcolor=white:borderw=4:bordercolor=black` +
       `:x=(w-text_w)/2:y=h*0.72-40:enable='between(t,${s},${e})'`
     );
 
     // Line 2 — yellow emphasis words (only if they exist)
     if (line2) {
       filters.push(
-        `drawtext=text='${line2}':fontsize=32:fontcolor=#FFE500:borderw=4:bordercolor=black` +
+        `drawtext=text='${line2}':fontsize=36:fontcolor=#FFE500:borderw=4:bordercolor=black` +
         `:x=(w-text_w)/2:y=h*0.72+10:enable='between(t,${s},${e})'`
       );
     }
