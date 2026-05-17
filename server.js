@@ -4469,21 +4469,63 @@ function buildFallbackCaptions(scriptText, totalDuration) {
   const words = String(scriptText || '').trim().split(/\s+/).filter(Boolean);
   if (!words.length || totalDuration <= 0) return [];
 
-  // Time per word based on actual audio duration
   const timePerWord = totalDuration / words.length;
+  const BUFFER      = 0.05; // 50 ms pre-roll — caption appears just before word is spoken
+  const MAX_SEGS    = 10;
 
-  // Group into 3-word segments; each segment starts 0.1s early so text
-  // appears just before the word is spoken (natural pre-roll feel)
-  const WORDS_PER_SEG = 3;
-  const BUFFER = 0.1;
+  // Use 6 words per segment; if the script is long, increase chunk size to stay at ≤10 segments
+  const WORDS_PER_SEG = Math.max(6, Math.ceil(words.length / MAX_SEGS));
+
   const captions = [];
-  for (let i = 0; i < words.length; i += WORDS_PER_SEG) {
-    const text  = words.slice(i, i + WORDS_PER_SEG).join(' ');
-    const start = parseFloat(Math.max(0, i * timePerWord - BUFFER).toFixed(2));
-    const end   = parseFloat(Math.min(totalDuration, (i + WORDS_PER_SEG) * timePerWord).toFixed(2));
+  for (let i = 0; i < words.length && captions.length < MAX_SEGS; i += WORDS_PER_SEG) {
+    const chunk = words.slice(i, i + WORDS_PER_SEG);
+    const text  = chunk.join(' ');
+    const start = parseFloat(Math.max(0, i * timePerWord - BUFFER).toFixed(3));
+    const end   = parseFloat(Math.min(totalDuration, (i + chunk.length) * timePerWord).toFixed(3));
     captions.push({ text, start, end });
   }
   return captions;
+}
+
+// Sanitize caption text for safe use in ffmpeg drawtext option values
+function sanitizeCaptionText(text) {
+  return String(text || '')
+    .replace(/'/g, '’')             // curly apostrophe — avoids breaking single-quoted option values
+    .replace(/:/g, '\\:')               // escape colon (ffmpeg option separator)
+    .replace(/,/g, ' ')                 // comma would be misread as filter separator
+    .replace(/[^\w\s’!?.\\]/g, '') // strip remaining special chars
+    .trim();
+}
+
+// Build an array of ffmpeg drawtext filter strings for two-color two-line captions.
+// Each caption segment produces: line1 (white, FontSize=26) + optional line2 (yellow #FFE500, FontSize=28).
+// The filters are chained with ',' inside filter_complex so they apply sequentially on the same stream.
+function buildDrawtextFilters(captions) {
+  const filters = [];
+  for (const cap of captions) {
+    const words = String(cap.text).trim().split(/\s+/).filter(Boolean);
+    const line1 = sanitizeCaptionText(words.slice(0, 3).join(' '));
+    const line2 = sanitizeCaptionText(words.slice(3).join(' '));
+    const s = cap.start.toFixed(3);
+    const e = cap.end.toFixed(3);
+
+    if (!line1) continue;
+
+    // Line 1 — white context words, positioned at 72% height minus one line height
+    filters.push(
+      `drawtext=text='${line1}':fontsize=26:fontcolor=white:borderw=4:bordercolor=black` +
+      `:x=(w-text_w)/2:y=h*0.72-40:enable='between(t,${s},${e})'`
+    );
+
+    // Line 2 — yellow emphasis words (only if they exist)
+    if (line2) {
+      filters.push(
+        `drawtext=text='${line2}':fontsize=28:fontcolor=#FFE500:borderw=4:bordercolor=black` +
+        `:x=(w-text_w)/2:y=h*0.72+10:enable='between(t,${s},${e})'`
+      );
+    }
+  }
+  return filters;
 }
 
 function generateSRTFile(captions, slotId) {
@@ -4551,11 +4593,10 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     ? `[${voiceIdx}:a][${n + 1}:a]amix=inputs=2:duration=shortest:weights=1 0.15[aout]`
     : `[${voiceIdx}:a]volume=1.0[aout]`;
 
-  // Generate SRT file for Shorts captions (no escaping needed — it's a plain text file)
-  let srtPath = null;
-  if (isShort && captions.length > 0) {
-    srtPath = generateSRTFile(captions, runId);
-    console.log(`[Assembly] SRT written: ${srtPath} (${captions.length} segments)`);
+  // Build drawtext caption filters (Shorts only) — two-color two-line system
+  const drawtextFilters = (isShort && captions.length > 0) ? buildDrawtextFilters(captions) : [];
+  if (drawtextFilters.length > 0) {
+    console.log(`[Assembly] Drawtext: ${drawtextFilters.length} filter(s) for ${captions.length} caption segment(s)`);
   }
 
   // Helper: run ffmpeg with inline filter_complex string
@@ -4585,31 +4626,31 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   });
 
   const cleanup = () => {
-    if (srtPath) fs.unlink(srtPath, () => {});
     for (const p of clipPaths) fs.unlink(p, () => {});
     if (hasMus) fs.unlink(musicPath, () => {});
   };
 
   try {
-    // First attempt: with SRT subtitles filter (Shorts only)
-    if (srtPath) {
-      const subsFilter = `[vcat]subtitles='${srtPath}':force_style='FontSize=22\\,Bold=1\\,PrimaryColour=&Hffffff\\,OutlineColour=&H000000\\,Outline=3\\,Shadow=0\\,BorderStyle=1\\,Alignment=2\\,MarginV=250'[vout]`;
-      const filterWithSubs = [...baseParts, subsFilter, audioFilter].join(';');
+    // First attempt: with drawtext caption overlays (Shorts only)
+    if (drawtextFilters.length > 0) {
+      // Chain all drawtext filters on [vcat] → [vout]
+      const captionChain = `[vcat]${drawtextFilters.join(',')}[vout]`;
+      const filterWithCaptions = [...baseParts, captionChain, audioFilter].join(';');
       try {
-        await runFFmpeg(filterWithSubs, 'subs');
+        await runFFmpeg(filterWithCaptions, 'captions');
         cleanup();
-        console.log(`[Assembly] ✓ ${outputPath} (with subtitles)`);
+        console.log(`[Assembly] ✓ ${outputPath} (two-color captions)`);
         return outputPath;
-      } catch (subsErr) {
-        console.warn(`[Assembly] Subtitles pass failed — retrying without: ${subsErr.message.slice(0, 150)}`);
+      } catch (capErr) {
+        console.warn(`[Assembly] Caption pass failed — retrying without: ${capErr.message.slice(0, 150)}`);
       }
     }
 
-    // Fallback or Long-form: no subtitles
+    // Fallback or Long-form: no captions
     const filterNoSubs = [...baseParts, '[vcat]null[vout]', audioFilter].join(';');
     await runFFmpeg(filterNoSubs, 'nosubs');
     cleanup();
-    console.log(`[Assembly] ✓ ${outputPath}${isShort ? ' (subtitles skipped — fallback)' : ' (Long-form)'}`);
+    console.log(`[Assembly] ✓ ${outputPath}${isShort ? ' (captions skipped — fallback)' : ' (Long-form)'}`);
     return outputPath;
   } catch (err) {
     cleanup();
