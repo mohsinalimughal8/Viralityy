@@ -4648,9 +4648,12 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     : `[${voiceIdx}:a]volume=1.0[aout]`;
 
   // Build drawtext caption filters (Shorts only) — two-color two-line system
+  console.log(`[DIAG] pipelineAssembleVideo — isShort=${isShort}, captions.length=${captions.length}, captions sample:`, JSON.stringify(captions.slice(0,2)));
   const drawtextFilters = (isShort && captions.length > 0) ? buildDrawtextFilters(captions) : [];
+  console.log(`[DIAG] drawtextFilters.length=${drawtextFilters.length}`);
   if (drawtextFilters.length > 0) {
     console.log(`[Assembly] Drawtext: ${drawtextFilters.length} filter(s) for ${captions.length} caption segment(s)`);
+    console.log(`[DIAG] First drawtext filter:`, drawtextFilters[0]);
   }
 
   // Helper: run ffmpeg with inline filter_complex string
@@ -4690,6 +4693,7 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
       // Chain all drawtext filters on [vcat] → [vout]
       const captionChain = `[vcat]${drawtextFilters.join(',')}[vout]`;
       const filterWithCaptions = [...baseParts, captionChain, audioFilter].join(';');
+      console.log(`[DIAG] filter_complex with captions (first 800 chars):`, filterWithCaptions.slice(0, 800));
       try {
         await runFFmpeg(filterWithCaptions, 'captions');
         cleanup();
@@ -4778,12 +4782,18 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   // Upload custom thumbnail after the video is live — non-fatal on any error.
   const doThumbUpload = async (videoId, accessToken) => {
     const { thumbPath, userId } = options;
-    if (!thumbPath || !fs.existsSync(thumbPath)) return;
+    console.log(`[DIAG] doThumbUpload — videoId=${videoId}, thumbPath=${thumbPath}, exists=${thumbPath ? fs.existsSync(thumbPath) : false}`);
+    if (!thumbPath || !fs.existsSync(thumbPath)) {
+      console.log(`[DIAG] Thumbnail skipped — thumbPath missing or file not found`);
+      return;
+    }
     try {
       const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => ({ allowed: true }));
+      console.log(`[DIAG] Thumbnail quota check:`, JSON.stringify(thumbQC));
       if (!thumbQC.allowed) { console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload'); return; }
       oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
+      console.log(`[DIAG] Calling yt.thumbnails.set for videoId=${videoId}`);
       await yt.thumbnails.set({
         videoId,
         media: { mimeType: 'image/jpeg', body: fs.createReadStream(thumbPath) },
@@ -4793,6 +4803,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       console.log(`[Thumbnail] ✓ Uploaded for video ${videoId}`);
     } catch (e) {
       console.warn(`[Thumbnail] Upload failed (non-fatal): ${e.message}`);
+      console.log(`[DIAG] thumbnails.set full error:`, e?.response?.data || e?.message);
       logAPIUsage('youtube', 'thumbnail_upload', options.userId || null, 0, 0, false).catch(() => {});
     } finally {
       fs.unlink(thumbPath, () => {});
@@ -4840,22 +4851,22 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
       ? `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`
       : `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`;
 
+    const imagenUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-0-generate-001:generateImages?key=${apiKey}`;
+    const imagenBody = { prompt, generationConfig: { sampleCount: 1, aspectRatio } };
     console.log(`[Thumbnail] Requesting Imagen 4 — aspect ${aspectRatio}, niche: ${nicheName}`);
+    console.log(`[DIAG] Imagen URL:`, imagenUrl.replace(apiKey, 'KEY_REDACTED'));
+    console.log(`[DIAG] Imagen request body:`, JSON.stringify(imagenBody));
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-0-generate-001:generateImages?key=${apiKey}`,
-      {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          prompt,
-          generationConfig: { sampleCount: 1, aspectRatio },
-        }),
-      }
-    );
+    const res = await fetch(imagenUrl, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(imagenBody),
+    });
 
+    console.log(`[DIAG] Imagen response status: ${res.status} ${res.statusText}`);
     if (!res.ok) {
       const errText = await res.text();
+      console.log(`[DIAG] Imagen error body:`, errText.slice(0, 500));
       throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 300)}`);
     }
 
@@ -4973,6 +4984,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       ? buildFallbackCaptions(script, footageClips.length * 6)
       : captions;
 
+    console.log(`[DIAG] finalCaptions.length=${finalCaptions.length}, isShort=${isShort}, voResult.captions.length=${voResult.captions.length}, scriptData.captions.length=${scriptData.captions.length}`);
+    console.log(`[DIAG] finalCaptions sample:`, JSON.stringify(finalCaptions.slice(0, 3)));
     console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath}`);
     await setStatus({ pipelineStatus: 'assembling' });
     await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort);
