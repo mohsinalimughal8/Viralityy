@@ -5397,53 +5397,102 @@ async function runProductionPipelineWithRetry(calendar, slot, user, col, maxRetr
 // Idempotent: skips users who already have today's slots. Called by the 00:01 cron and startup check.
 async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
   if (!process.env.OPENAI_API_KEY) {
-    console.log('[DailyGen] Skipping — OPENAI_API_KEY not configured'); return;
+    console.log('[DailyGen] Skipping — OPENAI_API_KEY not configured'); return { generated: 0 };
   }
   const today    = targetDate || new Date().toISOString().slice(0, 10);
   const calCol   = agentCol('content_calendars');
   const slotsCol = agentCol('calendar_slots');
   const { OpenAI } = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const calQuery  = targetUserId ? { status: 'active', userId: targetUserId } : { status: 'active' };
+
+  // --- Build unified work list ---
+  // Source 1: users with an active content_calendars document
+  const calQuery  = targetUserId
+    ? { status: 'active', userId: String(targetUserId) }
+    : { status: 'active' };
   const calendars = await calCol.find(calQuery).toArray();
+  console.log(`[DailyGen] Starting for ${today} — ${calendars.length} active calendar(s) found`);
+
+  // workItems shape: { user, channelId, nicheName, calDoc (null for no-calendar users) }
+  const workItems = [];
+  const processedUserIds = new Set();
+
+  for (const cal of calendars) {
+    const user = await User.findById(cal.userId).catch(() => null);
+    if (!user) {
+      console.warn(`[DailyGen] User ${cal.userId} not found (orphaned calendar ${cal._id}) — skipping`);
+      continue;
+    }
+    workItems.push({
+      user,
+      channelId: cal.channelId || user.youtubeChannels?.[0]?.channelId || '',
+      nicheName: cal.nicheName || user.nicheName || '',
+      calDoc: cal,
+    });
+    processedUserIds.add(String(user._id));
+  }
+
+  // Source 2: users who have channels + niche but never generated a 30-day calendar.
+  // Without this, they are silently skipped by the cron every night.
+  if (!targetUserId) {
+    const usersWithChannels = await User.find({
+      'youtubeChannels.0': { $exists: true },
+      nicheName: { $exists: true, $ne: '' },
+      subscriptionStatus: { $nin: ['expired', 'cancelled'] },
+    }).lean().catch(() => []);
+
+    let fallbackCount = 0;
+    for (const u of usersWithChannels) {
+      if (!processedUserIds.has(String(u._id))) {
+        workItems.push({
+          user: u,
+          channelId: u.youtubeChannels[0]?.channelId || '',
+          nicheName: u.nicheName,
+          calDoc: null,
+        });
+        fallbackCount++;
+      }
+    }
+    if (fallbackCount > 0) {
+      console.log(`[DailyGen] +${fallbackCount} user(s) with channels but no active calendar — included`);
+    }
+  }
+
+  console.log(`[DailyGen] Processing ${workItems.length} user(s) for ${today}`);
   let generated = 0;
 
-  for (const calendar of calendars) {
+  for (const { user, channelId, nicheName, calDoc } of workItems) {
     try {
-      // Idempotency: check the calendar_slots collection — the authoritative store.
-      // Never regenerate if docs already exist for this user+date (posted or not).
-      const existingCount = await slotsCol.countDocuments({ userId: String(calendar.userId), date: today });
+      // Idempotency — never regenerate if docs already exist for this user+date
+      const existingCount = await slotsCol.countDocuments({ userId: String(user._id), date: today });
       if (existingCount > 0) {
-        console.log(`[DailyGen] ${existingCount} slot(s) for ${today} already in DB (user ${calendar.userId}) — skipping`);
+        console.log(`[DailyGen] ${existingCount} slot(s) for ${today} already in DB (user ${user._id}) — skipping`);
         continue;
       }
-      const user = await User.findById(calendar.userId).catch(() => null);
-      if (!user) continue;
 
       // Subscription enforcement — never generate for expired/cancelled users
       const subStatus = user.subscriptionStatus || (user.plan !== 'trial' ? 'active' : 'trial');
       const now = new Date();
       if (subStatus === 'expired' || subStatus === 'cancelled') {
-        console.log(`[Pipeline] Skipping ${subStatus} user ${user.email}`);
+        console.log(`[DailyGen] Skipping ${subStatus} user ${user.email}`);
         continue;
       }
       if (subStatus === 'active' && user.subscriptionEndDate && now > new Date(user.subscriptionEndDate)) {
         await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired' }).catch(() => {});
-        console.log(`[Pipeline] Subscription expired for ${user.email} — skipping`);
+        console.log(`[DailyGen] Subscription expired for ${user.email} — skipping`);
         continue;
       }
       if ((subStatus === 'trial' || !user.subscriptionStatus) && user.trialEndsAt && now > new Date(user.trialEndsAt)) {
         await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired' }).catch(() => {});
-        console.log(`[Pipeline] Trial expired for ${user.email} — skipping`);
+        console.log(`[DailyGen] Trial expired for ${user.email} — skipping`);
         continue;
       }
 
-      const config    = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
-      const nicheName = calendar.nicheName || user.nicheName || '';
-      if (!nicheName) { console.warn(`[DailyGen] No niche for user ${calendar.userId} — skipping`); continue; }
+      if (!nicheName) { console.warn(`[DailyGen] No niche for user ${user._id} — skipping`); continue; }
+      if (!channelId) { console.warn(`[DailyGen] No channelId for user ${user._id} — skipping`); continue; }
 
-      const count     = config.shortsPerDay;
-      const channelId = calendar.channelId || (user.youtubeChannels?.[0]?.channelId) || '';
+      const config = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
+      const count  = config.shortsPerDay;
 
       // Resolve optimal posting times — use cached value if < 7 days old, else recalculate
       const chDoc = (user.youtubeChannels || []).find(c => c.channelId === channelId) || user.youtubeChannels?.[0];
@@ -5451,12 +5500,9 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
         ? Date.now() - new Date(chDoc.optimalTimesCalculatedAt).getTime() : Infinity;
       let optimalTimes = (chDoc?.optimalPostingTimes?.length && cacheAge < 7 * 24 * 60 * 60 * 1000)
         ? chDoc.optimalPostingTimes
-        : (await getOptimalPostingTimes(String(calendar.userId), channelId, nicheName, user.plan).catch(() => null))?.times;
+        : (await getOptimalPostingTimes(String(user._id), channelId, nicheName, user.plan).catch(() => null))?.times;
       if (!optimalTimes?.length) optimalTimes = pickSpreadSlots(NICHE_DEFAULT_TIMES.default, count);
 
-      // Guarantee exactly `count` unique times for short slots.
-      // The cached optimalTimes may have been saved when the plan had fewer slots/day —
-      // expand the pool and re-pick if we don't have enough distinct entries.
       if (optimalTimes.length < count) {
         const expandedPool = [...new Set([
           ...optimalTimes,
@@ -5465,10 +5511,9 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
         ])];
         optimalTimes = pickSpreadSlots(expandedPool, count);
       }
-      // Use the first `count` entries (pickSpreadSlots already spreads them evenly)
       const shortTimes = optimalTimes.slice(0, count);
 
-      const yesterdayCtx = await getYesterdayPerformance(String(calendar.userId), channelId);
+      const yesterdayCtx = await getYesterdayPerformance(String(user._id), channelId);
       const genRes = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content:
@@ -5481,7 +5526,7 @@ Return JSON: { "titles": [${count} strings] }` }],
       });
       const dg_in  = genRes.usage?.prompt_tokens    || 0;
       const dg_out = genRes.usage?.completion_tokens || 0;
-      logAPIUsage('openai', 'daily_title_gen', String(calendar.userId), dg_in + dg_out,
+      logAPIUsage('openai', 'daily_title_gen', String(user._id), dg_in + dg_out,
         dg_in * API_COSTS.openai_input + dg_out * API_COSTS.openai_output, true);
       let titles = [];
       try { titles = JSON.parse(genRes.choices[0].message.content).titles || []; } catch {}
@@ -5490,7 +5535,7 @@ Return JSON: { "titles": [${count} strings] }` }],
       const newSlots = [];
       for (let v = 0; v < count; v++) {
         newSlots.push({
-          userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
+          userId: String(user._id), channelId, nicheName,
           day: 1, date: today,
           title: titles[v] || `${nicheName} Short #${v + 1}`,
           type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
@@ -5512,17 +5557,16 @@ Return JSON: { "title": "string" }` }],
         });
         const lf_in  = lfRes.usage?.prompt_tokens    || 0;
         const lf_out = lfRes.usage?.completion_tokens || 0;
-        logAPIUsage('openai', 'daily_lf_title_gen', String(calendar.userId), lf_in + lf_out,
+        logAPIUsage('openai', 'daily_lf_title_gen', String(user._id), lf_in + lf_out,
           lf_in * API_COSTS.openai_input + lf_out * API_COSTS.openai_output, true);
         let lfTitle = `Deep Dive: ${nicheName}`;
         try { lfTitle = JSON.parse(lfRes.choices[0].message.content).title || lfTitle; } catch {}
 
-        // Pick a time not already used by any short slot
         const shortTimesSet = new Set(shortTimes);
         const lfTime = ['08:00','10:00','14:00','16:00','20:00','22:00','23:00']
           .find(t => !shortTimesSet.has(t)) || '08:00';
         newSlots.push({
-          userId: String(calendar.userId), channelId: calendar.channelId || '', nicheName,
+          userId: String(user._id), channelId, nicheName,
           day: 1, date: today, title: lfTitle,
           type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
           status: 'scheduled', posted: false, retryCount: 0,
@@ -5531,25 +5575,29 @@ Return JSON: { "title": "string" }` }],
         });
       }
 
-      // Sort by scheduledPostTime ascending so the JIT cron processes them in order
       newSlots.sort((a, b) => a.scheduledPostTime.localeCompare(b.scheduledPostTime));
 
-      await slotsCol.deleteMany({ userId: String(calendar.userId), date: today, posted: { $ne: true } });
+      await slotsCol.deleteMany({ userId: String(user._id), date: today, posted: { $ne: true } });
       if (newSlots.length) await slotsCol.insertMany(newSlots);
 
-      const kept   = (calendar.slots || []).filter(s => s.date !== today || s.posted);
-      const merged = [...kept, ...newSlots].sort((a, b) =>
-        (a.scheduledPostTime || '') < (b.scheduledPostTime || '') ? -1 : 1
-      );
-      await calCol.updateOne({ _id: calendar._id }, { $set: { slots: merged } });
+      // Keep calendar doc in sync if one exists for this user
+      if (calDoc) {
+        const kept   = (calDoc.slots || []).filter(s => s.date !== today || s.posted);
+        const merged = [...kept, ...newSlots].sort((a, b) =>
+          (a.scheduledPostTime || '') < (b.scheduledPostTime || '') ? -1 : 1
+        );
+        await calCol.updateOne({ _id: calDoc._id }, { $set: { slots: merged } });
+      }
+
       generated++;
-      console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${calendar.userId} | plan: ${user.plan} | times: ${newSlots.map(s => s.scheduledPostTime.slice(11, 16)).join(', ')}`);
-      console.log(`[DailyGen] ${newSlots.length} slot(s) saved — PostingCron will start pipeline 30 min before each scheduledPostTime`);
+      console.log(`[DailyGen] ✓ ${newSlots.length} slot(s) for ${today} | user ${user._id} | plan: ${user.plan} | times: ${newSlots.map(s => s.scheduledPostTime.slice(11, 16)).join(', ')}`);
     } catch (err) {
-      console.error(`[DailyGen] Failed for calendar ${calendar._id}:`, err.message);
+      console.error(`[DailyGen] Failed for user ${user._id}:`, err.message);
     }
   }
-  console.log(`[DailyGen] Complete — ${generated} calendar(s) had slots generated for ${today}`);
+
+  console.log(`[DailyGen] Complete — ${generated}/${workItems.length} user(s) had new slots generated for ${today}`);
+  return { generated, total: workItems.length };
 }
 
 // After the last video of the day posts, pre-generate tomorrow's slots immediately.
@@ -6247,6 +6295,36 @@ app.post('/api/admin/run-pipeline', requireAdmin, async (req, res) => {
   }
 });
 
+// POST /api/admin/generate-slots-now — manually trigger daily slot generation for today (or a given date)
+// Accepts optional body: { date: "YYYY-MM-DD", userId: "..." }
+app.post('/api/admin/generate-slots-now', requireAdmin, async (req, res) => {
+  try {
+    const { date: targetDate, userId: targetUserId } = req.body || {};
+    const today = targetDate || new Date().toISOString().slice(0, 10);
+    console.log(`[Admin] generate-slots-now triggered — date=${today}, userId=${targetUserId || 'all'}`);
+
+    const slotsCol = agentCol('calendar_slots');
+    const beforeCount = await slotsCol.countDocuments({ date: today }).catch(() => 0);
+
+    const result = await runDailySlotGeneration(targetUserId || null, today);
+
+    const afterCount = await slotsCol.countDocuments({ date: today }).catch(() => 0);
+    const slotsCreated = Math.max(0, afterCount - beforeCount);
+
+    console.log(`[Admin] generate-slots-now complete — created ${slotsCreated} slot(s) for ${today}`);
+    res.json({
+      success: true,
+      date: today,
+      usersProcessed: result.total,
+      usersWithNewSlots: result.generated,
+      slotsCreated,
+    });
+  } catch (err) {
+    console.error('[Admin] generate-slots-now error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
 // slotId format: "day_videoIndex" e.g. "3_2"
 app.get('/api/content/preview/:slotId', requireAuth, async (req, res) => {
@@ -6681,13 +6759,16 @@ function registerCronJobs() {
     catch (err) { console.error('[PostingCron] Error:', err.message); }
   });
 
-  // Daily generation fallback — 00:01 UTC
+  // Daily generation — 00:01 UTC
   // Primary trigger is maybePreGenerateTomorrow(); this is the safety net.
   cron.schedule('1 0 * * *', async () => {
     console.log('[DailyGen] Cron fired at', new Date().toISOString());
-    try { await runDailySlotGeneration(); }
+    try {
+      const result = await runDailySlotGeneration();
+      console.log(`[DailyGen] Cron complete — ${result.generated}/${result.total} user(s) got new slots`);
+    }
     catch (err) { console.error('[DailyGen] Cron error:', err.message); }
-  });
+  }, { timezone: 'UTC' });
 
   // Analytics Collection — 4 AM daily (feature-gated)
   if (FEATURES.analyticsCollection) {
