@@ -6596,21 +6596,47 @@ app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
     modelListError = e.message;
   }
 
-  // Step 2: attempt generateImages on the first available Imagen model (or a default)
-  const targetModel = availableImagenModels[0]?.replace('models/', '') || 'imagen-3.0-generate-001';
-  const prompt = req.query.prompt || 'A vibrant YouTube thumbnail with bold text TEST on blue background';
-  let generateResult = null;
-  try {
-    const url  = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateImages?key=${apiKey}`;
-    const body = { prompt, number_of_images: 1, aspect_ratio: '16:9', safety_filter_level: 'BLOCK_SOME', person_generation: 'DONT_ALLOW' };
-    const r    = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const text = await r.text();
-    generateResult = { model: targetModel, status: r.status, bodyPreview: text.slice(0, 500) };
-  } catch (e) {
-    generateResult = { model: targetModel, error: e.message };
+  // Step 2: try multiple method names and body formats against imagen-4.0-fast-generate-001
+  const prompt = req.query.prompt || 'A vibrant blue YouTube thumbnail with bold white text TEST';
+  const model  = 'imagen-4.0-fast-generate-001';
+  const base   = `https://generativelanguage.googleapis.com/v1beta/models/${model}`;
+
+  const attempts = [
+    {
+      label: 'generateImages_full',
+      url: `${base}:generateImages?key=${apiKey}`,
+      body: { prompt, number_of_images: 1, aspect_ratio: '16:9', safety_filter_level: 'BLOCK_SOME', person_generation: 'DONT_ALLOW' },
+    },
+    {
+      label: 'generateImages_minimal',
+      url: `${base}:generateImages?key=${apiKey}`,
+      body: { prompt, number_of_images: 1 },
+    },
+    {
+      label: 'predict',
+      url: `${base}:predict?key=${apiKey}`,
+      body: { instances: [{ prompt }], parameters: { sampleCount: 1, aspectRatio: '16:9' } },
+    },
+    {
+      label: 'generateContent',
+      url: `${base}:generateContent?key=${apiKey}`,
+      body: { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['IMAGE'] } },
+    },
+  ];
+
+  const generateResults = {};
+  for (const attempt of attempts) {
+    try {
+      const r    = await fetch(attempt.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(attempt.body) });
+      const text = await r.text();
+      generateResults[attempt.label] = { status: r.status, body: text.slice(0, 400) };
+      if (r.ok) { generateResults[attempt.label].SUCCESS = true; break; }
+    } catch (e) {
+      generateResults[attempt.label] = { error: e.message };
+    }
   }
 
-  res.json({ apiKeyLastFour: apiKey.slice(-4), availableImagenModels, modelListError, generateResult });
+  res.json({ apiKeyLastFour: apiKey.slice(-4), availableImagenModels, modelListError, generateResults });
 });
 
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
