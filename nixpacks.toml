@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "python3", "python3Packages.pip", "ffmpeg"]
+nixPkgs = ["nodejs_20", "python3", "python3Packages.pip", "ffmpeg", "dejavu_fonts", "liberation_ttf"]
 
 [phases.install]
 cmds = ["npm ci", "pip3 install -r requirements.txt --break-system-packages"]

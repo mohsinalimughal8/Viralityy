@@ -4667,6 +4667,38 @@ function buildFallbackCaptions(scriptText, totalDuration) {
   return captions;
 }
 
+// Detect caption font paths once at startup; used by buildDrawtextFilters
+const CAPTION_FONT_PATHS = (() => {
+  const fs = require('fs');
+  const { execSync } = require('child_process');
+  const staticCandidates = [
+    ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',                  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
+    ['/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',  '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'],
+    ['/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf',                    '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf'],
+    ['/System/Library/Fonts/Helvetica.ttc',                              '/System/Library/Fonts/Helvetica.ttc'],
+  ];
+  for (const [reg, bold] of staticCandidates) {
+    if (fs.existsSync(reg)) {
+      const r = { regular: reg, bold: fs.existsSync(bold) ? bold : reg };
+      console.log('[Captions] Font (static):', r);
+      return r;
+    }
+  }
+  try {
+    const raw = execSync('fc-list --format="%{file}\\n"', { timeout: 5000 }).toString();
+    const files = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    const boldFile = files.find(f => /DejaVuSans-Bold|LiberationSans-Bold|Ubuntu-B\.ttf/i.test(f));
+    const regFile  = files.find(f => /DejaVuSans\.ttf$|LiberationSans-Regular|Ubuntu-R\.ttf/i.test(f)) || files[0];
+    if (regFile) {
+      const r = { regular: regFile, bold: boldFile || regFile };
+      console.log('[Captions] Font (fc-list):', r);
+      return r;
+    }
+  } catch (_) { /* fontconfig not available */ }
+  console.warn('[Captions] No font file found — drawtext will rely on ffmpeg default');
+  return { regular: null, bold: null };
+})();
+
 // Sanitize caption text for safe use in ffmpeg drawtext option values
 function sanitizeCaptionText(text) {
   return String(text || '')
@@ -4682,6 +4714,9 @@ function sanitizeCaptionText(text) {
 // Both lines share the same enable= window so they appear/disappear as one unit.
 function buildDrawtextFilters(captions) {
   const filters = [];
+  const fontBold = CAPTION_FONT_PATHS.bold    ? `:fontfile='${CAPTION_FONT_PATHS.bold}'`    : '';
+  const fontReg  = CAPTION_FONT_PATHS.regular ? `:fontfile='${CAPTION_FONT_PATHS.regular}'` : '';
+
   for (const cap of captions) {
     const words = String(cap.text).trim().split(/\s+/).filter(Boolean);
     const s = cap.start.toFixed(3);
@@ -4689,11 +4724,9 @@ function buildDrawtextFilters(captions) {
 
     let line1Words, line2Words;
     if (words.length <= 4) {
-      // 4 words or fewer: all on line 1, line 2 empty
       line1Words = words;
       line2Words = [];
     } else {
-      // Split into two halves — line 1 rounded up, minimum 2 words per line
       let splitIdx = Math.ceil(words.length / 2);
       if (splitIdx < 2) splitIdx = 2;
       if (words.length - splitIdx < 2) splitIdx = words.length - 2;
@@ -4706,16 +4739,16 @@ function buildDrawtextFilters(captions) {
 
     if (!line1) continue;
 
-    // Line 1 — white, bold, fontsize=45
+    // Line 1 — white, bold font file, fontsize=45
     filters.push(
-      `drawtext=text='${line1}':fontsize=45:bold=1:fontcolor=white:borderw=4:bordercolor=black` +
+      `drawtext=text='${line1}':fontsize=45${fontBold}:fontcolor=white:borderw=4:bordercolor=black` +
       `:x=(w-text_w)/2:y=h*0.72-45:enable='between(t,${s},${e})'`
     );
 
-    // Line 2 — yellow, regular weight, fontsize=40
+    // Line 2 — yellow, regular font file, fontsize=40
     if (line2) {
       filters.push(
-        `drawtext=text='${line2}':fontsize=40:bold=0:fontcolor=#FFE500:borderw=4:bordercolor=black` +
+        `drawtext=text='${line2}':fontsize=40${fontReg}:fontcolor=#FFE500:borderw=4:bordercolor=black` +
         `:x=(w-text_w)/2:y=h*0.72+10:enable='between(t,${s},${e})'`
       );
     }
@@ -4810,7 +4843,8 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     args.push('-movflags', '+faststart');
     args.push('-shortest');
     args.push(outputPath);
-    console.log(`[Assembly] ffmpeg [${label}]: ${n} clips, filter_len=${filterStr.length}`);
+    const cmdDisplay = ['ffmpeg', ...args].map(a => (/ |;|,/.test(a) ? `"${a}"` : a)).join(' ');
+    console.log(`[Assembly] ffmpeg cmd [${label}]:\n${cmdDisplay}`);
     const ff = spawn('ffmpeg', args);
     const stderrLines = [];
     ff.stderr.on('data', d => stderrLines.push(...d.toString().split('\n')));
@@ -4841,7 +4875,7 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
         console.log(`[Assembly] ✓ ${outputPath} (two-color captions)`);
         return outputPath;
       } catch (capErr) {
-        console.warn(`[Assembly] Caption pass failed — retrying without: ${capErr.message.slice(0, 150)}`);
+        console.warn(`[Assembly] Caption pass failed — retrying without captions:\n${capErr.message}`);
       }
     }
 
