@@ -329,21 +329,26 @@ async function runStartupSlotCheck() {
       console.log('[Startup] No stuck processing slots found ✓');
     }
 
-    // Convert 'pending' slots from content_planner_agent.py into 'scheduled' slots the PostingCron can consume.
-    // The Python agent stores slots with scheduledDate+postTime fields; Node expects scheduledPostTime.
+    // Convert ALL 'pending' slots → 'scheduled' so the PostingCron can pick them up.
+    // Two sources of 'pending':
+    //   (a) Old server.js code (pre-refactor) — already has date + scheduledPostTime, just wrong status
+    //   (b) content_planner_agent.py — has scheduledDate+postTime, needs scheduledPostTime constructed
     const today = new Date().toISOString().slice(0, 10);
     const pendingSlots = await slotsCol.find({
-      status: 'pending', posted: { $ne: true }, scheduledPostTime: { $exists: false },
+      status: 'pending', posted: { $ne: true },
     }).toArray().catch(() => []);
     let converted = 0;
     const nowMs = Date.now();
     for (let i = 0; i < pendingSlots.length; i++) {
       const s = pendingSlots[i];
-      const slotDate = s.scheduledDate || s.date || today;
-      const slotTime = s.postTime || '18:00';
-      let scheduledPostTime = `${slotDate}T${slotTime}:00`;
-      // If the time is already in the past for today, push it forward so the PostingCron picks it up
-      if (slotDate === today && new Date(scheduledPostTime + 'Z') < new Date(nowMs + 5 * 60 * 1000)) {
+      const slotDate = s.date || (s.scheduledDate ? s.scheduledDate.slice(0, 10) : today);
+      let scheduledPostTime = s.scheduledPostTime;
+      if (!scheduledPostTime) {
+        const slotTime = s.postTime || '18:00';
+        scheduledPostTime = `${slotDate}T${slotTime}:00`;
+      }
+      // Push past-due times forward so the PostingCron picks them up immediately
+      if (slotDate === today && new Date(scheduledPostTime.slice(0, 19) + 'Z') < new Date(nowMs + 5 * 60 * 1000)) {
         scheduledPostTime = new Date(nowMs + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
       }
       await slotsCol.updateOne(
@@ -352,7 +357,7 @@ async function runStartupSlotCheck() {
       ).catch(() => {});
       converted++;
     }
-    if (converted > 0) console.log(`[Startup] Converted ${converted} pending slot(s) → scheduled (content_planner_agent format)`);
+    if (converted > 0) console.log(`[Startup] Converted ${converted} pending slot(s) → scheduled`);
 
     // Rescue today's missed/skipped slots — give them a new posting time so they still run today.
     const missedSlots = await slotsCol.find({
@@ -5783,17 +5788,21 @@ async function runScheduledPosting() {
   const today    = nowIso.slice(0, 10);
   const slotsCol = agentCol('calendar_slots');
 
-  // Convert any 'pending' slots from content_planner_agent.py that don't yet have scheduledPostTime.
-  // The Python agent uses scheduledDate+postTime; convert them to the format PostingCron expects.
+  // Convert ALL 'pending' slots for today → 'scheduled'.
+  // Covers (a) old-code slots that already have scheduledPostTime but wrong status,
+  // and (b) content_planner_agent.py slots that use scheduledDate+postTime fields.
   const pendingToConvert = await slotsCol.find({
-    status: 'pending', date: today, posted: { $ne: true }, scheduledPostTime: { $exists: false },
+    status: 'pending', date: today, posted: { $ne: true },
   }).toArray().catch(() => []);
   for (let i = 0; i < pendingToConvert.length; i++) {
     const s = pendingToConvert[i];
-    const slotDate = s.scheduledDate || s.date || today;
-    const slotTime = s.postTime || '18:00';
-    let scheduledPostTime = `${slotDate}T${slotTime}:00`;
-    if (new Date(scheduledPostTime + 'Z') < new Date(now.getTime() + 5 * 60 * 1000)) {
+    const slotDate = s.date || (s.scheduledDate ? s.scheduledDate.slice(0, 10) : today);
+    let scheduledPostTime = s.scheduledPostTime;
+    if (!scheduledPostTime) {
+      const slotTime = s.postTime || '18:00';
+      scheduledPostTime = `${slotDate}T${slotTime}:00`;
+    }
+    if (new Date(scheduledPostTime.slice(0, 19) + 'Z') < new Date(now.getTime() + 5 * 60 * 1000)) {
       scheduledPostTime = new Date(now.getTime() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
     }
     await slotsCol.updateOne(
