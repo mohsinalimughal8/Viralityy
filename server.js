@@ -5016,8 +5016,8 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
 // Shared Imagen 4 caller — used by generateThumbnail and the admin test endpoint.
 // Returns { imageBytes, mimeType, rawBody, httpStatus } or throws with full error detail.
 async function callImagenAPI(prompt, aspectRatio) {
-  const apiKey = process.env.GOOGLE_TTS_API_KEY;
-  if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not set');
+  const apiKey = process.env.GOOGLE_IMAGEN_API_KEY || process.env.GOOGLE_TTS_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_IMAGEN_API_KEY not set');
 
   const IMAGEN_MODEL = 'imagen-4.0-generate-001';
   const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:generateImages?key=${apiKey}`;
@@ -5072,8 +5072,8 @@ async function callImagenAPI(prompt, aspectRatio) {
 // Returns the local /tmp path on success, null on any failure (never throws).
 async function generateThumbnail(title, nicheName, videoType, slotId) {
   const fs = require('fs');
-  if (!process.env.GOOGLE_TTS_API_KEY) {
-    console.warn('[Thumbnail] GOOGLE_TTS_API_KEY not set — skipping');
+  if (!process.env.GOOGLE_IMAGEN_API_KEY && !process.env.GOOGLE_TTS_API_KEY) {
+    console.warn('[Thumbnail] GOOGLE_IMAGEN_API_KEY not set — skipping');
     return null;
   }
   try {
@@ -6575,8 +6575,8 @@ app.post('/api/admin/generate-slots-now', requireAdmin, async (req, res) => {
 
 // GET /api/admin/test-imagen — call Imagen 4 and return raw response for debugging
 app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
-  const apiKey = process.env.GOOGLE_TTS_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GOOGLE_TTS_API_KEY not set' });
+  const apiKey = process.env.GOOGLE_IMAGEN_API_KEY || process.env.GOOGLE_TTS_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'GOOGLE_IMAGEN_API_KEY not set' });
 
   // Step 1: list all models available to this API key
   let availableImagenModels = [];
