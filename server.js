@@ -329,8 +329,32 @@ async function runStartupSlotCheck() {
       console.log('[Startup] No stuck processing slots found ✓');
     }
 
-    // Rescue today's missed/skipped slots — give them a new posting time so they still run today.
+    // Convert 'pending' slots from content_planner_agent.py into 'scheduled' slots the PostingCron can consume.
+    // The Python agent stores slots with scheduledDate+postTime fields; Node expects scheduledPostTime.
     const today = new Date().toISOString().slice(0, 10);
+    const pendingSlots = await slotsCol.find({
+      status: 'pending', posted: { $ne: true }, scheduledPostTime: { $exists: false },
+    }).toArray().catch(() => []);
+    let converted = 0;
+    const nowMs = Date.now();
+    for (let i = 0; i < pendingSlots.length; i++) {
+      const s = pendingSlots[i];
+      const slotDate = s.scheduledDate || s.date || today;
+      const slotTime = s.postTime || '18:00';
+      let scheduledPostTime = `${slotDate}T${slotTime}:00`;
+      // If the time is already in the past for today, push it forward so the PostingCron picks it up
+      if (slotDate === today && new Date(scheduledPostTime + 'Z') < new Date(nowMs + 5 * 60 * 1000)) {
+        scheduledPostTime = new Date(nowMs + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      }
+      await slotsCol.updateOne(
+        { _id: s._id },
+        { $set: { status: 'scheduled', scheduledPostTime, date: slotDate, pipelineStatus: 'converted-from-pending', posted: false } }
+      ).catch(() => {});
+      converted++;
+    }
+    if (converted > 0) console.log(`[Startup] Converted ${converted} pending slot(s) → scheduled (content_planner_agent format)`);
+
+    // Rescue today's missed/skipped slots — give them a new posting time so they still run today.
     const missedSlots = await slotsCol.find({
       date: today, status: { $in: ['missed', 'skipped'] }, posted: false,
     }).toArray().catch(() => []);
@@ -338,14 +362,14 @@ async function runStartupSlotCheck() {
     for (let i = 0; i < missedSlots.length; i++) {
       const s = missedSlots[i];
       if ((s.retryCount || 0) >= 3) continue;
-      const rescheduleAt = new Date(Date.now() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      const rescheduleAt = new Date(nowMs + (converted + i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
       await slotsCol.updateOne(
         { _id: s._id },
         { $set: { status: 'scheduled', scheduledPostTime: rescheduleAt, pipelineStatus: 'rescued-on-startup' }, $inc: { retryCount: 1 } }
       ).catch(() => {});
       rescued++;
     }
-    if (rescued > 0) console.log(`[Startup] Rescued ${rescued} missed slot(s) → rescheduled for today`);
+    if (rescued > 0) console.log(`[Startup] Rescued ${rescued} missed/skipped slot(s) → rescheduled for today`);
 
     console.log('[Startup] Recovery check complete');
   } catch (e) {
@@ -493,10 +517,11 @@ app.get('/health', async (req, res) => {
       .toArray()
       .then(r => r[0] || null)
       .catch(() => null);
-    // Count 'missed' and 'skipped' slots so operators can see the full picture
-    const [missed, skipped] = await Promise.all([
+    // Count all non-standard statuses so operators can see the full picture
+    const [missed, skipped, pending] = await Promise.all([
       slotsCol.countDocuments({ date: today, status: 'missed' }),
       slotsCol.countDocuments({ date: today, status: 'skipped' }),
+      slotsCol.countDocuments({ date: today, status: 'pending' }),
     ]);
     pipeline = {
       todaysSlotsGenerated: gen > 0,
@@ -507,6 +532,7 @@ app.get('/health', async (req, res) => {
       slotsProcessing: processing,
       slotsMissed:     missed,
       slotsSkipped:    skipped,
+      slotsPending:    pending,
       nextPostTime:    nextSlot?.scheduledPostTime || null,
       cronJobsRegistered,
       lastPipelineError: PIPELINE_STATUS.lastError || null,
@@ -5573,10 +5599,15 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
 
   for (const { user, channelId, nicheName, calDoc } of workItems) {
     try {
-      // Idempotency — never regenerate if docs already exist for this user+date
-      const existingCount = await slotsCol.countDocuments({ userId: String(user._id), date: today });
+      // Idempotency — only skip if actionable (scheduled/processing/posted) slots exist.
+      // 'pending' slots from content_planner_agent.py use a different format and must not
+      // block DailyGen from creating proper 'scheduled' slots the PostingCron can pick up.
+      const existingCount = await slotsCol.countDocuments({
+        userId: String(user._id), date: today,
+        status: { $in: ['scheduled', 'processing', 'posted'] },
+      });
       if (existingCount > 0) {
-        console.log(`[DailyGen] ${existingCount} slot(s) for ${today} already in DB (user ${user._id}) — skipping`);
+        console.log(`[DailyGen] ${existingCount} actionable slot(s) for ${today} already in DB (user ${user._id}) — skipping`);
         continue;
       }
 
@@ -5751,6 +5782,26 @@ async function runScheduledPosting() {
   const nowIso   = now.toISOString();
   const today    = nowIso.slice(0, 10);
   const slotsCol = agentCol('calendar_slots');
+
+  // Convert any 'pending' slots from content_planner_agent.py that don't yet have scheduledPostTime.
+  // The Python agent uses scheduledDate+postTime; convert them to the format PostingCron expects.
+  const pendingToConvert = await slotsCol.find({
+    status: 'pending', date: today, posted: { $ne: true }, scheduledPostTime: { $exists: false },
+  }).toArray().catch(() => []);
+  for (let i = 0; i < pendingToConvert.length; i++) {
+    const s = pendingToConvert[i];
+    const slotDate = s.scheduledDate || s.date || today;
+    const slotTime = s.postTime || '18:00';
+    let scheduledPostTime = `${slotDate}T${slotTime}:00`;
+    if (new Date(scheduledPostTime + 'Z') < new Date(now.getTime() + 5 * 60 * 1000)) {
+      scheduledPostTime = new Date(now.getTime() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+    }
+    await slotsCol.updateOne(
+      { _id: s._id },
+      { $set: { status: 'scheduled', scheduledPostTime, date: slotDate, pipelineStatus: 'converted-from-pending', posted: false } }
+    ).catch(() => {});
+    console.log(`[PostingCron] Converted pending slot "${s.title}" → scheduled at ${scheduledPostTime}`);
+  }
 
   // Auto-rescue: slots that missed their window get rescheduled to post soon (up to 3 retries).
   // Instead of abandoning them as 'missed', bump scheduledPostTime forward so the pipeline still runs today.
