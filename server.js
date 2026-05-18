@@ -6574,7 +6574,7 @@ app.post('/api/admin/generate-slots-now', requireAdmin, async (req, res) => {
 });
 
 // GET /api/admin/test-imagen — call Imagen 4 and return raw response for debugging
-app.get('/api/admin/test-imagen', requireAdmin, async (req, res) => {
+app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
   const prompt = req.query.prompt || 'Professional YouTube thumbnail, bold white text TEST with thick black outline, vibrant high contrast blue background, dramatic lighting, no people';
   const aspectRatio = req.query.aspect_ratio || '16:9';
   console.log(`[Admin] test-imagen called — prompt="${prompt.slice(0, 80)}", aspect_ratio=${aspectRatio}`);
