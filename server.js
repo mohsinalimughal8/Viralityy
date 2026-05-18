@@ -6578,35 +6578,39 @@ app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
   const apiKey = process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'GOOGLE_TTS_API_KEY not set' });
 
-  const prompt = req.query.prompt || 'A vibrant YouTube thumbnail with bold text TEST on blue background';
-  const aspectRatio = req.query.aspect_ratio || '16:9';
-
-  // Try candidate model IDs in order — return first that doesn't 404
-  const candidates = [
-    'imagen-4.0-generate-001',
-    'imagen-4.0-fast-generate-001',
-    'imagen-4.0-generate-preview-06-06',
-    'imagen-3.0-generate-001',
-  ];
-
-  const results = {};
-  for (const model of candidates) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateImages?key=${apiKey}`;
-    const body = { prompt, number_of_images: 1, aspect_ratio: aspectRatio, safety_filter_level: 'BLOCK_SOME', person_generation: 'DONT_ALLOW' };
-    try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const text = await r.text();
-      results[model] = { status: r.status, bodyPreview: text.slice(0, 300) };
-      if (r.ok) {
-        results[model].success = true;
-        break;
-      }
-    } catch (e) {
-      results[model] = { error: e.message };
+  // Step 1: list all models available to this API key
+  let availableImagenModels = [];
+  let modelListError = null;
+  try {
+    const listRes  = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`);
+    const listText = await listRes.text();
+    if (listRes.ok) {
+      const listData = JSON.parse(listText);
+      availableImagenModels = (listData.models || [])
+        .map(m => m.name)
+        .filter(n => n.toLowerCase().includes('imagen'));
+    } else {
+      modelListError = `HTTP ${listRes.status}: ${listText.slice(0, 200)}`;
     }
+  } catch (e) {
+    modelListError = e.message;
   }
 
-  res.json({ apiKeyLastFour: apiKey.slice(-4), prompt: prompt.slice(0, 60), results });
+  // Step 2: attempt generateImages on the first available Imagen model (or a default)
+  const targetModel = availableImagenModels[0]?.replace('models/', '') || 'imagen-3.0-generate-001';
+  const prompt = req.query.prompt || 'A vibrant YouTube thumbnail with bold text TEST on blue background';
+  let generateResult = null;
+  try {
+    const url  = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateImages?key=${apiKey}`;
+    const body = { prompt, number_of_images: 1, aspect_ratio: '16:9', safety_filter_level: 'BLOCK_SOME', person_generation: 'DONT_ALLOW' };
+    const r    = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const text = await r.text();
+    generateResult = { model: targetModel, status: r.status, bodyPreview: text.slice(0, 500) };
+  } catch (e) {
+    generateResult = { model: targetModel, error: e.message };
+  }
+
+  res.json({ apiKeyLastFour: apiKey.slice(-4), availableImagenModels, modelListError, generateResult });
 });
 
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
