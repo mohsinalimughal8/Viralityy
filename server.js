@@ -4667,15 +4667,45 @@ function buildFallbackCaptions(scriptText, totalDuration) {
   return captions;
 }
 
-// Detect caption font paths once at startup; used by buildDrawtextFilters
+// Detect caption font paths once at startup; used by buildDrawtextFilters.
+// Prefers Liberation Sans > DejaVu Sans (both clean sans-serif, available via Nixpacks).
+// Uses fc-list first so Nix store paths are found regardless of install location.
 const CAPTION_FONT_PATHS = (() => {
   const fs = require('fs');
   const { execSync } = require('child_process');
+
+  // fc-list first — works on both Ubuntu and Nix environments
+  try {
+    const raw   = execSync('fc-list --format="%{file}\\n"', { timeout: 5000 }).toString();
+    const files = raw.split('\n').map(l => l.trim()).filter(Boolean);
+
+    // Prefer Liberation Sans, fall back to DejaVu Sans — reject anything serif/decorative
+    const isSansSerif = f => /Liberation.*Sans|DejaVu.*Sans(?!.*Mono)|Ubuntu-[RBM]/i.test(f) &&
+                             !/Serif|Mono|Cond|Narrow|Oblique|Italic/i.test(f);
+
+    const libBold = files.find(f => /LiberationSans-Bold\.ttf$/i.test(f));
+    const libReg  = files.find(f => /LiberationSans-Regular\.ttf$/i.test(f));
+    const djvBold = files.find(f => /DejaVuSans-Bold\.ttf$/i.test(f));
+    const djvReg  = files.find(f => /DejaVuSans\.ttf$/i.test(f));
+    const anyBold = files.find(f => isSansSerif(f) && /Bold/i.test(f));
+    const anyReg  = files.find(f => isSansSerif(f) && !/Bold|Italic|Oblique/i.test(f));
+
+    const reg  = libReg  || djvReg  || anyReg;
+    const bold = libBold || djvBold || anyBold || reg;
+
+    if (reg) {
+      const r = { regular: reg, bold };
+      console.log('[Captions] Font (fc-list):', r);
+      return r;
+    }
+  } catch (_) { /* fontconfig not available — fall through to static paths */ }
+
+  // Static fallback — Ubuntu system paths and macOS (local dev)
   const staticCandidates = [
-    ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',                  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
-    ['/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',  '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'],
-    ['/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf',                    '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf'],
-    ['/System/Library/Fonts/Helvetica.ttc',                              '/System/Library/Fonts/Helvetica.ttc'],
+    ['/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'],
+    ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',                 '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
+    ['/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf',                   '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf'],
+    ['/System/Library/Fonts/Supplemental/Arial.ttf',                    '/System/Library/Fonts/Supplemental/Arial Bold.ttf'],
   ];
   for (const [reg, bold] of staticCandidates) {
     if (fs.existsSync(reg)) {
@@ -4684,18 +4714,8 @@ const CAPTION_FONT_PATHS = (() => {
       return r;
     }
   }
-  try {
-    const raw = execSync('fc-list --format="%{file}\\n"', { timeout: 5000 }).toString();
-    const files = raw.split('\n').map(l => l.trim()).filter(Boolean);
-    const boldFile = files.find(f => /DejaVuSans-Bold|LiberationSans-Bold|Ubuntu-B\.ttf/i.test(f));
-    const regFile  = files.find(f => /DejaVuSans\.ttf$|LiberationSans-Regular|Ubuntu-R\.ttf/i.test(f)) || files[0];
-    if (regFile) {
-      const r = { regular: regFile, bold: boldFile || regFile };
-      console.log('[Captions] Font (fc-list):', r);
-      return r;
-    }
-  } catch (_) { /* fontconfig not available */ }
-  console.warn('[Captions] No font file found — drawtext will rely on ffmpeg default');
+
+  console.warn('[Captions] No sans-serif font found — ffmpeg will use its built-in default (may be serif)');
   return { regular: null, bold: null };
 })();
 
@@ -4739,16 +4759,18 @@ function buildDrawtextFilters(captions) {
 
     if (!line1) continue;
 
-    // Line 1 — white, bold font file, fontsize=45
+    // Line 1 — white #FFFFFF, bold, fontsize=45, 4px black outline, no box, no shadow
     filters.push(
-      `drawtext=text='${line1}':fontsize=45${fontBold}:fontcolor=white:borderw=4:bordercolor=black` +
+      `drawtext=text='${line1}':fontsize=45${fontBold}:fontcolor=#FFFFFF` +
+      `:borderw=4:bordercolor=black:box=0` +
       `:x=(w-text_w)/2:y=h*0.72-45:enable='between(t,${s},${e})'`
     );
 
-    // Line 2 — yellow, regular font file, fontsize=40
+    // Line 2 — yellow #FFE500, regular, fontsize=40, 4px black outline, no box, no shadow
     if (line2) {
       filters.push(
-        `drawtext=text='${line2}':fontsize=40${fontReg}:fontcolor=#FFE500:borderw=4:bordercolor=black` +
+        `drawtext=text='${line2}':fontsize=40${fontReg}:fontcolor=#FFE500` +
+        `:borderw=4:bordercolor=black:box=0` +
         `:x=(w-text_w)/2:y=h*0.72+10:enable='between(t,${s},${e})'`
       );
     }
