@@ -5019,18 +5019,15 @@ async function callImagenAPI(prompt, aspectRatio) {
   const apiKey = process.env.GOOGLE_IMAGEN_API_KEY || process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_IMAGEN_API_KEY not set');
 
-  const IMAGEN_MODEL = 'imagen-4.0-generate-001';
-  const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:generateImages?key=${apiKey}`;
+  const IMAGEN_MODEL = 'imagen-4.0-fast-generate-001';
+  const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:predict?key=${apiKey}`;
   const imagenBody   = {
-    prompt,
-    number_of_images: 1,
-    aspect_ratio:     aspectRatio,
-    safety_filter_level: 'BLOCK_SOME',
-    person_generation:   'DONT_ALLOW',
+    instances:  [{ prompt }],
+    parameters: { sampleCount: 1, aspectRatio },
   };
 
   console.log(`[Imagen] POST ${imagenUrl.replace(apiKey, 'KEY=...'+apiKey.slice(-4))}`);
-  console.log(`[Imagen] Request body:`, JSON.stringify({ ...imagenBody, prompt: prompt.slice(0, 80) + '…' }));
+  console.log(`[Imagen] Request body:`, JSON.stringify({ ...imagenBody, instances: [{ prompt: prompt.slice(0, 80) + '…' }] }));
 
   const res = await fetch(imagenUrl, {
     method:  'POST',
@@ -5051,13 +5048,10 @@ async function callImagenAPI(prompt, aspectRatio) {
     throw new Error(`Imagen API returned non-JSON: ${rawBody.slice(0, 200)}`);
   }
 
-  // generativelanguage.googleapis.com Imagen endpoint returns generatedImages[].image.imageBytes
-  // (Vertex AI Predict format returns predictions[].bytesBase64Encoded — handled as fallback)
-  const genImg = data.generatedImages?.[0];
-  const pred   = data.predictions?.[0];
-
-  const imageBytes = genImg?.image?.imageBytes || pred?.bytesBase64Encoded;
-  const mimeType   = genImg?.image?.mimeType   || pred?.mimeType || 'image/png';
+  // :predict endpoint returns predictions[].bytesBase64Encoded + mimeType
+  const pred       = data.predictions?.[0];
+  const imageBytes = pred?.bytesBase64Encoded;
+  const mimeType   = pred?.mimeType || 'image/png';
 
   if (!imageBytes) {
     console.error('[Imagen] No image bytes in response — full body:', rawBody);
@@ -6575,68 +6569,18 @@ app.post('/api/admin/generate-slots-now', requireAdmin, async (req, res) => {
 
 // GET /api/admin/test-imagen — call Imagen 4 and return raw response for debugging
 app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
-  const apiKey = process.env.GOOGLE_IMAGEN_API_KEY || process.env.GOOGLE_TTS_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GOOGLE_IMAGEN_API_KEY not set' });
-
-  // Step 1: list all models available to this API key
-  let availableImagenModels = [];
-  let modelListError = null;
-  try {
-    const listRes  = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`);
-    const listText = await listRes.text();
-    if (listRes.ok) {
-      const listData = JSON.parse(listText);
-      availableImagenModels = (listData.models || [])
-        .map(m => m.name)
-        .filter(n => n.toLowerCase().includes('imagen'));
-    } else {
-      modelListError = `HTTP ${listRes.status}: ${listText.slice(0, 200)}`;
-    }
-  } catch (e) {
-    modelListError = e.message;
-  }
-
-  // Step 2: try multiple method names and body formats against imagen-4.0-fast-generate-001
   const prompt = req.query.prompt || 'A vibrant blue YouTube thumbnail with bold white text TEST';
-  const model  = 'imagen-4.0-fast-generate-001';
-  const base   = `https://generativelanguage.googleapis.com/v1beta/models/${model}`;
-
-  const attempts = [
-    {
-      label: 'generateImages_full',
-      url: `${base}:generateImages?key=${apiKey}`,
-      body: { prompt, number_of_images: 1, aspect_ratio: '16:9', safety_filter_level: 'BLOCK_SOME', person_generation: 'DONT_ALLOW' },
-    },
-    {
-      label: 'generateImages_minimal',
-      url: `${base}:generateImages?key=${apiKey}`,
-      body: { prompt, number_of_images: 1 },
-    },
-    {
-      label: 'predict',
-      url: `${base}:predict?key=${apiKey}`,
-      body: { instances: [{ prompt }], parameters: { sampleCount: 1, aspectRatio: '16:9' } },
-    },
-    {
-      label: 'generateContent',
-      url: `${base}:generateContent?key=${apiKey}`,
-      body: { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['IMAGE'] } },
-    },
-  ];
-
-  const generateResults = {};
-  for (const attempt of attempts) {
-    try {
-      const r    = await fetch(attempt.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(attempt.body) });
-      const text = await r.text();
-      generateResults[attempt.label] = { status: r.status, body: text.slice(0, 400) };
-      if (r.ok) { generateResults[attempt.label].SUCCESS = true; break; }
-    } catch (e) {
-      generateResults[attempt.label] = { error: e.message };
-    }
+  try {
+    const result = await callImagenAPI(prompt, '16:9');
+    res.json({
+      success: true,
+      mimeType: result.mimeType,
+      base64Length: result.imageBytes.length,
+      httpStatus: result.httpStatus,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
-
-  res.json({ apiKeyLastFour: apiKey.slice(-4), availableImagenModels, modelListError, generateResults });
 });
 
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
