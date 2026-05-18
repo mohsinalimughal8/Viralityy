@@ -5019,7 +5019,7 @@ async function callImagenAPI(prompt, aspectRatio) {
   const apiKey = process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not set');
 
-  const IMAGEN_MODEL = 'imagen-4-0-generate-001';
+  const IMAGEN_MODEL = 'imagen-4.0-generate-001';
   const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:generateImages?key=${apiKey}`;
   const imagenBody   = {
     prompt,
