@@ -2052,14 +2052,18 @@ async function checkSubscriptionStatus() {
   try {
     const data = await apiCall('/api/auth/me');
     if (!data?.user) return;
-    // Merge fresh subscription fields into CURRENT_USER
+    // Merge fresh fields into CURRENT_USER
     CURRENT_USER.subscriptionStatus   = data.subscriptionStatus;
     CURRENT_USER.trialDaysLeft        = data.trialDaysLeft;
     CURRENT_USER.subscriptionEndDate  = data.subscriptionEndDate;
     CURRENT_USER.subscriptionRenewsAt = data.subscriptionRenewsAt;
     CURRENT_USER.trialEndsAt          = data.user.trialEndsAt;
+    CURRENT_USER.autoPost             = data.user.autoPost ?? true;
     localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
     updateUserUI();
+    // Apply authoritative autoPost state to toggle if it's in the DOM
+    const _apToggle = document.getElementById('auto-post-toggle');
+    if (_apToggle) _apToggle.checked = CURRENT_USER.autoPost !== false;
 
     if (data.subscriptionStatus === 'expired') {
       // Gate feature-heavy pages — allow analytics and dashboard overview only
@@ -2421,6 +2425,9 @@ async function initPreview() {
   if (sub) sub.textContent = liveQueue.length ? `${liveQueue.length} video${liveQueue.length !== 1 ? 's' : ''} awaiting your review` : (_todayAllPosted ? 'All videos posted today' : 'No videos pending review');
 
   renderQueue();
+  // Restore auto-post toggle from saved state (default true matches schema default)
+  const apToggle = document.getElementById('auto-post-toggle');
+  if (apToggle) apToggle.checked = CURRENT_USER?.autoPost !== false;
   if (_countdownTimer) clearInterval(_countdownTimer);
   _countdownTimer = setInterval(tickCountdowns, 30000);
 }
@@ -3557,6 +3564,11 @@ function openAccountSettings() {
 // ════════════════════════════════════════════
 async function handleAutoPostToggle(checked) {
   await apiCall('/api/user/autopost', 'PATCH', { autoPost: checked });
+  // Keep in-memory state and localStorage in sync so navigating away and back preserves the value
+  if (CURRENT_USER) {
+    CURRENT_USER.autoPost = checked;
+    localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
+  }
   toast(checked
     ? 'Auto-post enabled — videos post automatically at scheduled time'
     : 'Auto-post disabled — all videos require manual approval',
