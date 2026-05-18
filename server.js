@@ -4968,10 +4968,11 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       if (!thumbQC.allowed) { console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload'); return; }
       oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
-      console.log(`[DIAG] Calling yt.thumbnails.set for videoId=${videoId}`);
+      const thumbMime = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      console.log(`[DIAG] Calling yt.thumbnails.set for videoId=${videoId}, mime=${thumbMime}`);
       await yt.thumbnails.set({
         videoId,
-        media: { mimeType: 'image/jpeg', body: fs.createReadStream(thumbPath) },
+        media: { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
       });
       logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
       logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
@@ -5026,8 +5027,9 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
       ? `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`
       : `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`;
 
+    // Generative Language API Imagen endpoint: top-level number_of_images / aspect_ratio
     const imagenUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-0-generate-001:generateImages?key=${apiKey}`;
-    const imagenBody = { prompt, generationConfig: { sampleCount: 1, aspectRatio } };
+    const imagenBody = { prompt, number_of_images: 1, aspect_ratio: aspectRatio };
     console.log(`[Thumbnail] Requesting Imagen 4 — aspect ${aspectRatio}, niche: ${nicheName}`);
     console.log(`[DIAG] Imagen URL:`, imagenUrl.replace(apiKey, 'KEY_REDACTED'));
     console.log(`[DIAG] Imagen request body:`, JSON.stringify(imagenBody));
@@ -5041,19 +5043,24 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
     console.log(`[DIAG] Imagen response status: ${res.status} ${res.statusText}`);
     if (!res.ok) {
       const errText = await res.text();
-      console.log(`[DIAG] Imagen error body:`, errText.slice(0, 500));
-      throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 300)}`);
+      console.log(`[DIAG] Imagen error body:`, errText);
+      throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 400)}`);
     }
 
-    const data       = await res.json();
-    // Imagen API returns predictions[0].bytesBase64Encoded
-    const imageBytes = data.predictions?.[0]?.bytesBase64Encoded;
+    const data = await res.json();
+    // Generative Language API returns generatedImages[0].image.imageBytes (PNG by default).
+    // Fall back to Vertex AI Predict format predictions[0].bytesBase64Encoded.
+    const genImg     = data.generatedImages?.[0];
+    const imageBytes = genImg?.image?.imageBytes || data.predictions?.[0]?.bytesBase64Encoded;
     if (!imageBytes) {
-      console.warn('[Thumbnail] Unexpected response shape:', JSON.stringify(data).slice(0, 300));
-      throw new Error('No bytesBase64Encoded in Imagen response');
+      console.warn('[Thumbnail] Unexpected response shape — full response:', JSON.stringify(data));
+      throw new Error('No image data in Imagen response');
     }
 
-    const thumbPath = `/tmp/vly_thumb_${slotId}.jpg`;
+    // Honour the mimeType reported by the API; default to PNG (Imagen 4 default).
+    const imageMime = genImg?.image?.mimeType || 'image/png';
+    const thumbExt  = imageMime.includes('jpeg') || imageMime.includes('jpg') ? 'jpg' : 'png';
+    const thumbPath = `/tmp/vly_thumb_${slotId}.${thumbExt}`;
     fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
     const sizeBytes = fs.statSync(thumbPath).size;
     console.log(`[Thumbnail] Generated: ${thumbPath}, Size: ${sizeBytes} bytes (AI image, not video frame)`);
