@@ -2006,6 +2006,10 @@ function empty(id, msg) {
   if (el) el.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">${msg}</div>`;
 }
 
+function _fmtPlanName(plan) {
+  return { agency: 'Agency Plan', growth: 'Growth Plan', shorts_pro: 'Shorts Pro', starter: 'Starter Plan', trial: 'Free Trial' }[plan] || (plan + ' Plan');
+}
+
 function updateUserUI() {
   if (!CURRENT_USER) return;
   const nameEl   = document.querySelector('.user-name');
@@ -2019,12 +2023,24 @@ function updateUserUI() {
 
   const plan   = CURRENT_USER.plan || 'trial';
   const status = CURRENT_USER.subscriptionStatus || 'trial';
-  if (planEl) planEl.textContent = plan + ' plan';
+  if (planEl) planEl.textContent = _fmtPlanName(plan);
+
+  // Update the dashboard overview subtitle with live plan + niche info
+  const dashSub = document.querySelector('.dash-subtitle');
+  if (dashSub) {
+    const parts = [CURRENT_USER.nicheName, _fmtPlanName(plan)].filter(Boolean);
+    dashSub.textContent = parts.join(' · ');
+  }
 
   if (pillEl) {
-    if (status === 'trial') {
-      const days = CURRENT_USER.trialDaysLeft ?? CURRENT_USER.trialEndsAt
-        ? Math.max(0, Math.ceil((new Date(CURRENT_USER.trialEndsAt) - Date.now()) / 86400000)) : 7;
+    // Guard: a paid plan must never show a trial label even if subscriptionStatus is stale
+    if (status === 'trial' && plan === 'trial') {
+      // Fix operator precedence: (a ?? b) ? c : d ignores a's value; use explicit null-check
+      const days = CURRENT_USER.trialDaysLeft != null
+        ? CURRENT_USER.trialDaysLeft
+        : CURRENT_USER.trialEndsAt
+          ? Math.max(0, Math.ceil((new Date(CURRENT_USER.trialEndsAt) - Date.now()) / 86400000))
+          : 7;
       pillEl.style.color = days <= 2 ? '#f87171' : '#fbbf24';
       pillEl.textContent = days > 0 ? `Trial: ${days}d left` : 'Trial expired';
     } else if (status === 'active') {
@@ -2052,7 +2068,8 @@ async function checkSubscriptionStatus() {
   try {
     const data = await apiCall('/api/auth/me');
     if (!data?.user) return;
-    // Merge fresh fields into CURRENT_USER
+    // Merge fresh fields into CURRENT_USER — must include plan so upgrades are reflected without logout
+    CURRENT_USER.plan                 = data.user.plan                 || CURRENT_USER.plan;
     CURRENT_USER.subscriptionStatus   = data.subscriptionStatus;
     CURRENT_USER.trialDaysLeft        = data.trialDaysLeft;
     CURRENT_USER.subscriptionEndDate  = data.subscriptionEndDate;
@@ -2889,6 +2906,15 @@ async function applyPromoCode() {
   msgEl.style.color = 'var(--text3)'; msgEl.textContent = 'Applying…';
   const res = await apiCall('/api/billing/promo', 'POST', { promoCode: code, plan: _promoSelectedPlan });
   if (res?.success) {
+    // Persist the upgraded plan/status into localStorage NOW so the reload
+    // doesn't flash "Trial: Xd left" from the stale pre-upgrade session data
+    if (CURRENT_USER) {
+      CURRENT_USER.plan               = res.plan;
+      CURRENT_USER.subscriptionStatus = res.subscriptionStatus;
+      CURRENT_USER.subscriptionEndDate  = res.subscriptionEndDate || CURRENT_USER.subscriptionEndDate;
+      CURRENT_USER.subscriptionRenewsAt = res.subscriptionEndDate || CURRENT_USER.subscriptionRenewsAt;
+      localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
+    }
     msgEl.style.color = 'var(--green,#34d399)'; msgEl.textContent = 'Plan upgraded successfully!';
     setTimeout(() => { closeNicheModal(); location.reload(); }, 1200);
   } else {
