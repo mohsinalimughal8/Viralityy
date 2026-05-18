@@ -6575,23 +6575,38 @@ app.post('/api/admin/generate-slots-now', requireAdmin, async (req, res) => {
 
 // GET /api/admin/test-imagen — call Imagen 4 and return raw response for debugging
 app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
-  const prompt = req.query.prompt || 'Professional YouTube thumbnail, bold white text TEST with thick black outline, vibrant high contrast blue background, dramatic lighting, no people';
+  const apiKey = process.env.GOOGLE_TTS_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'GOOGLE_TTS_API_KEY not set' });
+
+  const prompt = req.query.prompt || 'A vibrant YouTube thumbnail with bold text TEST on blue background';
   const aspectRatio = req.query.aspect_ratio || '16:9';
-  console.log(`[Admin] test-imagen called — prompt="${prompt.slice(0, 80)}", aspect_ratio=${aspectRatio}`);
-  try {
-    const result = await callImagenAPI(prompt, aspectRatio);
-    res.json({
-      success: true,
-      httpStatus: result.httpStatus,
-      mimeType: result.mimeType,
-      base64Length: result.imageBytes.length,
-      rawBodyPreview: result.rawBody.slice(0, 400),
-      responseKeys: Object.keys(JSON.parse(result.rawBody)),
-    });
-  } catch (err) {
-    console.error('[Admin] test-imagen error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+
+  // Try candidate model IDs in order — return first that doesn't 404
+  const candidates = [
+    'imagen-4.0-generate-001',
+    'imagen-4.0-fast-generate-001',
+    'imagen-4.0-generate-preview-06-06',
+    'imagen-3.0-generate-001',
+  ];
+
+  const results = {};
+  for (const model of candidates) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateImages?key=${apiKey}`;
+    const body = { prompt, number_of_images: 1, aspect_ratio: aspectRatio, safety_filter_level: 'BLOCK_SOME', person_generation: 'DONT_ALLOW' };
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const text = await r.text();
+      results[model] = { status: r.status, bodyPreview: text.slice(0, 300) };
+      if (r.ok) {
+        results[model].success = true;
+        break;
+      }
+    } catch (e) {
+      results[model] = { error: e.message };
+    }
   }
+
+  res.json({ apiKeyLastFour: apiKey.slice(-4), prompt: prompt.slice(0, 60), results });
 });
 
 // GET /api/content/preview/:slotId — stream assembled video preview from /tmp
