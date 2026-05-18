@@ -3090,6 +3090,25 @@ app.get('/api/scripts', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/diag/slots-status — public (no auth) — shows today's slot status+posted distribution
+// No sensitive data exposed — just aggregate counts for operational monitoring
+app.get('/api/diag/slots-status', async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const slotsCol = agentCol('calendar_slots');
+    const all      = await slotsCol.find({ date: today }).project({ status: 1, posted: 1, scheduledPostTime: 1, _id: 0 }).toArray();
+    const dist     = {};
+    for (const s of all) {
+      const k = `status:${s.status}|posted:${s.posted}`;
+      dist[k] = (dist[k] || 0) + 1;
+    }
+    const times = all.map(s => s.scheduledPostTime).sort();
+    res.json({ today, total: all.length, distribution: dist, scheduledTimes: times });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/diag/slots-today — returns today's calendar_slots with status breakdown
 // Protected by x-cron-secret header so Railway health or the admin can call it without a session
 app.get('/api/diag/slots-today', async (req, res) => {
