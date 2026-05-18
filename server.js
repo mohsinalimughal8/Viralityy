@@ -329,10 +329,10 @@ async function runStartupSlotCheck() {
       console.log('[Startup] No stuck processing slots found ✓');
     }
 
-    // Rescue today's missed slots — give them a new posting time so they still run today.
+    // Rescue today's missed/skipped slots — give them a new posting time so they still run today.
     const today = new Date().toISOString().slice(0, 10);
     const missedSlots = await slotsCol.find({
-      date: today, status: 'missed', posted: false,
+      date: today, status: { $in: ['missed', 'skipped'] }, posted: false,
     }).toArray().catch(() => []);
     let rescued = 0;
     for (let i = 0; i < missedSlots.length; i++) {
@@ -493,14 +493,24 @@ app.get('/health', async (req, res) => {
       .toArray()
       .then(r => r[0] || null)
       .catch(() => null);
+    // Count 'missed' and 'skipped' slots so operators can see the full picture
+    const [missed, skipped] = await Promise.all([
+      slotsCol.countDocuments({ date: today, status: 'missed' }),
+      slotsCol.countDocuments({ date: today, status: 'skipped' }),
+    ]);
     pipeline = {
       todaysSlotsGenerated: gen > 0,
+      totalSlotsToday:  gen,
       slotsScheduled:  ready,
       slotsPosted:     posted,
       slotsFailed:     failed,
       slotsProcessing: processing,
+      slotsMissed:     missed,
+      slotsSkipped:    skipped,
       nextPostTime:    nextSlot?.scheduledPostTime || null,
       cronJobsRegistered,
+      lastPipelineError: PIPELINE_STATUS.lastError || null,
+      todayStats:      PIPELINE_STATUS.todayStats,
     };
   } catch { /* pipeline stays { error: 'unavailable' } */ }
 
