@@ -5013,63 +5013,90 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   }
 }
 
+// Shared Imagen 4 caller — used by generateThumbnail and the admin test endpoint.
+// Returns { imageBytes, mimeType, rawBody, httpStatus } or throws with full error detail.
+async function callImagenAPI(prompt, aspectRatio) {
+  const apiKey = process.env.GOOGLE_TTS_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not set');
+
+  const IMAGEN_MODEL = 'imagen-4-0-generate-001';
+  const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:generateImages?key=${apiKey}`;
+  const imagenBody   = {
+    prompt,
+    number_of_images: 1,
+    aspect_ratio:     aspectRatio,
+    safety_filter_level: 'BLOCK_SOME',
+    person_generation:   'DONT_ALLOW',
+  };
+
+  console.log(`[Imagen] POST ${imagenUrl.replace(apiKey, 'KEY=...'+apiKey.slice(-4))}`);
+  console.log(`[Imagen] Request body:`, JSON.stringify({ ...imagenBody, prompt: prompt.slice(0, 80) + '…' }));
+
+  const res = await fetch(imagenUrl, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(imagenBody),
+  });
+
+  const rawBody = await res.text();
+  console.log(`[Imagen] HTTP ${res.status} ${res.statusText}`);
+  console.log(`[Imagen] Response body (first 600 chars):`, rawBody.slice(0, 600));
+
+  if (!res.ok) {
+    throw new Error(`Imagen API HTTP ${res.status}: ${rawBody}`);
+  }
+
+  let data;
+  try { data = JSON.parse(rawBody); } catch (_) {
+    throw new Error(`Imagen API returned non-JSON: ${rawBody.slice(0, 200)}`);
+  }
+
+  // generativelanguage.googleapis.com Imagen endpoint returns generatedImages[].image.imageBytes
+  // (Vertex AI Predict format returns predictions[].bytesBase64Encoded — handled as fallback)
+  const genImg = data.generatedImages?.[0];
+  const pred   = data.predictions?.[0];
+
+  const imageBytes = genImg?.image?.imageBytes || pred?.bytesBase64Encoded;
+  const mimeType   = genImg?.image?.mimeType   || pred?.mimeType || 'image/png';
+
+  if (!imageBytes) {
+    console.error('[Imagen] No image bytes in response — full body:', rawBody);
+    throw new Error(`Imagen returned no image data. Response keys: ${Object.keys(data).join(', ')}`);
+  }
+
+  console.log(`[Imagen] ✓ Got image — mime=${mimeType}, base64Len=${imageBytes.length}`);
+  return { imageBytes, mimeType, rawBody, httpStatus: res.status };
+}
+
 // Generate a YouTube thumbnail via Google Imagen 4 (imagen-4-0-generate-001).
 // Returns the local /tmp path on success, null on any failure (never throws).
 async function generateThumbnail(title, nicheName, videoType, slotId) {
-  const fs     = require('fs');
-  const apiKey = process.env.GOOGLE_TTS_API_KEY;
-  if (!apiKey) { console.warn('[Thumbnail] GOOGLE_TTS_API_KEY not set — skipping'); return null; }
+  const fs = require('fs');
+  if (!process.env.GOOGLE_TTS_API_KEY) {
+    console.warn('[Thumbnail] GOOGLE_TTS_API_KEY not set — skipping');
+    return null;
+  }
   try {
-    const isShort     = (videoType || 'Short').toLowerCase() !== 'long-form';
-    const shortTitle  = title.split(/\s+/).slice(0, 5).join(' ');
-    const aspectRatio = isShort ? '9:16' : '16:9';
-    const prompt = isShort
-      ? `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`
-      : `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, vibrant high contrast background representing ${nicheName}, dramatic professional lighting, eye-catching colors, no faces, clean composition optimized for high click-through rate`;
+    const isShort    = (videoType || 'Short').toLowerCase() !== 'long-form';
+    const shortTitle = title.split(/\s+/).slice(0, 5).join(' ');
+    const prompt     =
+      `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, ` +
+      `vibrant high contrast background representing ${nicheName}, dramatic professional lighting, ` +
+      `eye-catching colors, no people or faces, clean composition optimised for high click-through rate`;
 
-    // Generative Language API Imagen endpoint: top-level number_of_images / aspect_ratio
-    const imagenUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4-0-generate-001:generateImages?key=${apiKey}`;
-    const imagenBody = { prompt, number_of_images: 1, aspect_ratio: aspectRatio };
-    console.log(`[Thumbnail] Requesting Imagen 4 — aspect ${aspectRatio}, niche: ${nicheName}`);
-    console.log(`[DIAG] Imagen URL:`, imagenUrl.replace(apiKey, 'KEY_REDACTED'));
-    console.log(`[DIAG] Imagen request body:`, JSON.stringify(imagenBody));
+    const { imageBytes, mimeType } = await callImagenAPI(prompt, isShort ? '9:16' : '16:9');
 
-    const res = await fetch(imagenUrl, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(imagenBody),
-    });
-
-    console.log(`[DIAG] Imagen response status: ${res.status} ${res.statusText}`);
-    if (!res.ok) {
-      const errText = await res.text();
-      console.log(`[DIAG] Imagen error body:`, errText);
-      throw new Error(`Imagen API ${res.status}: ${errText.slice(0, 400)}`);
-    }
-
-    const data = await res.json();
-    // Generative Language API returns generatedImages[0].image.imageBytes (PNG by default).
-    // Fall back to Vertex AI Predict format predictions[0].bytesBase64Encoded.
-    const genImg     = data.generatedImages?.[0];
-    const imageBytes = genImg?.image?.imageBytes || data.predictions?.[0]?.bytesBase64Encoded;
-    if (!imageBytes) {
-      console.warn('[Thumbnail] Unexpected response shape — full response:', JSON.stringify(data));
-      throw new Error('No image data in Imagen response');
-    }
-
-    // Honour the mimeType reported by the API; default to PNG (Imagen 4 default).
-    const imageMime = genImg?.image?.mimeType || 'image/png';
-    const thumbExt  = imageMime.includes('jpeg') || imageMime.includes('jpg') ? 'jpg' : 'png';
+    const thumbExt  = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' : 'png';
     const thumbPath = `/tmp/vly_thumb_${slotId}.${thumbExt}`;
     fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
     const sizeBytes = fs.statSync(thumbPath).size;
-    console.log(`[Thumbnail] Generated: ${thumbPath}, Size: ${sizeBytes} bytes (AI image, not video frame)`);
+    console.log(`[Thumbnail] Saved: ${thumbPath} (${sizeBytes} bytes)`);
     if (sizeBytes < 1000) throw new Error(`Thumbnail suspiciously small: ${sizeBytes} bytes`);
 
     logAPIUsage('imagen4', 'thumbnail', null, 0, 0.02, true).catch(() => {});
     return thumbPath;
   } catch (err) {
-    console.warn(`[Thumbnail] Generation failed (non-fatal): ${err.message}`);
+    console.error(`[Thumbnail] Generation FAILED: ${err.message}`);
     logAPIUsage('imagen4', 'thumbnail', null, 0, 0, false).catch(() => {});
     return null;
   }
@@ -6543,6 +6570,27 @@ app.post('/api/admin/generate-slots-now', requireAdmin, async (req, res) => {
   } catch (err) {
     console.error('[Admin] generate-slots-now error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/test-imagen — call Imagen 4 and return raw response for debugging
+app.get('/api/admin/test-imagen', requireAdmin, async (req, res) => {
+  const prompt = req.query.prompt || 'Professional YouTube thumbnail, bold white text TEST with thick black outline, vibrant high contrast blue background, dramatic lighting, no people';
+  const aspectRatio = req.query.aspect_ratio || '16:9';
+  console.log(`[Admin] test-imagen called — prompt="${prompt.slice(0, 80)}", aspect_ratio=${aspectRatio}`);
+  try {
+    const result = await callImagenAPI(prompt, aspectRatio);
+    res.json({
+      success: true,
+      httpStatus: result.httpStatus,
+      mimeType: result.mimeType,
+      base64Length: result.imageBytes.length,
+      rawBodyPreview: result.rawBody.slice(0, 400),
+      responseKeys: Object.keys(JSON.parse(result.rawBody)),
+    });
+  } catch (err) {
+    console.error('[Admin] test-imagen error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
