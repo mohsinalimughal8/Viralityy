@@ -1494,6 +1494,12 @@ async function ytSearch(keyword, { days = 30, maxResults = 20, order = 'viewCoun
     console.warn(`[Niche] ytSearch("${keyword}"): YOUTUBE_API_KEY not set`);
     return [];
   }
+  // search.list = 100 units + videos.list = 1 unit
+  const ytSearchQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search + YOUTUBE_QUOTA_COSTS.default, null).catch(() => ({ allowed: true }));
+  if (!ytSearchQC.allowed) {
+    console.warn(`[Quota] ytSearch("${keyword}") blocked — ${ytSearchQC.reason}`);
+    return [];
+  }
   try {
     const publishedAfter = new Date(Date.now() - days * 86_400_000).toISOString();
     const searchParams = new URLSearchParams({
@@ -1526,6 +1532,8 @@ async function ytSearch(keyword, { days = 30, maxResults = 20, order = 'viewCoun
       likes:       parseInt(v.statistics?.likeCount    || '0', 10),
       publishedAt: v.snippet?.publishedAt  || '',
     }));
+    logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
+    logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, null).catch(() => {});
     console.log(`[Niche] ytSearch("${keyword}"): ${videos.length} videos enriched, top views=${videos[0]?.views ?? 0}`);
     return videos;
   } catch (err) {
@@ -2754,6 +2762,11 @@ app.get('/api/competitors', requireAuth, async (req, res) => {
         if (nicheName) {
           const existingIds = new Set(docs.map(d => d.channelId));
 
+          // search.list (100) + channels.list (1)
+          const suggestQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search + YOUTUBE_QUOTA_COSTS.channels, null).catch(() => ({ allowed: true }));
+          if (!suggestQC.allowed) {
+            console.warn(`[Quota] Competitor suggest blocked — ${suggestQC.reason}`);
+          } else {
           // Search for channels in this niche
           const searchParams = new URLSearchParams({
             part: 'snippet', type: 'channel',
@@ -2761,6 +2774,7 @@ app.get('/api/competitors', requireAuth, async (req, res) => {
             maxResults: '10', key: apiKey,
           });
           const searchRes  = await fetch(`https://www.googleapis.com/youtube/v3/search?${searchParams}`);
+          logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
           const searchData = await searchRes.json();
           const channelIds = (searchData.items || [])
             .map(item => item.snippet?.channelId || item.id?.channelId)
@@ -2772,6 +2786,7 @@ app.get('/api/competitors', requireAuth, async (req, res) => {
               part: 'snippet,statistics', id: channelIds.join(','), key: apiKey,
             });
             const statsRes  = await fetch(`https://www.googleapis.com/youtube/v3/channels?${statsParams}`);
+            logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, null).catch(() => {});
             const statsData = await statsRes.json();
             suggestedChannels = (statsData.items || []).map(ch => {
               const vidCount = parseInt(ch.statistics?.videoCount || 0);
@@ -2786,6 +2801,7 @@ app.get('/api/competitors', requireAuth, async (req, res) => {
             });
             console.log(`[Competitors] ${suggestedChannels.length} suggested for niche "${nicheName}"`);
           }
+          } // end quota-allowed block
         }
       } catch (e) {
         console.warn('[Competitors] Suggest failed (non-fatal):', e.message);
@@ -2846,12 +2862,20 @@ app.post('/api/competitors', requireAuth, async (req, res) => {
     }
 
     // Resolve the parsed type to a full channel object (snippet + statistics)
+    // Worst case: channels.list (1) + search.list (100) + search.list (100) + search.list (100) = 301 units
+    const addCompQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.channels + YOUTUBE_QUOTA_COSTS.search * 3, null).catch(() => ({ allowed: true }));
+    if (!addCompQC.allowed) {
+      console.warn(`[Quota] POST /api/competitors blocked — ${addCompQC.reason}`);
+      return res.status(429).json({ error: `YouTube quota insufficient: ${addCompQC.reason}` });
+    }
+
     const YT_CHANNELS = 'https://www.googleapis.com/youtube/v3/channels';
     const YT_SEARCH   = 'https://www.googleapis.com/youtube/v3/search';
 
     // Fetch channel by direct params; returns null if not found, throws on API error
     const fetchChannel = async (params) => {
       const r = await fetch(`${YT_CHANNELS}?${new URLSearchParams({ part: 'snippet,statistics', key: apiKey, ...params })}`);
+      logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, null).catch(() => {});
       if (!r.ok) { const e = new Error(`YouTube API error (${r.status})`); e.status = 502; throw e; }
       return (await r.json()).items?.[0] || null;
     };
@@ -2859,6 +2883,7 @@ app.post('/api/competitors', requireAuth, async (req, res) => {
     // Search by name then fetch the top result's channel
     const searchThenFetch = async (query) => {
       const r = await fetch(`${YT_SEARCH}?${new URLSearchParams({ part: 'snippet', q: query, type: 'channel', maxResults: '1', key: apiKey })}`);
+      logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
       if (!r.ok) { const e = new Error(`YouTube API error (${r.status})`); e.status = 502; throw e; }
       const sid = (await r.json()).items?.[0]?.id?.channelId;
       return sid ? fetchChannel({ id: sid }) : null;
@@ -2895,6 +2920,7 @@ app.post('/api/competitors', requireAuth, async (req, res) => {
     try {
       const srchParams = new URLSearchParams({ part: 'snippet', channelId, order: 'date', type: 'video', maxResults: 10, key: apiKey });
       const srchRes    = await fetch(`https://www.googleapis.com/youtube/v3/search?${srchParams}`);
+      logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
       if (srchRes.ok) {
         const srchData = await srchRes.json();
         const dates    = (srchData.items || [])
@@ -3765,11 +3791,19 @@ async function fetchLiveAnalytics(userId) {
   const ch = channels.find(c => !c.paused && c.channelId) || channels[0];
   if (!ch) return { success: true, noChannel: true };
 
-  // Refresh token if needed
+  // quota check: probe channels (1) + channels.list (1) + search.list (100) + videos.list (1) = 103 units
+  const analyticsQC2 = await checkYoutubeQuota(103, String(userId)).catch(() => ({ allowed: true }));
+  if (!analyticsQC2.allowed) {
+    console.warn(`[Quota] fetchLiveAnalytics blocked for user ${userId} — ${analyticsQC2.reason}`);
+    return null;
+  }
+
+  // Refresh token if needed (channels?part=id probe — 1 unit)
   const probe = await fetch(
     `https://www.googleapis.com/youtube/v3/channels?part=id&mine=true`,
     { headers: { Authorization: `Bearer ${ch.accessToken}` } }
   );
+  logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, String(userId)).catch(() => {});
   let accessToken = ch.accessToken;
   if (probe.status === 401) {
     const refreshToken = ch.refreshToken || user.googleRefreshToken;
@@ -3799,20 +3833,22 @@ async function fetchLiveAnalytics(userId) {
   const auth   = { Authorization: `Bearer ${accessToken}` };
   const apiKey = process.env.YOUTUBE_API_KEY ? `&key=${process.env.YOUTUBE_API_KEY}` : '';
 
-  // 1. Channel-level statistics
+  // 1. Channel-level statistics (1 unit)
   const chanRes   = await fetch(
     `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${ch.channelId}${apiKey}`,
     { headers: auth }
   );
+  logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, String(userId)).catch(() => {});
   const chanData  = await chanRes.json();
   const chanStats = chanData?.items?.[0]?.statistics || {};
 
-  // 2. Top videos in last 30 days
+  // 2. Top videos in last 30 days (100 units)
   const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const searchRes = await fetch(
     `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${ch.channelId}&type=video&order=viewCount&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=10${apiKey}`,
     { headers: auth }
   );
+  logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, String(userId)).catch(() => {});
   const searchData = await searchRes.json();
   const videoIds   = (searchData?.items || []).map(v => v.id?.videoId).filter(Boolean);
 
@@ -3822,6 +3858,7 @@ async function fetchLiveAnalytics(userId) {
       `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds.join(',')}${apiKey}`,
       { headers: auth }
     );
+    logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => {});
     const vidData = await vidRes.json();
     topVideos = (vidData?.items || [])
       .map(v => ({
@@ -5342,7 +5379,14 @@ async function analyzeChannelPerformance(userId, channelId, nicheName) {
     const yt = google.youtube({ version: 'v3', auth: oauth2 });
 
     const videoIds = [...new Set(postedSlots.map(s => s.youtubeVideoId))].slice(0, 50);
+    // videos.list = 1 unit
+    const perfQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => ({ allowed: true }));
+    if (!perfQC.allowed) {
+      console.warn(`[Quota] analyzeChannelPerformance videos.list blocked — ${perfQC.reason}`);
+      return null;
+    }
     const statsRes = await yt.videos.list({ part: ['statistics'], id: videoIds });
+    logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => {});
     const statsMap = {};
     for (const item of (statsRes.data.items || [])) statsMap[item.id] = item.statistics;
 
@@ -5983,6 +6027,11 @@ async function scoutTrendingTopics(nicheName) {
     console.log('[TopicScout] Skipping — YOUTUBE_API_KEY not configured');
     return [];
   }
+  const scoutQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null).catch(() => ({ allowed: true }));
+  if (!scoutQC.allowed) {
+    console.warn(`[Quota] scoutTrendingTopics blocked — ${scoutQC.reason}`);
+    return [];
+  }
   try {
     const publishedAfter = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(nicheName)}&order=viewCount&type=video&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=10&key=${apiKey}`;
@@ -5991,6 +6040,7 @@ async function scoutTrendingTopics(nicheName) {
       console.warn(`[TopicScout] YouTube API returned ${ytRes.status} for "${nicheName}"`);
       return [];
     }
+    logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
     const data   = await ytRes.json();
     const topics = (data.items || []).map(item => item.snippet?.title || '').filter(Boolean);
     console.log(`[TopicScout] Found ${topics.length} trending topics for "${nicheName}"`);
@@ -6034,7 +6084,14 @@ async function getYesterdayPerformance(userId, channelId) {
     const yt = google.youtube({ version: 'v3', auth: oauth2 });
 
     const videoIds = [...new Set(postedSlots.map(s => s.youtubeVideoId))].slice(0, 50);
+    // videos.list = 1 unit
+    const dailyGenQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => ({ allowed: true }));
+    if (!dailyGenQC.allowed) {
+      console.warn(`[Quota] DailyGen yesterday-performance videos.list blocked — ${dailyGenQC.reason}`);
+      return '';
+    }
     const statsRes = await yt.videos.list({ part: ['statistics'], id: videoIds });
+    logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => {});
     const statsMap = {};
     for (const item of (statsRes.data.items || [])) statsMap[item.id] = item.statistics;
 
