@@ -328,6 +328,25 @@ async function runStartupSlotCheck() {
     } else {
       console.log('[Startup] No stuck processing slots found ✓');
     }
+
+    // Rescue today's missed slots — give them a new posting time so they still run today.
+    const today = new Date().toISOString().slice(0, 10);
+    const missedSlots = await slotsCol.find({
+      date: today, status: 'missed', posted: false,
+    }).toArray().catch(() => []);
+    let rescued = 0;
+    for (let i = 0; i < missedSlots.length; i++) {
+      const s = missedSlots[i];
+      if ((s.retryCount || 0) >= 3) continue;
+      const rescheduleAt = new Date(Date.now() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      await slotsCol.updateOne(
+        { _id: s._id },
+        { $set: { status: 'scheduled', scheduledPostTime: rescheduleAt, pipelineStatus: 'rescued-on-startup' }, $inc: { retryCount: 1 } }
+      ).catch(() => {});
+      rescued++;
+    }
+    if (rescued > 0) console.log(`[Startup] Rescued ${rescued} missed slot(s) → rescheduled for today`);
+
     console.log('[Startup] Recovery check complete');
   } catch (e) {
     console.error('[Startup] Recovery check failed:', e.message);
@@ -3061,6 +3080,68 @@ app.get('/api/scripts', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/diag/slots-today — returns today's calendar_slots with status breakdown
+// Protected by x-cron-secret header so Railway health or the admin can call it without a session
+app.get('/api/diag/slots-today', async (req, res) => {
+  if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorised' });
+  }
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const slotsCol = agentCol('calendar_slots');
+    const slots    = await slotsCol.find({ date: today }).toArray();
+    const byStatus = {};
+    for (const s of slots) byStatus[s.status] = (byStatus[s.status] || 0) + 1;
+    res.json({
+      today,
+      totalSlots: slots.length,
+      byStatus,
+      slots: slots.map(s => ({
+        _id:               String(s._id),
+        title:             s.title,
+        status:            s.status,
+        posted:            s.posted,
+        scheduledPostTime: s.scheduledPostTime,
+        pipelineStatus:    s.pipelineStatus,
+        pipelineError:     s.pipelineError,
+        retryCount:        s.retryCount,
+        userId:            s.userId,
+        channelId:         s.channelId,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/diag/rescue-missed-slots — immediately reschedule today's missed/stuck slots
+// Protected by x-cron-secret header
+app.post('/api/diag/rescue-missed-slots', async (req, res) => {
+  if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorised' });
+  }
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const slotsCol = agentCol('calendar_slots');
+    const stuck    = await slotsCol.find({
+      date: today, status: { $in: ['missed', 'skipped', 'processing'] }, posted: false,
+    }).toArray();
+    let rescued = 0;
+    for (let i = 0; i < stuck.length; i++) {
+      const rescheduleAt = new Date(Date.now() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      await slotsCol.updateOne(
+        { _id: stuck[i]._id },
+        { $set: { status: 'scheduled', scheduledPostTime: rescheduleAt, pipelineStatus: 'manual-rescue', pipelineError: null }, $inc: { retryCount: 1 } }
+      ).catch(() => {});
+      rescued++;
+      console.log(`[Rescue] "${stuck[i].title}" rescheduled → ${rescheduleAt}`);
+    }
+    res.json({ success: true, rescued, rescheduledTitles: stuck.map(s => s.title) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/agents/research/queue/process
 // Admin/cron endpoint — processes pending pipeline queue items
 // Protected by CRON_SECRET header
@@ -5642,14 +5723,24 @@ async function runScheduledPosting() {
   const today    = nowIso.slice(0, 10);
   const slotsCol = agentCol('calendar_slots');
 
-  // Mark missed: scheduled slots that are >5 min PAST their scheduledPostTime
+  // Auto-rescue: slots that missed their window get rescheduled to post soon (up to 3 retries).
+  // Instead of abandoning them as 'missed', bump scheduledPostTime forward so the pipeline still runs today.
   const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
-  const missedRes = await slotsCol.updateMany(
-    { status: 'scheduled', posted: false, date: today, scheduledPostTime: { $lt: fiveMinAgo } },
-    { $set: { status: 'missed', pipelineStatus: 'missed-window' } }
-  ).catch(e => { console.error('[PostingCron] Failed to mark missed slots:', e.message); return { modifiedCount: 0 }; });
-  if (missedRes.modifiedCount > 0) {
-    console.log(`[PostingCron] Marked ${missedRes.modifiedCount} slot(s) as missed`);
+  const overdueSlots = await slotsCol.find({
+    status: 'scheduled', posted: false, date: today, scheduledPostTime: { $lt: fiveMinAgo },
+  }).toArray().catch(() => []);
+  for (const s of overdueSlots) {
+    if ((s.retryCount || 0) >= 3) {
+      await slotsCol.updateOne({ _id: s._id }, { $set: { status: 'missed', pipelineStatus: 'missed-window-max-retries' } }).catch(() => {});
+      console.log(`[PostingCron] Slot "${s.title}" exceeded max retries — marked missed`);
+    } else {
+      const rescheduleAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString().slice(0, 19);
+      await slotsCol.updateOne(
+        { _id: s._id },
+        { $set: { scheduledPostTime: rescheduleAt, pipelineStatus: 'auto-rescheduled' }, $inc: { retryCount: 1 } }
+      ).catch(() => {});
+      console.log(`[PostingCron] Auto-rescheduled "${s.title}" → ${rescheduleAt} (retry ${(s.retryCount || 0) + 1}/3)`);
+    }
   }
 
   // Find scheduled slots whose scheduledPostTime is within the next 35 minutes
