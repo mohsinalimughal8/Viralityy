@@ -124,7 +124,7 @@ function assignPostingTime(date, videoIndex, totalForDay) {
   const key   = Math.min(Math.max(totalForDay || 1, 1), 7);
   const times = POSTING_TIMES_BY_COUNT[key] || POSTING_TIMES_BY_COUNT[5];
   const hhmm  = times[(videoIndex - 1) % times.length];
-  return `${date}T${hhmm}:00`;
+  return `${date}T${hhmm}:00Z`; // explicit UTC — prevents string-vs-ISO comparison bugs
 }
 
 // ── Optimal Posting Times ─────────────────────────────────────────────────────
@@ -345,11 +345,13 @@ async function runStartupSlotCheck() {
       let scheduledPostTime = s.scheduledPostTime;
       if (!scheduledPostTime) {
         const slotTime = s.postTime || '18:00';
-        scheduledPostTime = `${slotDate}T${slotTime}:00`;
+        scheduledPostTime = `${slotDate}T${slotTime}:00Z`; // explicit UTC
+      } else if (!scheduledPostTime.endsWith('Z')) {
+        scheduledPostTime = scheduledPostTime.slice(0, 19) + 'Z'; // normalise legacy no-Z strings
       }
       // Push past-due times forward so the PostingCron picks them up immediately
-      if (slotDate === today && new Date(scheduledPostTime.slice(0, 19) + 'Z') < new Date(nowMs + 5 * 60 * 1000)) {
-        scheduledPostTime = new Date(nowMs + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      if (slotDate === today && new Date(scheduledPostTime) < new Date(nowMs + 5 * 60 * 1000)) {
+        scheduledPostTime = new Date(nowMs + (i + 1) * 10 * 60 * 1000).toISOString();
       }
       await slotsCol.updateOne(
         { _id: s._id },
@@ -367,7 +369,7 @@ async function runStartupSlotCheck() {
     for (let i = 0; i < missedSlots.length; i++) {
       const s = missedSlots[i];
       if ((s.retryCount || 0) >= 3) continue;
-      const rescheduleAt = new Date(nowMs + (converted + i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      const rescheduleAt = new Date(nowMs + (converted + i + 1) * 10 * 60 * 1000).toISOString();
       await slotsCol.updateOne(
         { _id: s._id },
         { $set: { status: 'scheduled', scheduledPostTime: rescheduleAt, pipelineStatus: 'rescued-on-startup' }, $inc: { retryCount: 1 } }
@@ -3658,7 +3660,7 @@ app.post('/api/diag/rescue-missed-slots', async (req, res) => {
     }).toArray();
     let rescued = 0;
     for (let i = 0; i < stuck.length; i++) {
-      const rescheduleAt = new Date(Date.now() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+      const rescheduleAt = new Date(Date.now() + (i + 1) * 10 * 60 * 1000).toISOString();
       await slotsCol.updateOne(
         { _id: stuck[i]._id },
         { $set: { status: 'scheduled', scheduledPostTime: rescheduleAt, pipelineStatus: 'manual-rescue', pipelineError: null }, $inc: { retryCount: 1 } }
@@ -6084,6 +6086,28 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     await setStatus({ pipelineStatus: 'assembling' });
     await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort, channel.styleConfig || null);
 
+    // ── Hold until the exact scheduled post time — never upload early.
+    // The cron starts the pipeline up to 35 min before scheduledPostTime so the
+    // video is ready on time. Without this wait, a fast pipeline (< 35 min) uploads
+    // the video immediately after assembly, posting it early.
+    const rawScheduled = slotDoc.scheduledPostTime || '';
+    const scheduledTs  = rawScheduled
+      ? new Date(rawScheduled.endsWith('Z') ? rawScheduled : rawScheduled + 'Z').getTime()
+      : NaN;
+    if (!isNaN(scheduledTs)) {
+      const holdMs = scheduledTs - Date.now();
+      if (holdMs > 500 && holdMs < 40 * 60 * 1000) {
+        // Wait up to 40 min — sanity cap prevents an accidental infinite sleep
+        console.log(`[JIT] ⏳ "${slotDoc.title}" assembly done — holding ${Math.round(holdMs / 1000)}s until ${rawScheduled}`);
+        await setStatus({ pipelineStatus: 'waiting-for-schedule' });
+        await new Promise(r => setTimeout(r, holdMs));
+      } else if (holdMs <= 500) {
+        console.log(`[JIT] "${slotDoc.title}" — scheduledPostTime reached (${rawScheduled}), uploading now`);
+      } else {
+        console.warn(`[JIT] "${slotDoc.title}" — holdMs=${holdMs} exceeds 40 min cap, uploading immediately`);
+      }
+    }
+
     console.log(`[JIT] Uploading "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'uploading' });
     const description = script.slice(0, 4800) || slotDoc.title;
@@ -6651,7 +6675,7 @@ Return JSON: { "titles": [${count} strings] }` }],
           title: titles[v] || `${nicheName} Short #${v + 1}`,
           type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
           status: 'scheduled', posted: false, retryCount: 0,
-          scheduledPostTime: `${today}T${shortTimes[v]}:00`,
+          scheduledPostTime: `${today}T${shortTimes[v]}:00Z`, // explicit UTC
           generatedAt,
         });
       }
@@ -6681,7 +6705,7 @@ Return JSON: { "title": "string" }` }],
           day: 1, date: today, title: lfTitle,
           type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
           status: 'scheduled', posted: false, retryCount: 0,
-          scheduledPostTime: `${today}T${lfTime}:00`,
+          scheduledPostTime: `${today}T${lfTime}:00Z`, // explicit UTC
           generatedAt,
         });
       }
@@ -6765,10 +6789,12 @@ async function runScheduledPosting() {
     let scheduledPostTime = s.scheduledPostTime;
     if (!scheduledPostTime) {
       const slotTime = s.postTime || '18:00';
-      scheduledPostTime = `${slotDate}T${slotTime}:00`;
+      scheduledPostTime = `${slotDate}T${slotTime}:00Z`; // explicit UTC
+    } else if (!scheduledPostTime.endsWith('Z')) {
+      scheduledPostTime = scheduledPostTime.slice(0, 19) + 'Z'; // normalise legacy no-Z strings
     }
-    if (new Date(scheduledPostTime.slice(0, 19) + 'Z') < new Date(now.getTime() + 5 * 60 * 1000)) {
-      scheduledPostTime = new Date(now.getTime() + (i + 1) * 10 * 60 * 1000).toISOString().slice(0, 19);
+    if (new Date(scheduledPostTime) < new Date(now.getTime() + 5 * 60 * 1000)) {
+      scheduledPostTime = new Date(now.getTime() + (i + 1) * 10 * 60 * 1000).toISOString();
     }
     await slotsCol.updateOne(
       { _id: s._id },
@@ -6788,7 +6814,7 @@ async function runScheduledPosting() {
       await slotsCol.updateOne({ _id: s._id }, { $set: { status: 'missed', pipelineStatus: 'missed-window-max-retries' } }).catch(() => {});
       console.log(`[PostingCron] Slot "${s.title}" exceeded max retries — marked missed`);
     } else {
-      const rescheduleAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString().slice(0, 19);
+      const rescheduleAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
       await slotsCol.updateOne(
         { _id: s._id },
         { $set: { scheduledPostTime: rescheduleAt, pipelineStatus: 'auto-rescheduled' }, $inc: { retryCount: 1 } }
@@ -6797,23 +6823,35 @@ async function runScheduledPosting() {
     }
   }
 
-  // Find scheduled slots whose scheduledPostTime is within the next 35 minutes
+  // Find scheduled slots whose scheduledPostTime is within the next 35 minutes.
+  // The 35-min window gives the JIT pipeline time to run; the actual YouTube upload
+  // is held inside runJITPipelineForSlot until scheduledPostTime is reached.
   const in35min  = new Date(now.getTime() + 35 * 60 * 1000).toISOString();
-  const dueSlots = await slotsCol.find({
-    status: 'scheduled',
-    posted: false,
-    date:   today,
-    scheduledPostTime: { $lte: in35min },
+  const allTodayScheduled = await slotsCol.find({
+    status: 'scheduled', posted: false, date: today,
   }).sort({ scheduledPostTime: 1 }).toArray().catch(e => {
     console.error('[PostingCron] Query failed:', e.message); return [];
   });
 
+  // ── Per-slot diagnostic log ──
+  allTodayScheduled.forEach(s => {
+    const normTime = s.scheduledPostTime
+      ? (s.scheduledPostTime.endsWith('Z') ? s.scheduledPostTime : s.scheduledPostTime + 'Z')
+      : null;
+    const diffSec  = normTime ? Math.round((new Date(normTime) - now) / 1000) : null;
+    const isDue    = normTime ? new Date(normTime) <= new Date(in35min) : false;
+    console.log(`[PostingCron] Slot "${s.title}": scheduledTime=${s.scheduledPostTime}, now=${nowIso}, diffSec=${diffSec}, due=${isDue}`);
+  });
+
+  const dueSlots = allTodayScheduled.filter(s => {
+    if (!s.scheduledPostTime) return false;
+    const normTime = s.scheduledPostTime.endsWith('Z') ? s.scheduledPostTime : s.scheduledPostTime + 'Z';
+    return new Date(normTime) <= new Date(in35min);
+  });
+
   if (!dueSlots.length) {
-    const next = await slotsCol.findOne(
-      { status: 'scheduled', posted: false },
-      { sort: { scheduledPostTime: 1 } }
-    ).catch(() => null);
-    if (next) console.log(`[PostingCron] No slots due yet — next: "${next.title}" at ${next.scheduledPostTime}`);
+    const nextSlot = allTodayScheduled[0];
+    if (nextSlot) console.log(`[PostingCron] No slots due yet — next: "${nextSlot.title}" at ${nextSlot.scheduledPostTime}`);
     return;
   }
 
