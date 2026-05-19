@@ -422,7 +422,7 @@ const userSchema = new mongoose.Schema({
   lemonSqueezyCustomerId:     { type: String },
   lemonSqueezySubscriptionId: { type: String },
   billingHistory: [{ date: Date, amount: Number, plan: String, status: String, invoiceId: String }],
-  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date, styleConfig: { captionFont: String, colorScheme: String, musicGenre: String, introText: String } }],
+  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, thumbnailsEnabled: Boolean, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date, styleConfig: { captionFont: String, colorScheme: String, musicGenre: String, introText: String } }],
   pendingOAuthChannels: [{ channelId: String, channelName: String, thumbnail: String, subscriberCount: Number }],
   googleAccessToken:  String,
   googleRefreshToken: String,
@@ -1028,13 +1028,14 @@ app.get('/api/channels', requireAuth, async (req, res) => {
 
       return {
         channelId,
-        channelName:     ch.channelName || 'My Channel',
-        subscriberCount: stats.subscriberCount,
-        viewCount:       stats.viewCount,
-        videoCount:      stats.videoCount,
-        nicheId:         ch.nicheId   || user.nicheId   || null,
-        nicheName:       ch.nicheName || user.nicheName || null,
-        paused:          ch.paused    || false,
+        channelName:      ch.channelName || 'My Channel',
+        subscriberCount:  stats.subscriberCount,
+        viewCount:        stats.viewCount,
+        videoCount:       stats.videoCount,
+        nicheId:          ch.nicheId   || user.nicheId   || null,
+        nicheName:        ch.nicheName || user.nicheName || null,
+        paused:           ch.paused    || false,
+        thumbnailsEnabled: ch.thumbnailsEnabled ?? null,
       };
     }));
 
@@ -1058,6 +1059,41 @@ app.get('/api/channels', requireAuth, async (req, res) => {
       },
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/channels/:channelId/check-thumbnail-eligibility
+// Uses channels.list status.longUploadsStatus as a proxy for channel verification
+// (same prerequisite as custom thumbnails). On first thumbnails.set success/failure
+// the flag is updated more precisely by pipelineUploadToYouTube.
+app.post('/api/channels/:channelId/check-thumbnail-eligibility', requireAuth, async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const user = await User.findById(req.user.id);
+    const ch = (user?.youtubeChannels || []).find(c => c.channelId === channelId);
+    if (!ch) return res.status(404).json({ error: 'Channel not found' });
+    if (!ch.accessToken) return res.json({ thumbnailsEnabled: null, reason: 'no_token' });
+
+    const { google } = require('googleapis');
+    const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+    oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
+    const yt = google.youtube({ version: 'v3', auth: oauth2 });
+
+    const ytRes = await yt.channels.list({ part: ['status', 'contentDetails'], mine: true });
+    const status = ytRes.data.items?.[0]?.status || {};
+    // longUploadsStatus 'allowed'|'eligible' → channel is verified (same gate as custom thumbnails)
+    const eligible = ['allowed', 'eligible'].includes(status.longUploadsStatus);
+
+    await User.findOneAndUpdate(
+      { _id: req.user.id, 'youtubeChannels.channelId': channelId },
+      { $set: { 'youtubeChannels.$.thumbnailsEnabled': eligible } }
+    ).catch(() => {});
+
+    logYoutubeQuota('channels', YOUTUBE_QUOTA_COSTS.channels, req.user.id).catch(() => {});
+    res.json({ thumbnailsEnabled: eligible, longUploadsStatus: status.longUploadsStatus });
+  } catch (err) {
+    console.warn('[ThumbnailCheck] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/channels/pending — list channels fetched from Google OAuth, not yet confirmed
@@ -1141,6 +1177,29 @@ app.post('/api/channels/confirm', requireAuth, async (req, res) => {
 
     console.log(`[OAuth] Channel confirmed: ${pending.channelName} (${channelId}) for user ${user.email}`);
     res.json({ success: true, channel: { channelId, channelName: pending.channelName, thumbnail: pending.thumbnail, subscriberCount: pending.subscriberCount } });
+
+    // Async: check thumbnail eligibility right after a channel is confirmed
+    setImmediate(async () => {
+      try {
+        const freshUser = await User.findById(user._id);
+        const ch = (freshUser?.youtubeChannels || []).find(c => c.channelId === channelId);
+        if (!ch?.accessToken) return;
+        const { google } = require('googleapis');
+        const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+        oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
+        const yt = google.youtube({ version: 'v3', auth: oauth2 });
+        const ytRes = await yt.channels.list({ part: ['status'], mine: true });
+        const status = ytRes.data.items?.[0]?.status || {};
+        const eligible = ['allowed', 'eligible'].includes(status.longUploadsStatus);
+        await User.findOneAndUpdate(
+          { _id: user._id, 'youtubeChannels.channelId': channelId },
+          { $set: { 'youtubeChannels.$.thumbnailsEnabled': eligible } }
+        );
+        console.log(`[ThumbnailCheck] ${channelId} thumbnailsEnabled=${eligible} (longUploadsStatus=${status.longUploadsStatus})`);
+      } catch (e) {
+        console.warn(`[ThumbnailCheck] Async check failed for ${channelId}:`, e.message);
+      }
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -5766,10 +5825,28 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
       logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
       console.log(`[Thumbnail] ✓ Uploaded for video ${videoId}`);
+      // Mark channel as thumbnail-capable after first confirmed success
+      if (userId && channel?.channelId) {
+        User.findOneAndUpdate(
+          { _id: userId, 'youtubeChannels.channelId': channel.channelId },
+          { $set: { 'youtubeChannels.$.thumbnailsEnabled': true } }
+        ).catch(() => {});
+      }
     } catch (e) {
       console.warn(`[Thumbnail] Upload failed (non-fatal): ${e.message}`);
       console.log(`[DIAG] thumbnails.set full error:`, e?.response?.data || e?.message);
       logAPIUsage('youtube', 'thumbnail_upload', options.userId || null, 0, 0, false).catch(() => {});
+      // Detect thumbnail-ineligibility errors and persist the flag
+      const errData = e?.response?.data;
+      const reason  = errData?.error?.errors?.[0]?.reason || '';
+      const isThumbnailDisabled = reason === 'forbidden' || /thumbnail.*not.*enabl|custom.*thumbnail/i.test(e.message);
+      if (isThumbnailDisabled && userId && channel?.channelId) {
+        User.findOneAndUpdate(
+          { _id: userId, 'youtubeChannels.channelId': channel.channelId },
+          { $set: { 'youtubeChannels.$.thumbnailsEnabled': false } }
+        ).catch(() => {});
+        console.log(`[ThumbnailCheck] Marked ${channel.channelId} thumbnailsEnabled=false (ineligibility error)`);
+      }
     } finally {
       fs.unlink(thumbPath, () => {});
     }

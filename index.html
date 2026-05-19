@@ -71,6 +71,20 @@ input,textarea,select,button{font-family:'DM Sans',sans-serif}
 .badge-amber{background:rgba(245,158,11,.1);color:#fcd34d;border:1px solid rgba(245,158,11,.2)}
 .badge-red{background:rgba(239,68,68,.1);color:#fca5a5;border:1px solid rgba(239,68,68,.2)}
 
+/* ── Thumbnail eligibility warning ── */
+.thumb-warn-banner{display:flex;align-items:flex-start;gap:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:12px 16px;margin-bottom:12px;font-size:.8rem;color:#fcd34d;line-height:1.55}
+.thumb-warn-text{flex:1}
+.thumb-warn-btn{flex-shrink:0;padding:5px 13px;border-radius:7px;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.15);color:#fcd34d;font-size:.74rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
+.thumb-warn-btn:hover{background:rgba(245,158,11,.25)}
+.thumb-guide-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9000;display:none;align-items:center;justify-content:center;padding:1rem}
+.thumb-guide-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:1.75rem;max-width:480px;width:100%;position:relative}
+.thumb-guide-modal h3{font-size:1rem;font-weight:700;margin-bottom:1rem;color:var(--text)}
+.thumb-guide-step{display:flex;gap:12px;align-items:flex-start;padding:.55rem 0;border-bottom:1px solid var(--border)}
+.thumb-guide-step:last-of-type{border-bottom:none}
+.thumb-guide-num{width:22px;height:22px;border-radius:50%;background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.35);display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#a5b4fc;flex-shrink:0;margin-top:1px}
+.thumb-guide-text{font-size:.81rem;color:var(--text2);line-height:1.5}
+.thumb-guide-close{position:absolute;top:14px;right:16px;background:transparent;border:none;color:var(--text3);font-size:1.2rem;cursor:pointer;line-height:1}
+
 /* ═══════════════════════════════════════════════
    MARKETING NAV
 ═══════════════════════════════════════════════ */
@@ -539,6 +553,23 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ═══ TOAST CONTAINER ═══ -->
 <div id="toast"></div>
+
+<!-- ═══ THUMBNAIL ELIGIBILITY GUIDE MODAL ═══ -->
+<div id="thumb-guide-overlay" class="thumb-guide-overlay" onclick="if(event.target===this)closeThumbnailGuideModal()">
+  <div class="thumb-guide-modal">
+    <button class="thumb-guide-close" onclick="closeThumbnailGuideModal()">✕</button>
+    <h3>How to enable custom thumbnails</h3>
+    <div class="thumb-guide-step"><div class="thumb-guide-num">1</div><div class="thumb-guide-text">Go to <strong>YouTube Studio</strong> — open <a href="https://studio.youtube.com" target="_blank" rel="noopener" style="color:#a5b4fc">studio.youtube.com</a></div></div>
+    <div class="thumb-guide-step"><div class="thumb-guide-num">2</div><div class="thumb-guide-text">Click <strong>Settings</strong> in the bottom-left sidebar</div></div>
+    <div class="thumb-guide-step"><div class="thumb-guide-num">3</div><div class="thumb-guide-text">Click <strong>Channel</strong>, then open the <strong>Feature eligibility</strong> tab</div></div>
+    <div class="thumb-guide-step"><div class="thumb-guide-num">4</div><div class="thumb-guide-text">Find <strong>Custom thumbnails</strong> and click <strong>Enable</strong></div></div>
+    <div class="thumb-guide-step"><div class="thumb-guide-num">5</div><div class="thumb-guide-text">Verify your phone number if prompted (required by YouTube)</div></div>
+    <div class="thumb-guide-step"><div class="thumb-guide-num">6</div><div class="thumb-guide-text">Come back to Viralityy — thumbnails will now work automatically</div></div>
+    <div style="margin-top:1.1rem;display:flex;justify-content:flex-end">
+      <button class="btn btn-primary btn-sm" onclick="closeThumbnailGuideModal()">Got it</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══ ONBOARDING WALKTHROUGH ═══ -->
 <div id="ob-backdrop"></div>
@@ -1025,6 +1056,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <button onclick="showInfoModal('Dashboard','Your command centre. Shows live stats from your connected YouTube channels including views, subscribers and videos posted. Updates every 30 minutes.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
     </div>
   </div>
+  <div id="thumb-warn-dashboard" style="display:none"></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Total views</p><p class="sc-value" id="ov-views">—</p><p class="sc-sub" id="ov-views-sub">Channel lifetime</p></div>
     <div class="stat-card"><p class="sc-label">Subscribers</p><p class="sc-value" id="ov-subs">—</p><p class="sc-sub" id="ov-subs-sub">YouTube channel</p></div>
@@ -1053,6 +1085,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <!-- ── CHANNELS ── -->
 <div class="dash-page" id="dp-channels">
   <div class="dash-topbar"><div><p class="ph">My Channels</p><p class="ps">Manage your connected YouTube channels and platform toggles</p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="connectYouTubeChannel()">+ Add channel</button><button onclick="showInfoModal('My Channels','Manage your connected YouTube channels. Each channel runs its own automated content pipeline based on your selected niche and plan.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div></div>
+  <div id="thumb-warn-channels" style="display:none"></div>
   <div id="channels-list"><p style="font-size:.78rem;color:var(--text3)">Loading channels…</p></div>
   <div style="background:var(--bg3);border:1px dashed var(--border2);border-radius:10px;padding:2rem;text-align:center;color:var(--text3);font-size:.82rem;cursor:pointer" onclick="connectYouTubeChannel()">
     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
@@ -1254,6 +1287,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <button onclick="showInfoModal('Preview Queue','Today\'s videos ready to post. Review them before their scheduled time or leave Auto-post on to let the system handle it.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
     </div>
   </div>
+  <div id="thumb-warn-preview" style="display:none"></div>
   <div id="preview-queue-list"></div>
 </div>
 
@@ -2587,6 +2621,8 @@ async function finishOnboarding(skipped) {
 async function initOverview() {
   const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
 
+  ensureThumbnailWarnings(); // non-blocking — updates banners when channel data arrives
+
   const [status, dashStats, preview, alertData, calData, qualData] = await Promise.all([
     apiCall('/api/agents/status'),
     apiCall('/api/dashboard/stats').catch(() => null),
@@ -2708,6 +2744,43 @@ async function initOverview() {
 }
 
 // ════════════════════════════════════════════
+// THUMBNAIL ELIGIBILITY WARNINGS
+// ════════════════════════════════════════════
+let _thumbDisabledChannels = null; // null = not fetched, [] = fetched (may be empty)
+
+async function ensureThumbnailWarnings() {
+  if (_thumbDisabledChannels === null) {
+    const data = await apiCall('/api/channels').catch(() => null);
+    _thumbDisabledChannels = (data?.channels || []).filter(ch => ch.thumbnailsEnabled === false);
+  }
+  renderThumbnailWarnings();
+}
+
+function renderThumbnailWarnings() {
+  const disabled = _thumbDisabledChannels || [];
+  const bannerHtml = disabled.length ? `<div class="thumb-warn-banner">
+    <span class="thumb-warn-text">⚠️ Custom thumbnails are disabled on your YouTube channel. AI-generated thumbnails won't appear on your videos until you enable this. To fix: Go to YouTube Studio → Settings → Channel → Feature eligibility → Enable Custom thumbnails. This requires a verified phone number on your Google account.</span>
+    <button onclick="showThumbnailGuideModal()" class="thumb-warn-btn">How to enable</button>
+  </div>` : '';
+  ['thumb-warn-dashboard', 'thumb-warn-channels', 'thumb-warn-preview'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = disabled.length ? 'block' : 'none';
+    el.innerHTML = bannerHtml;
+  });
+}
+
+function showThumbnailGuideModal() {
+  const el = document.getElementById('thumb-guide-overlay');
+  if (el) el.style.display = 'flex';
+}
+
+function closeThumbnailGuideModal() {
+  const el = document.getElementById('thumb-guide-overlay');
+  if (el) el.style.display = 'none';
+}
+
+// ════════════════════════════════════════════
 // CHANNELS — live from /api/channels
 // ════════════════════════════════════════════
 async function initChannels() {
@@ -2716,6 +2789,9 @@ async function initChannels() {
   const el = document.getElementById('channels-list');
   if (!el) return;
   const channels = data?.channels || [];
+  // Update thumbnail warning cache and refresh all banners
+  _thumbDisabledChannels = channels.filter(ch => ch.thumbnailsEnabled === false);
+  renderThumbnailWarnings();
   if (!channels.length) {
     el.innerHTML = `<div style="background:var(--bg3);border:1px dashed var(--border2);border-radius:10px;padding:2rem;text-align:center;color:var(--text3);font-size:.82rem;cursor:pointer" onclick="connectYouTubeChannel()">
       <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:0 auto .5rem;opacity:.4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
@@ -2986,6 +3062,7 @@ let _todayAllPosted = false;
 async function initPreview() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
+  ensureThumbnailWarnings(); // non-blocking
   list.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">Loading preview queue…</div>';
   const [calData, pipeData] = await Promise.all([
     apiCall('/api/content/queue'),
