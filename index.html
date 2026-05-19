@@ -401,6 +401,42 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .copy-btn{padding:9px 14px;border-radius:8px;background:var(--purple2);color:#fff;border:none;cursor:pointer;font-size:.75rem;font-weight:600;transition:background .14s;white-space:nowrap}
 .copy-btn:hover{background:var(--purple3)}
 
+/* ═══ REFERRAL DASHBOARD ═══ */
+.ref-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.25rem}
+.ref-stat{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:.9rem 1rem;text-align:center;position:relative}
+.ref-stat-num{font-family:'DM Serif Display',serif;font-size:1.65rem;color:var(--text);line-height:1;margin-bottom:.2rem}
+.ref-stat-label{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.07em}
+.ref-stat-sub{font-size:.63rem;margin-top:.25rem}
+.ref-link-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;margin-bottom:1rem}
+.ref-link-card h4{font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:.65rem}
+.ref-link-box{display:flex;gap:8px;align-items:center;background:var(--bg3);border:1px solid var(--border2);border-radius:9px;padding:4px 4px 4px 12px}
+.ref-link-text{flex:1;font-size:.76rem;color:var(--text2);font-family:'DM Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ref-copy-btn{padding:7px 13px;border-radius:7px;background:var(--purple2);color:#fff;border:none;cursor:pointer;font-size:.73rem;font-weight:600;transition:all .14s;white-space:nowrap;flex-shrink:0}
+.ref-copy-btn:hover{background:var(--purple3)}
+.ref-copy-btn.copied{background:var(--green)}
+.share-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem}
+.share-card{border:1px solid var(--border2);border-radius:var(--radius);padding:1rem 1.1rem;cursor:pointer;transition:all .14s;display:flex;flex-direction:column;gap:.5rem}
+.share-card:hover{border-color:var(--border3);transform:translateY(-1px)}
+.share-card-head{display:flex;align-items:center;gap:8px}
+.share-card-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
+.share-card-title{font-size:.8rem;font-weight:600;color:var(--text)}
+.share-card-preview{font-size:.69rem;color:var(--text3);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ref-table-wrap{overflow-x:auto}
+.ref-table{width:100%;border-collapse:collapse;font-size:.75rem}
+.ref-table th{padding:.55rem .85rem;text-align:left;border-bottom:1px solid var(--border2);color:var(--text3);font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;white-space:nowrap}
+.ref-table td{padding:.65rem .85rem;border-bottom:1px solid var(--border);color:var(--text2);vertical-align:middle}
+.ref-table tr:hover td{background:rgba(255,255,255,.015)}
+.ref-status-converted{display:inline-flex;align-items:center;gap:4px;font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(16,185,129,.1);color:#34d399;border:1px solid rgba(16,185,129,.2)}
+.ref-status-pending{display:inline-flex;align-items:center;gap:4px;font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(245,158,11,.08);color:#fbbf24;border:1px solid rgba(245,158,11,.2)}
+.ref-status-expired{display:inline-flex;align-items:center;gap:4px;font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(107,114,128,.1);color:var(--text3);border:1px solid rgba(107,114,128,.2)}
+.commission-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.commission-card{background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:.75rem .9rem;text-align:center}
+.commission-plan{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-bottom:.3rem}
+.commission-amount{font-family:'DM Serif Display',serif;font-size:1.35rem;color:var(--green);line-height:1}
+.commission-note{font-size:.6rem;color:var(--text3);margin-top:.2rem}
+.lb-bar-wrap{height:3px;background:var(--bg3);border-radius:2px;margin-top:4px}
+.lb-bar-fill{height:100%;border-radius:2px;transition:width .4s ease}
+
 /* LEGAL PAGES */
 #page-privacy,#page-terms,#page-cookies{background:var(--bg)}
 .legal-layout{max-width:720px;margin:0 auto;padding:calc(var(--nav-h) + 3rem) 1.5rem 4rem}
@@ -1221,44 +1257,128 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div id="preview-queue-list"></div>
 </div>
 
-<!-- ── AFFILIATE ── -->
+<!-- ── REFERRAL DASHBOARD ── -->
 <div class="dash-page" id="dp-affiliate">
-  <div class="dash-topbar"><div><p class="ph">Affiliate Programme</p><p class="ps">Earn $10 for every user you refer who upgrades to a paid plan</p></div><button onclick="showInfoModal('Affiliate','Earn money by referring users to Viralityy. Share your referral link and earn commission on every upgrade.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button></div>
-
-  <!-- Stats row -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.1rem">
-    <div class="aff-stat"><div class="aff-stat-num" id="aff-total">—</div><div class="aff-stat-label">Total referrals</div></div>
-    <div class="aff-stat"><div class="aff-stat-num" id="aff-upgrades">—</div><div class="aff-stat-label">Upgrades</div></div>
-    <div class="aff-stat"><div class="aff-stat-num" id="aff-earnings">—</div><div class="aff-stat-label">Est. earnings</div></div>
-    <div class="aff-stat"><div class="aff-stat-num" id="aff-convrate">—</div><div class="aff-stat-label">Conversion rate</div></div>
-    <div class="aff-stat"><div class="aff-stat-num" id="aff-rank">—</div><div class="aff-stat-label">Leaderboard rank</div></div>
-  </div>
-
-  <!-- Referral link -->
-  <div class="card-block">
-    <h4>Your referral link</h4>
-    <div class="referral-link-wrap" style="margin-top:.65rem">
-      <input class="referral-link-input" id="referral-link-val" readonly value="Loading…">
-      <button class="copy-btn" onclick="copyReferralLink()">Copy</button>
+  <div class="dash-topbar">
+    <div>
+      <p class="ph">Referral Programme</p>
+      <p class="ps">Earn 20% of every first payment from users you refer</p>
     </div>
-    <p style="font-size:.72rem;color:var(--text3);margin-top:.55rem">When someone signs up via your link and upgrades to a paid plan, you earn $10. Paid monthly.</p>
+    <button onclick="initAffiliate()" class="btn btn-ghost btn-sm">Refresh</button>
   </div>
 
-  <!-- Referral history + Leaderboard side by side -->
-  <div class="grid2" style="margin-top:12px">
+  <!-- Loading state -->
+  <div id="ref-loading" style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">Loading referral data…</div>
+
+  <!-- Main content -->
+  <div id="ref-content" style="display:none">
+
+    <!-- Stats row -->
+    <div class="ref-stat-grid">
+      <div class="ref-stat">
+        <div class="ref-stat-num" id="ref-total">—</div>
+        <div class="ref-stat-label">Referrals sent</div>
+        <div class="ref-stat-sub" style="color:var(--text3)">Total signups</div>
+      </div>
+      <div class="ref-stat">
+        <div class="ref-stat-num" id="ref-converted" style="color:var(--green)">—</div>
+        <div class="ref-stat-label">Converted</div>
+        <div class="ref-stat-sub" style="color:var(--green)">Paying customers</div>
+      </div>
+      <div class="ref-stat">
+        <div class="ref-stat-num" id="ref-pending" style="color:var(--amber)">—</div>
+        <div class="ref-stat-label">Pending</div>
+        <div class="ref-stat-sub" style="color:var(--amber)">On free trial</div>
+      </div>
+      <div class="ref-stat">
+        <div class="ref-stat-num" id="ref-earnings" style="color:var(--green)">—</div>
+        <div class="ref-stat-label">Total earned</div>
+        <div class="ref-stat-sub" style="color:var(--text3)">20% per conversion</div>
+      </div>
+      <div class="ref-stat">
+        <div class="ref-stat-num" id="ref-convrate">—</div>
+        <div class="ref-stat-label">Conv. rate</div>
+        <div class="ref-stat-sub" id="ref-rank-sub" style="color:var(--text3)">Your rank</div>
+      </div>
+    </div>
+
+    <!-- Referral link -->
+    <div class="ref-link-card">
+      <h4>Your unique referral link</h4>
+      <div class="ref-link-box">
+        <span class="ref-link-text" id="ref-link-display">Loading…</span>
+        <button class="ref-copy-btn" id="ref-copy-btn" onclick="copyRefLink()">Copy link</button>
+      </div>
+      <p style="font-size:.7rem;color:var(--text3);margin-top:.55rem">Anyone who signs up via this link is tracked to your account. Your code is automatically embedded.</p>
+    </div>
+
+    <!-- Share section -->
+    <div class="card-block" style="margin-bottom:1rem">
+      <h4 style="margin-bottom:.75rem">Share your link</h4>
+      <div class="share-grid">
+        <!-- Twitter/X -->
+        <div class="share-card" style="border-color:rgba(255,255,255,.1);background:rgba(0,0,0,.3)" onclick="shareOnTwitter()">
+          <div class="share-card-head">
+            <div class="share-card-icon" style="background:#000;border:1px solid #333">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.736-8.849L1.254 2.25H8.08l4.259 5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            </div>
+            <span class="share-card-title">Share on X</span>
+          </div>
+          <p class="share-card-preview" id="twitter-preview">Loading preview…</p>
+        </div>
+
+        <!-- WhatsApp -->
+        <div class="share-card" style="border-color:rgba(37,211,102,.2);background:rgba(37,211,102,.04)" onclick="shareOnWhatsApp()">
+          <div class="share-card-head">
+            <div class="share-card-icon" style="background:rgba(37,211,102,.15)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+            </div>
+            <span class="share-card-title">WhatsApp</span>
+          </div>
+          <p class="share-card-preview" id="whatsapp-preview">Loading preview…</p>
+        </div>
+
+        <!-- Copy link -->
+        <div class="share-card" style="border-color:rgba(99,102,241,.2);background:rgba(99,102,241,.04)" onclick="copyRefLink()">
+          <div class="share-card-head">
+            <div class="share-card-icon" style="background:rgba(99,102,241,.12)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </div>
+            <span class="share-card-title">Copy link</span>
+          </div>
+          <p class="share-card-preview">Click to copy your referral link to clipboard and paste anywhere</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Commission structure + Leaderboard side by side -->
+    <div class="grid2" style="margin-bottom:1rem">
+      <div class="card-block">
+        <h4 style="margin-bottom:.75rem">Commission per plan</h4>
+        <div class="commission-grid" id="ref-commission-grid">
+          <div class="commission-card"><div class="commission-plan">Starter</div><div class="commission-amount">$9.80</div><div class="commission-note">20% of $49</div></div>
+          <div class="commission-card"><div class="commission-plan">Growth</div><div class="commission-amount">$19.80</div><div class="commission-note">20% of $99</div></div>
+          <div class="commission-card"><div class="commission-plan">Agency</div><div class="commission-amount">$49.80</div><div class="commission-note">20% of $249</div></div>
+        </div>
+        <p style="font-size:.69rem;color:var(--text3);margin-top:.85rem;line-height:1.55">Commission is paid on the <strong style="color:var(--text2)">first payment only</strong> from each referred user. Tracked automatically — no minimum withdrawal.</p>
+      </div>
+      <div class="card-block">
+        <h4 style="margin-bottom:.75rem">Top affiliates</h4>
+        <div id="aff-leaderboard">
+          <p style="font-size:.78rem;color:var(--text3)">Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Referral history table -->
     <div class="card-block">
-      <h4>Referral history</h4>
-      <div id="aff-history" style="margin-top:.65rem">
+      <h4 style="margin-bottom:.85rem">Referral history</h4>
+      <div id="ref-history-wrap">
         <p style="font-size:.78rem;color:var(--text3)">Loading…</p>
       </div>
     </div>
-    <div class="card-block">
-      <h4>Top 5 affiliates</h4>
-      <div id="aff-leaderboard" style="margin-top:.65rem">
-        <p style="font-size:.78rem;color:var(--text3)">Loading…</p>
-      </div>
-    </div>
-  </div>
+
+  </div><!-- /ref-content -->
 </div>
 
 <div class="dash-page" id="dp-health">
@@ -4064,89 +4184,163 @@ async function handleAutoPostToggle(checked) {
 // ════════════════════════════════════════════
 // AFFILIATE — real referral data from /api/affiliate
 // ════════════════════════════════════════════
+let _refLinkCache = '';
+
 async function initAffiliate() {
-  const histEl  = document.getElementById('aff-history');
-  const lbEl    = document.getElementById('aff-leaderboard');
-  const linkEl  = document.getElementById('referral-link-val');
+  const loadEl    = document.getElementById('ref-loading');
+  const contentEl = document.getElementById('ref-content');
+  if (loadEl)    loadEl.style.display = 'block';
+  if (contentEl) contentEl.style.display = 'none';
 
   try {
-    const data = await apiCall('/api/affiliate');
-    if (!data?.success) throw new Error('No data');
+    const data = await apiCall('/api/affiliate/dashboard');
+    if (!data?.success) throw new Error(data?.error || 'Failed to load');
 
-    // Referral link
-    _affLinkCache = data.referralLink;
-    if (linkEl) linkEl.value = data.referralLink;
+    // Cache link for sharing functions
+    _refLinkCache = data.referralLink || '';
+    _affLinkCache = _refLinkCache; // keep legacy cache in sync
 
-    // Stat chips
+    // Show content
+    if (loadEl)    loadEl.style.display = 'none';
+    if (contentEl) contentEl.style.display = 'block';
+
+    // Stats
     const s = data.stats || {};
-    const setEl = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    setEl('aff-total',   s.total ?? 0);
-    setEl('aff-upgrades', s.upgrades ?? 0);
-    setEl('aff-earnings', s.earnings != null ? '$' + s.earnings.toFixed(2) : '$0.00');
-    setEl('aff-convrate', s.convRate != null ? s.convRate + '%' : '0%');
-    setEl('aff-rank',     s.myRank ? '#' + s.myRank : s.total > 0 ? 'Unranked' : '—');
+    const $ = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    $('ref-total',     s.totalReferrals       ?? '—');
+    $('ref-converted', s.successfulConversions ?? '—');
+    $('ref-pending',   s.pendingConversions    ?? '—');
+    $('ref-earnings',  s.totalEarnings != null ? '$' + s.totalEarnings.toFixed(2) : '$0.00');
+    $('ref-convrate',  s.conversionRate != null ? s.conversionRate + '%' : '—');
 
-    // Referral history
-    if (histEl) {
-      const history = data.history || [];
-      if (!history.length) {
-        histEl.innerHTML = `<div style="text-align:center;padding:1.5rem 0">
-          <p style="font-size:.8rem;font-weight:600;color:var(--text2);margin-bottom:.25rem">No referrals yet</p>
-          <p style="font-size:.73rem;color:var(--text3)">Share your link to start earning.</p>
-        </div>`;
-      } else {
-        histEl.innerHTML = history.map(r => {
-          const date = formatDate(r.signedUpAt);
-          const badge = r.upgraded
-            ? `<span class="badge badge-green" style="font-size:.62rem;padding:2px 7px">${r.plan}</span>`
-            : `<span class="badge badge-amber" style="font-size:.62rem;padding:2px 7px">Trial</span>`;
-          return `<div style="display:flex;align-items:center;gap:.65rem;padding:.55rem 0;border-bottom:1px solid var(--border)">
-            <div style="width:30px;height:30px;border-radius:50%;background:var(--purple);color:#fff;font-size:.7rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${r.initials || 'U'}</div>
-            <div style="flex:1">
-              <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">${badge}</div>
-              <p style="font-size:.69rem;color:var(--text3)">Signed up ${date}</p>
-            </div>
-            ${r.upgraded ? '<span style="font-size:.75rem;font-weight:700;color:var(--green)">+$10</span>' : '<span style="font-size:.72rem;color:var(--text3)">—</span>'}
-          </div>`;
-        }).join('');
-      }
+    const rankSub = document.getElementById('ref-rank-sub');
+    if (rankSub) rankSub.textContent = s.leaderboardRank ? `Rank #${s.leaderboardRank}` : 'Your rank';
+
+    // Referral link display
+    const linkDisplay = document.getElementById('ref-link-display');
+    if (linkDisplay) linkDisplay.textContent = _refLinkCache;
+
+    // Share message previews
+    const twitterMsg   = `I've been using Viralityy to fully automate my YouTube channel — AI scripts, voiceovers, thumbnails and auto-posting. Try it free: ${_refLinkCache} #YouTubeGrowth #ContentCreation`;
+    const whatsappMsg  = `Hey! I've been using this tool called Viralityy to automate my YouTube channel. It posts AI-generated Shorts automatically. Worth trying for free: ${_refLinkCache}`;
+    const twitterPrev  = document.getElementById('twitter-preview');
+    const whatsappPrev = document.getElementById('whatsapp-preview');
+    if (twitterPrev)  twitterPrev.textContent  = twitterMsg;
+    if (whatsappPrev) whatsappPrev.textContent  = whatsappMsg;
+
+    // Commission structure
+    const commGrid = document.getElementById('ref-commission-grid');
+    if (commGrid && data.commissionStructure) {
+      const c = data.commissionStructure;
+      const planLabels = { starter: 'Starter', growth: 'Growth', agency: 'Agency', shorts_pro: 'Shorts Pro' };
+      const planBases  = { starter: 49, growth: 99, agency: 249, shorts_pro: 79 };
+      commGrid.innerHTML = Object.entries(c).map(([plan, amount]) =>
+        `<div class="commission-card">
+          <div class="commission-plan">${planLabels[plan] || plan}</div>
+          <div class="commission-amount">$${amount.toFixed(2)}</div>
+          <div class="commission-note">20% of $${planBases[plan] || '—'}</div>
+        </div>`
+      ).join('');
     }
 
     // Leaderboard
+    const lbEl = document.getElementById('aff-leaderboard');
     if (lbEl) {
       const lb = data.leaderboard || [];
       if (!lb.length) {
         lbEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">No leaderboard data yet — be the first!</p>';
       } else {
-        const medalColors = ['#f59e0b', '#94a3b8', '#b45309'];
-        lbEl.innerHTML = lb.map((entry, i) => {
-          const medal = i < 3 ? `<span style="color:${medalColors[i]};font-weight:700;font-size:.82rem">#${entry.rank}</span>`
-                               : `<span style="color:var(--text3);font-size:.82rem">#${entry.rank}</span>`;
-          const you   = entry.isYou ? ' (You)' : '';
-          const name  = entry.isYou
-            ? `<span style="font-size:.78rem;font-weight:700;color:var(--purple)">${entry.label}${you}</span>`
-            : `<span style="font-size:.78rem;color:var(--text2)">${entry.label}</span>`;
-          const barW  = Math.max(Math.round((entry.count / (lb[0]?.count || 1)) * 100), 5);
-          return `<div style="display:flex;align-items:center;gap:.6rem;padding:.45rem 0;border-bottom:1px solid var(--border)">
-            <div style="min-width:22px;text-align:center">${medal}</div>
+        const medals = ['#f59e0b', '#94a3b8', '#b45309'];
+        lbEl.innerHTML = lb.map((e, i) => {
+          const barW = Math.max(Math.round((e.count / (lb[0]?.count || 1)) * 100), 5);
+          return `<div style="display:flex;align-items:center;gap:.65rem;padding:.45rem 0;border-bottom:1px solid var(--border)">
+            <span style="color:${i < 3 ? medals[i] : 'var(--text3)'};font-weight:700;font-size:.8rem;min-width:22px;text-align:center">#${e.rank}</span>
             <div style="flex:1">
-              ${name}
-              <div style="height:3px;background:var(--bg3);border-radius:2px;margin-top:4px">
-                <div style="width:${barW}%;height:100%;background:${entry.isYou ? 'var(--purple)' : 'var(--border2)'};border-radius:2px"></div>
-              </div>
+              <span style="font-size:.78rem;font-weight:${e.isYou ? 700 : 400};color:${e.isYou ? 'var(--purple)' : 'var(--text2)'}">${e.label}${e.isYou ? ' (You)' : ''}</span>
+              <div class="lb-bar-wrap"><div class="lb-bar-fill" style="width:${barW}%;background:${e.isYou ? 'var(--purple)' : 'var(--border2)'}"></div></div>
             </div>
-            <span style="font-size:.76rem;font-weight:600;color:var(--text2)">${entry.count}</span>
+            <span style="font-size:.76rem;font-weight:600;color:var(--text2)">${e.count}</span>
           </div>`;
         }).join('');
       }
     }
 
+    // History table
+    const histWrap = document.getElementById('ref-history-wrap');
+    if (histWrap) {
+      const history = data.history || [];
+      if (!history.length) {
+        histWrap.innerHTML = `<div style="text-align:center;padding:2.5rem 1rem;border:1px dashed var(--border2);border-radius:10px">
+          <p style="font-size:1.4rem;margin-bottom:.5rem">🔗</p>
+          <p style="font-size:.83rem;font-weight:500;color:var(--text2);margin-bottom:.3rem">No referrals yet</p>
+          <p style="font-size:.73rem;color:var(--text3)">Share your link above to start earning commissions.</p>
+        </div>`;
+      } else {
+        const statusBadge = (s) => ({
+          converted: `<span class="ref-status-converted">✓ Converted</span>`,
+          pending:   `<span class="ref-status-pending">⏳ Pending</span>`,
+          expired:   `<span class="ref-status-expired">✗ Expired</span>`,
+        }[s] || `<span class="ref-status-pending">${s}</span>`);
+
+        const planLabel = { starter:'Starter', growth:'Growth', agency:'Agency', shorts_pro:'Shorts Pro', trial:'Trial' };
+
+        histWrap.innerHTML = `<div class="ref-table-wrap">
+          <table class="ref-table">
+            <thead><tr>
+              <th>Date</th>
+              <th>User</th>
+              <th>Status</th>
+              <th>Plan</th>
+              <th style="text-align:right">Commission</th>
+            </tr></thead>
+            <tbody>${history.map(r => `
+              <tr>
+                <td style="color:var(--text3);white-space:nowrap">${formatDate(r.signedUpAt)}</td>
+                <td>
+                  <div style="display:flex;align-items:center;gap:7px">
+                    <div style="width:26px;height:26px;border-radius:50%;background:var(--purple);color:#fff;font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${r.initials}</div>
+                    <span style="font-family:'DM Mono',monospace;font-size:.73rem;color:var(--text2)">${r.maskedEmail}</span>
+                  </div>
+                </td>
+                <td>${statusBadge(r.status)}</td>
+                <td style="color:var(--text2)">${planLabel[r.plan] || r.plan}</td>
+                <td style="text-align:right;font-weight:700;color:${r.commission ? 'var(--green)' : 'var(--text3)'}">
+                  ${r.commission != null ? '+$' + r.commission.toFixed(2) : '—'}
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      }
+    }
+
   } catch (err) {
     console.error('[initAffiliate]', err);
-    if (histEl)  histEl.innerHTML  = '<p style="font-size:.78rem;color:var(--text3)">Could not load referral data — refresh to try again.</p>';
-    if (lbEl)    lbEl.innerHTML    = '<p style="font-size:.78rem;color:var(--text3)">Could not load leaderboard.</p>';
-    if (linkEl)  linkEl.value      = '';
+    if (loadEl) loadEl.innerHTML = `<p style="color:#f87171;font-size:.82rem">Could not load referral data — refresh to try again.</p>`;
   }
+}
+
+function copyRefLink() {
+  if (!_refLinkCache) return;
+  navigator.clipboard.writeText(_refLinkCache).then(() => {
+    const btn = document.getElementById('ref-copy-btn');
+    if (btn) { btn.textContent = 'Copied!'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = 'Copy link'; btn.classList.remove('copied'); }, 2000); }
+  }).catch(() => {
+    const inp = document.getElementById('referral-link-val');
+    if (inp) { inp.select(); document.execCommand('copy'); }
+  });
+}
+
+function shareOnTwitter() {
+  if (!_refLinkCache) return;
+  const msg = encodeURIComponent(`I've been using Viralityy to fully automate my YouTube channel — AI scripts, voiceovers, thumbnails and auto-posting. Try it free: ${_refLinkCache} #YouTubeGrowth #ContentCreation`);
+  window.open(`https://twitter.com/intent/tweet?text=${msg}`, '_blank', 'noopener');
+}
+
+function shareOnWhatsApp() {
+  if (!_refLinkCache) return;
+  const msg = encodeURIComponent(`Hey! I've been using this tool called Viralityy to automate my YouTube channel. It posts AI-generated Shorts automatically. Worth trying for free: ${_refLinkCache}`);
+  window.open(`https://wa.me/?text=${msg}`, '_blank', 'noopener');
 }
 
 // ════════════════════════════════════════════

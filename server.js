@@ -4644,6 +4644,97 @@ app.get('/api/affiliate', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/affiliate/dashboard — full referral dashboard data (20% commission model)
+app.get('/api/affiliate/dashboard', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Ensure affiliate code exists
+    if (!user.affiliateCode) {
+      user.affiliateCode = generateAffiliateCode();
+      await user.save();
+    }
+
+    const appBase = process.env.FRONTEND_URL || 'https://viralityy.pages.dev';
+    const referralLink = `${appBase}?ref=${user.affiliateCode}`;
+
+    // Commission: 20% of first payment per plan
+    const COMMISSION = {
+      starter:    Math.round(PLAN_CONFIG.starter?.price  * 0.20 * 100) / 100 || 9.80,
+      growth:     Math.round(PLAN_CONFIG.growth?.price   * 0.20 * 100) / 100 || 19.80,
+      agency:     Math.round(PLAN_CONFIG.agency?.price   * 0.20 * 100) / 100 || 49.80,
+      shorts_pro: 15.80,
+    };
+
+    // All users who came via this code
+    const referred = await User.find({ referredBy: user.affiliateCode })
+      .select('name email plan subscriptionStatus createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const successful = referred.filter(u => u.plan && u.plan !== 'trial' && u.subscriptionStatus === 'active');
+    const pending    = referred.filter(u => u.plan === 'trial' || u.subscriptionStatus !== 'active');
+    const totalEarnings = successful.reduce((sum, u) => sum + (COMMISSION[u.plan] || 0), 0);
+    const convRate = referred.length ? Math.round((successful.length / referred.length) * 100) : 0;
+
+    // Masked email: j***@gmail.com
+    function maskEmail(email) {
+      if (!email || !email.includes('@')) return '***@***';
+      const [local, domain] = email.split('@');
+      return local.slice(0, 1) + '***@' + domain;
+    }
+
+    const history = referred.map(u => {
+      const isPaid = u.plan && u.plan !== 'trial' && u.subscriptionStatus === 'active';
+      const isExpired = u.subscriptionStatus === 'expired';
+      return {
+        signedUpAt:  u.createdAt,
+        maskedEmail: maskEmail(u.email),
+        initials:    (u.name || u.email || 'U').slice(0, 2).toUpperCase(),
+        status:      isPaid ? 'converted' : isExpired ? 'expired' : 'pending',
+        plan:        u.plan || 'trial',
+        commission:  isPaid ? (COMMISSION[u.plan] || 0) : null,
+      };
+    });
+
+    // Leaderboard
+    const leaderboard = await User.aggregate([
+      { $match: { referredBy: { $exists: true, $ne: null, $ne: '' } } },
+      { $group: { _id: '$referredBy', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 },
+    ]);
+    const myRank   = leaderboard.findIndex(l => l._id === user.affiliateCode) + 1;
+    const topBoard = leaderboard.map((l, i) => ({
+      rank:   i + 1,
+      isYou:  l._id === user.affiliateCode,
+      count:  l.count,
+      label:  l._id === user.affiliateCode ? 'You' : `Affiliate #${i + 1}`,
+    }));
+
+    res.json({
+      success: true,
+      affiliateCode: user.affiliateCode,
+      referralLink,
+      stats: {
+        totalReferrals:       referred.length,
+        successfulConversions: successful.length,
+        pendingConversions:    pending.length,
+        totalEarnings:        Math.round(totalEarnings * 100) / 100,
+        conversionRate:       convRate,
+        leaderboardRank:      myRank || null,
+      },
+      commissionStructure: COMMISSION,
+      history,
+      leaderboard: topBoard,
+    });
+  } catch (err) {
+    console.error('[Affiliate] GET /api/affiliate/dashboard error:', err.message);
+    res.status(500).json({ error: 'Failed to load referral dashboard' });
+  }
+});
+
 // ── AUTH EXTRAS ───────────────────────────────────────────────────────────────
 
 // POST /api/auth/forgot-password
