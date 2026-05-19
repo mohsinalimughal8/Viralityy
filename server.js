@@ -5991,6 +5991,31 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
   const psUpdate = (step) => { psEntry.step = step; };
 
   try {
+    // 0/5 Pre-flight — resolve channel and verify YouTube upload quota BEFORE spending
+    // on any paid external API (OpenAI script, Imagen 4 thumbnail, Google TTS voiceover).
+    // Fail fast here saves ~$0.02–$0.10 per aborted video.
+    const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId)
+                 || user.youtubeChannels?.[0];
+    if (!channel) {
+      throw new Error('No YouTube channel connected — aborting before any paid API calls');
+    }
+    if (!channel.accessToken) {
+      throw new Error('YouTube channel has no access token — aborting before any paid API calls');
+    }
+
+    // Quota pre-flight: if upload quota is already exhausted, skip all paid work now
+    const preflightQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, String(slotDoc.userId)).catch(() => ({ allowed: true }));
+    if (!preflightQC.allowed) {
+      const slotDate  = slotDoc.date || new Date().toISOString().slice(0, 10);
+      const tomorrow  = new Date(slotDate + 'T00:00:00Z');
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+      const newDate   = tomorrow.toISOString().slice(0, 10);
+      await setStatus({ status: 'scheduled', date: newDate, pipelineStatus: 'rescheduled-quota-preflight', rescheduleReason: preflightQC.reason, rescheduledAt: new Date().toISOString() });
+      PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
+      console.log(`[Preflight] ✗ "${slotDoc.title}" — YouTube quota insufficient, rescheduled to ${newDate} ($0 spent on script/thumbnail/voiceover)`);
+      return null;
+    }
+
     // 1/5 Script
     psUpdate('1/5'); console.log(`[JIT] 1/5 Script — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-script' });
@@ -6017,15 +6042,26 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     PIPELINE_STATUS.todayStats.generated++;
     console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
 
-    // 2/5 Thumbnail (non-fatal — pipeline continues even if this fails)
-    psUpdate('2/5'); console.log(`[JIT] 2/5 Thumbnail — "${slotDoc.title}"`);
-    await setStatus({ pipelineStatus: 'generating-thumbnail' });
-    thumbPath = await generateThumbnail(slotDoc.title, nicheName, slotDoc.type, String(slotId));
-    if (thumbPath) {
-      await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done' });
-      PIPELINE_STATUS.todayStats.thumbnails++;
-    } else await setStatus({ pipelineStatus: 'thumbnail-skipped' });
-    console.log(`[JIT] 2/5 Done — ${thumbPath ? thumbPath : 'skipped'}`);
+    // 2/5 Thumbnail — skipped when channel is confirmed ineligible (saves ~$0.02/video on Imagen 4)
+    psUpdate('2/5');
+    if (channel.thumbnailsEnabled === false) {
+      // thumbnailsEnabled is explicitly false = YouTube confirmed this channel cannot use custom thumbnails.
+      // Calling Imagen 4 would waste $0.02 and produce a file that thumbnails.set() will reject.
+      console.log(`[Thumbnail] Skipping Imagen 4 — channel "${channel.channelName || channel.channelId}" not thumbnail eligible, saving ~$0.02`);
+      await setStatus({ pipelineStatus: 'thumbnail-skipped-ineligible' });
+    } else {
+      // thumbnailsEnabled is true (confirmed) or null/undefined (unknown — try optimistically)
+      console.log(`[JIT] 2/5 Thumbnail — "${slotDoc.title}"`);
+      await setStatus({ pipelineStatus: 'generating-thumbnail' });
+      thumbPath = await generateThumbnail(slotDoc.title, nicheName, slotDoc.type, String(slotId));
+      if (thumbPath) {
+        await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done' });
+        PIPELINE_STATUS.todayStats.thumbnails++;
+      } else {
+        await setStatus({ pipelineStatus: 'thumbnail-skipped' });
+      }
+      console.log(`[JIT] 2/5 Done — ${thumbPath ? thumbPath : 'skipped'}`);
+    }
 
     // 3/5 Voiceover
     psUpdate('3/5'); console.log(`[JIT] 3/5 Voiceover — "${slotDoc.title}"`);
@@ -6049,28 +6085,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     });
     console.log(`[JIT] 4/5 Done — ${footageClips.length} clips`);
 
-    // Quota gate — check before committing to assembly + upload (1600 units)
-    const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, String(slotDoc.userId));
-    if (!uploadQC.allowed) {
-      console.warn(`[Quota] Insufficient quota for upload — slot rescheduled: ${uploadQC.reason}`);
-      const slotDate   = slotDoc.date || new Date().toISOString().slice(0, 10);
-      const tomorrow   = new Date(slotDate + 'T00:00:00Z');
-      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-      const newDate    = tomorrow.toISOString().slice(0, 10);
-      await setStatus({
-        status:           'scheduled',
-        date:             newDate,
-        pipelineStatus:   'rescheduled-quota',
-        rescheduleReason: uploadQC.reason,
-        rescheduledAt:    new Date().toISOString(),
-      });
-      if (audioPath) { fs.unlink(audioPath, () => {}); audioPath = null; }
-      if (thumbPath) { fs.unlink(thumbPath, () => {}); thumbPath = null; }
-      console.log(`[Quota] "${slotDoc.title}" rescheduled to ${newDate}`);
-      return null;
-    }
-
     // 5/5 Assemble + Upload
+    // (Quota pre-checked at pipeline start — pre-flight check above catches exhaustion before any paid calls)
     psUpdate('5/5');
     const finalCaptions = (isShort && captions.length === 0)
       ? buildFallbackCaptions(script, footageClips.length * 6)
@@ -6078,9 +6094,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
     console.log(`[DIAG] finalCaptions.length=${finalCaptions.length}, isShort=${isShort}, voResult.captions.length=${voResult.captions.length}, scriptData.captions.length=${scriptData.captions.length}`);
     console.log(`[DIAG] finalCaptions sample:`, JSON.stringify(finalCaptions.slice(0, 3)));
-    const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId)
-                 || user.youtubeChannels?.[0];
-    if (!channel) throw new Error('No YouTube channel connected');
+    // channel resolved in pre-flight above
 
     console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath} (style: font=${channel.styleConfig?.captionFont||'clean'} color=${channel.styleConfig?.colorScheme||'white-yellow'} music=${channel.styleConfig?.musicGenre||'ambient'})`);
     await setStatus({ pipelineStatus: 'assembling' });
