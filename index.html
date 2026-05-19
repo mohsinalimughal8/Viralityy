@@ -1182,6 +1182,14 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       </div>
     </div>
   </div>
+
+  <!-- Hooks Library subsection -->
+  <div class="hooks-lib-section">
+    <h4>Hooks Library <span class="hl-badge" id="hooks-total-badge">Loading…</span></h4>
+    <div id="hooks-lib-content">
+      <p style="font-size:.78rem;color:var(--text3)">Loading hooks data…</p>
+    </div>
+  </div>
 </div>
 
 <!-- ── CONTENT QUALITY ── -->
@@ -1467,6 +1475,27 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .adm-badge-warn{background:rgba(245,158,11,.15);color:#fbbf24}
 .adm-badge-err{background:rgba(239,68,68,.15);color:#f87171}
 .adm-tab.active{background:#6366f1 !important;color:#fff !important}
+
+/* ═══ HOOKS LIBRARY ═══ */
+.hook-badge{display:inline-flex;align-items:center;gap:4px;font-size:.6rem;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(139,92,246,.15);color:#a78bfa;border:1px solid rgba(139,92,246,.25);text-transform:uppercase;letter-spacing:.04em;cursor:pointer;transition:background .14s;flex-shrink:0}
+.hook-badge:hover{background:rgba(139,92,246,.25)}
+.hook-text-reveal{display:none;background:rgba(139,92,246,.06);border-left:3px solid #7c3aed;border-radius:0 6px 6px 0;padding:.55rem .75rem;margin-top:6px;font-size:.76rem;color:var(--text2);line-height:1.5;font-style:italic}
+.hooks-lib-section{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;margin-top:12px}
+.hooks-lib-section h4{font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:.85rem;display:flex;align-items:center;gap:8px}
+.hooks-lib-section h4 .hl-badge{font-size:.6rem;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(99,102,241,.12);color:#a5b4fc}
+.hooks-row{display:flex;align-items:center;gap:10px;padding:.5rem 0;border-bottom:1px solid var(--border)}
+.hooks-row:last-child{border:none}
+.hooks-row-rank{font-size:.68rem;font-weight:700;color:var(--text3);min-width:18px}
+.hooks-row-text{font-size:.75rem;color:var(--text2);flex:1;line-height:1.4}
+.hooks-row-cat{font-size:.6rem;font-weight:600;padding:2px 7px;border-radius:20px;background:rgba(255,255,255,.05);color:var(--text3);flex-shrink:0}
+.hooks-row-score{font-size:.8rem;font-weight:700;min-width:32px;text-align:right}
+.hooks-cat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:.75rem}
+.hooks-cat-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.7rem .9rem}
+.hooks-cat-name{font-size:.68rem;font-weight:600;color:var(--text2);margin-bottom:.3rem}
+.hooks-cat-meta{display:flex;align-items:center;justify-content:space-between}
+.hooks-cat-count{font-size:.65rem;color:var(--text3)}
+.hooks-cat-score{font-size:.78rem;font-weight:700}
+.hooks-note{font-size:.73rem;color:var(--text3);line-height:1.55;padding:.75rem;background:rgba(99,102,241,.05);border-radius:8px;border:1px solid rgba(99,102,241,.12);margin-top:.75rem}
 
 /* ═══ CHANNEL HEALTH SCORE ═══ */
 .health-score-ring{position:relative;width:140px;height:140px;flex-shrink:0}
@@ -3148,13 +3177,25 @@ async function initResearch() {
       const typeBadge = s.type === 'Long-form' ? 'LF' : 'S';
       const typeColor = s.type === 'Long-form' ? 'rgba(245,158,11,.15)' : 'rgba(99,102,241,.12)';
       const typeTxt   = s.type === 'Long-form' ? '#fbbf24' : 'var(--purple)';
+      const hookCat   = s.hookCategory || null;
+      const hookTpl   = s.hookTemplate || null;
+      const hookBadge = hookCat
+        ? `<span class="hook-badge" onclick="event.stopPropagation();toggleHookText('sht-${i}')" title="Click to see the hook template">✦ ${hookCat}</span>`
+        : '';
+      const hookReveal = hookTpl
+        ? `<div id="sht-${i}" class="hook-text-reveal">${hookTpl}</div>`
+        : '';
       return `
         <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
           <div style="padding:.85rem 1rem;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none" onclick="toggleScript('sbody-${i}','schev-${i}')">
             <div style="width:34px;height:34px;border-radius:8px;background:${typeColor};display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:${typeTxt};flex-shrink:0">${typeBadge}</div>
             <div style="flex:1;min-width:0">
-              <p style="font-size:.83rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title||'—'}</p>
-              <p style="font-size:.68rem;color:var(--text3);margin-top:2px">${s.scheduledDate||'TBD'} · ${s.type||'Short'} · ${s.estimatedDuration||'—'}</p>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px">
+                <p style="font-size:.83rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title||'—'}</p>
+                ${hookBadge}
+              </div>
+              <p style="font-size:.68rem;color:var(--text3)">${s.scheduledDate||'TBD'} · ${s.type||'Short'} · ${s.estimatedDuration||'—'}</p>
+              ${hookReveal}
             </div>
             <svg id="schev-${i}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0;transition:transform .2s;color:var(--text3)"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
@@ -3192,6 +3233,12 @@ function toggleScript(bodyId, chevId) {
   const open = body.style.display !== 'none';
   body.style.display = open ? 'none' : 'block';
   if (chev) chev.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+function toggleHookText(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = el.style.display === 'block' ? 'none' : 'block';
 }
 
 // ════════════════════════════════════════════
@@ -4209,11 +4256,86 @@ async function initLearning() {
       }
     }
 
+    // Hooks library
+    _renderHooksLibrary();
+
   } catch (err) {
     console.error('[initLearning] error:', err);
     if (patternsEl) patternsEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);margin-top:.5rem">Could not load data — refresh to try again</p>';
     if (chartEl)    chartEl.innerHTML    = '<p style="font-size:.72rem;color:var(--text3);align-self:center">Could not load data</p>';
   }
+}
+
+async function _renderHooksLibrary() {
+  const contentEl = document.getElementById('hooks-lib-content');
+  const badgeEl   = document.getElementById('hooks-total-badge');
+  if (!contentEl) return;
+
+  const data = await apiCall('/api/hooks/library');
+  if (!data || !data.success) {
+    contentEl.innerHTML = '<p style="font-size:.75rem;color:var(--text3)">Hooks data unavailable</p>';
+    return;
+  }
+
+  if (badgeEl) badgeEl.textContent = `${data.totalActive} active hooks`;
+
+  const scoreColor = s => s >= 70 ? 'var(--green)' : s >= 50 ? 'var(--amber)' : '#f87171';
+
+  const topRows = (data.topHooks || []).map((h, i) =>
+    `<div class="hooks-row">
+      <span class="hooks-row-rank">#${i + 1}</span>
+      <span class="hooks-row-text">${h.template}</span>
+      <span class="hooks-row-cat">${h.category}</span>
+      <span class="hooks-row-score" style="color:${scoreColor(h.avgEngagementScore)}">${h.avgEngagementScore}</span>
+    </div>`
+  ).join('') || '<p style="font-size:.75rem;color:var(--text3);padding:.5rem 0">No hook performance data yet — data appears after videos are posted</p>';
+
+  const botRows = (data.bottomHooks || []).map((h, i) =>
+    `<div class="hooks-row">
+      <span class="hooks-row-rank">#${i + 1}</span>
+      <span class="hooks-row-text">${h.template}</span>
+      <span class="hooks-row-cat">${h.category}</span>
+      <span class="hooks-row-score" style="color:${scoreColor(h.avgEngagementScore)}">${h.avgEngagementScore}</span>
+    </div>`
+  ).join('') || '<p style="font-size:.75rem;color:var(--text3);padding:.5rem 0">No performance data yet</p>';
+
+  const catCards = (data.categoryBreakdown || []).map(c =>
+    `<div class="hooks-cat-card">
+      <div class="hooks-cat-name">${c.category.replace(/And/g, '&')}</div>
+      <div class="hooks-cat-meta">
+        <span class="hooks-cat-count">${c.count} hooks</span>
+        <span class="hooks-cat-score" style="color:${scoreColor(c.avgScore)}">${c.avgScore}</span>
+      </div>
+    </div>`
+  ).join('');
+
+  const lastRebuilt = data.lastRebuiltAt
+    ? `Last rebuilt: ${new Date(data.lastRebuiltAt).toLocaleDateString()}`
+    : 'Never rebuilt (first rebuild: 1st of next month)';
+  const nextRebuild = data.nextRebuildDate
+    ? `Next rebuild: ${new Date(data.nextRebuildDate).toLocaleDateString()}`
+    : '';
+
+  contentEl.innerHTML = `
+    <div style="display:flex;gap:16px;font-size:.69rem;color:var(--text3);margin-bottom:.85rem">
+      <span>📅 ${lastRebuilt}</span>
+      ${nextRebuild ? `<span>🔄 ${nextRebuild}</span>` : ''}
+    </div>
+    <div class="grid2" style="gap:12px;margin-bottom:.85rem">
+      <div>
+        <p style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:.45rem">Top 5 this month</p>
+        ${topRows}
+      </div>
+      <div>
+        <p style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:.45rem">Bottom 5 (lowest scores)</p>
+        ${botRows}
+      </div>
+    </div>
+    <p style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:.5rem">Category breakdown</p>
+    <div class="hooks-cat-grid">${catCards}</div>
+    <div class="hooks-note">
+      This library rebuilds automatically every month. High-performing hooks (score ≥ 60) are kept permanently. Underperforming hooks (score &lt; 35 after 5+ uses) are replaced with AI-generated alternatives based on your channel's performance data.
+    </div>`;
 }
 
 async function initQuality() {

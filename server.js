@@ -392,6 +392,7 @@ if (process.env.MONGODB_URI) {
     console.log('[MongoDB] Connected successfully');
     registerCronJobs();
     setTimeout(runStartupSlotCheck, 3000);
+    setTimeout(seedHooksLibrary, 8000);
   })
   .catch(err => {
     console.error('[MongoDB] Connection failed — check MONGODB_URI credentials in Railway Variables:', err.message);
@@ -2010,6 +2011,346 @@ function runAgentPy(script, args, timeoutMs = 120000) {
 const getDb = () => mongoose.connection.db;
 const agentCol = (name) => getDb().collection(name);
 
+// =============================================================================
+// VIRAL HOOKS LIBRARY — 100+ proven hook templates, performance-tracked & auto-updated
+// =============================================================================
+
+function buildHooksSeedData() {
+  const H = (template, category, sub, trigger, affinities) => ({
+    template, category, subcategory: sub, psychologyTrigger: trigger,
+    nicheAffinities: affinities,
+    avgEngagementScore: 70, timesUsed: 0, timesPerformed: 0,
+    lastUsed: null, isActive: true,
+  });
+
+  // Niche affinity keys match mapNicheToCategory() output
+  const PSY  = ['Education', 'Entertainment', 'default'];
+  const FIN  = ['Finance', 'Business', 'default'];
+  const MOT  = ['Self Improvement', 'default'];
+  const HLTH = ['Health & Wellness', 'Education', 'default'];
+  const TECH = ['Technology', 'Finance', 'default'];
+  const ALL  = ['Finance', 'Business', 'Health & Wellness', 'Self Improvement', 'Technology', 'Education', 'Entertainment', 'default'];
+
+  return [
+    // ── CATEGORY 1: CURIOSITY GAP ─────────────────────────────────────────────
+    H("Here's what nobody tells you about [TOPIC]...",                     'Curiosity Gap', 'Secret Revelation',     'Information Gap Theory',      [...PSY, ...HLTH]),
+    H("The real reason why [TOPIC] affects you more than you think...",    'Curiosity Gap', 'Hidden Cause',          'Information Gap Theory',      [...PSY, ...HLTH]),
+    H("What scientists just discovered about [TOPIC] will shock you...",   'Curiosity Gap', 'Scientific Discovery',  'Novelty Bias',                HLTH),
+    H("Nobody is talking about this [TOPIC] secret...",                    'Curiosity Gap', 'Insider Knowledge',     'Information Gap Theory',      ALL),
+    H("Here's the part they always leave out about [TOPIC]...",            'Curiosity Gap', 'Missing Piece',         'Information Gap Theory',      ALL),
+    H("The hidden truth about [TOPIC] that changes everything...",         'Curiosity Gap', 'Revelation',            'Cognitive Dissonance',        ALL),
+    H("What your [TOPIC] is actually telling you...",                      'Curiosity Gap', 'Hidden Signal',         'Self-Relevance Effect',       [...PSY, ...HLTH]),
+    H("The [TOPIC] secret that took me years to figure out...",            'Curiosity Gap', 'Hard-Won Insight',      'Information Gap Theory',      ALL),
+    H("Why everything you know about [TOPIC] might be wrong...",           'Curiosity Gap', 'Paradigm Shift',        'Cognitive Dissonance',        ALL),
+    H("The [TOPIC] fact that most people never discover...",               'Curiosity Gap', 'Exclusive Knowledge',   'Information Gap Theory',      ALL),
+
+    // ── CATEGORY 2: SHOCKING STATISTICS ───────────────────────────────────────
+    H("X% of people will never know this about [TOPIC]...",                'Shocking Statistics', 'Exclusivity Stat',     'Social Comparison',           ALL),
+    H("Studies show X% of us make this [TOPIC] mistake daily...",          'Shocking Statistics', 'Common Error Stat',    'Loss Aversion',               [...FIN, ...HLTH]),
+    H("In just 30 days, [TOPIC] can completely change your [OUTCOME]...",  'Shocking Statistics', 'Time-Bound Result',    'Optimism Bias',               [...MOT, ...HLTH]),
+    H("Science says X minutes of [TOPIC] is all you need to...",           'Shocking Statistics', 'Minimal Effort Stat',  'Effort Heuristic',            HLTH),
+    H("Research proves that [TOPIC] affects X% of people without them knowing...", 'Shocking Statistics', 'Hidden Impact Stat', 'Loss Aversion',           HLTH),
+    H("X out of 10 people get [TOPIC] completely wrong...",                'Shocking Statistics', 'Majority Error Stat',  'Social Proof',                ALL),
+    H("Scientists found that [TOPIC] can change your brain in just X days...", 'Shocking Statistics', 'Neuroplasticity Stat', 'Novelty Bias',             HLTH),
+    H("The number one [TOPIC] stat that will change how you think...",     'Shocking Statistics', 'Mind-Changing Stat',   'Anchoring Effect',            ALL),
+    H("Only X% of people know this [TOPIC] fact...",                       'Shocking Statistics', 'Rarity Stat',          'Scarcity Principle',          ALL),
+    H("X billion people do this [TOPIC] thing wrong every single day...",  'Shocking Statistics', 'Global Scale Stat',    'Social Proof',                ALL),
+
+    // ── CATEGORY 3: PATTERN INTERRUPTION ──────────────────────────────────────
+    H("Stop scrolling. This [TOPIC] will actually change your life...",    'Pattern Interruption', 'Direct Stop',        'Attentional Capture',         ALL),
+    H("Wait — before you keep going, you need to hear this about [TOPIC]...", 'Pattern Interruption', 'Urgent Pause',    'Loss Aversion',               ALL),
+    H("I'm about to say something controversial about [TOPIC]...",         'Pattern Interruption', 'Controversy Hook',   'Cognitive Dissonance',        ALL),
+    H("This is not what you think it is about [TOPIC]...",                 'Pattern Interruption', 'Expectation Flip',   'Cognitive Dissonance',        ALL),
+    H("Most people get [TOPIC] backwards. Here's why...",                  'Pattern Interruption', 'Reversal',           'Contrarian Thinking',         [...MOT, ...FIN]),
+    H("Everything you were taught about [TOPIC] is outdated...",           'Pattern Interruption', 'Paradigm Break',     'Cognitive Dissonance',        ALL),
+    H("The [TOPIC] advice you've been given is actually harming you...",   'Pattern Interruption', 'Harmful Advice',     'Loss Aversion',               [...HLTH, ...MOT]),
+    H("Forget everything you think you know about [TOPIC]...",             'Pattern Interruption', 'Clean Slate',        'Cognitive Dissonance',        ALL),
+    H("The [TOPIC] approach that nobody recommends but everyone should use...", 'Pattern Interruption', 'Hidden Gem',     'Social Proof Reversal',       ALL),
+    H("You've been doing [TOPIC] wrong your entire life...",               'Pattern Interruption', 'Lifetime Error',     'Cognitive Dissonance',        ALL),
+
+    // ── CATEGORY 4: FEAR OF MISSING OUT ───────────────────────────────────────
+    H("If you're not doing this [TOPIC] habit, you're falling behind...",  'Fear Of Missing Out', 'Falling Behind',     'Loss Aversion',               [...FIN, ...MOT]),
+    H("Most people will never discover this [TOPIC] advantage...",         'Fear Of Missing Out', 'Missed Advantage',   'Scarcity Principle',          ALL),
+    H("While everyone ignores [TOPIC], smart people are already doing this...", 'Fear Of Missing Out', 'Smart vs Average', 'Social Comparison',         FIN),
+    H("You're losing [OUTCOME] every day you don't know about [TOPIC]...", 'Fear Of Missing Out', 'Daily Loss',         'Loss Aversion',               [...FIN, ...MOT]),
+    H("The [TOPIC] window is closing — here's what you need to know...",   'Fear Of Missing Out', 'Closing Window',     'Scarcity Principle',          FIN),
+    H("Successful people all do this [TOPIC] thing. Do you?",              'Fear Of Missing Out', 'Success Pattern',    'Social Comparison',           [...FIN, ...MOT]),
+    H("The [TOPIC] skill that separates top performers from everyone else...", 'Fear Of Missing Out', 'Elite Separator',  'Social Comparison',          [...FIN, ...MOT]),
+    H("Here's what high achievers know about [TOPIC] that you don't...",   'Fear Of Missing Out', 'Hidden Knowledge',   'Information Gap Theory',      [...FIN, ...MOT]),
+    H("If you miss this [TOPIC] habit, you'll regret it later...",         'Fear Of Missing Out', 'Future Regret',      'Loss Aversion',               MOT),
+    H("The [TOPIC] advantage most people discover too late...",            'Fear Of Missing Out', 'Too-Late Discovery',  'Loss Aversion',               ALL),
+
+    // ── CATEGORY 5: DIRECT CHALLENGE ──────────────────────────────────────────
+    H("I bet you can't go one week without doing this [TOPIC] thing...",   'Direct Challenge', 'Willpower Test',       'Reactance Theory',            MOT),
+    H("Try this [TOPIC] experiment for just 7 days and see what happens...", 'Direct Challenge', 'Time-Limited Test',  'Commitment Bias',             [...MOT, ...HLTH]),
+    H("Most people can't answer this simple [TOPIC] question. Can you?",   'Direct Challenge', 'Knowledge Test',       'Ego Threat',                  PSY),
+    H("Test yourself: do you really understand [TOPIC]?",                  'Direct Challenge', 'Self-Assessment',      'Dunning-Kruger Effect',       ALL),
+    H("Here's a [TOPIC] challenge that will change your perspective...",   'Direct Challenge', 'Perspective Challenge', 'Cognitive Flexibility',      MOT),
+    H("I challenge you to try this [TOPIC] approach for one week...",      'Direct Challenge', 'Weekly Challenge',      'Commitment Bias',             MOT),
+    H("Be honest — are you making this [TOPIC] mistake right now?",        'Direct Challenge', 'Honest Audit',         'Self-Awareness',              ALL),
+    H("How many of these [TOPIC] signs do you recognize in yourself?",     'Direct Challenge', 'Self-Recognition',     'Self-Reference Effect',       PSY),
+    H("Take this [TOPIC] test: what does your answer say about you?",      'Direct Challenge', 'Personality Reveal',   'Self-Reference Effect',       PSY),
+    H("Can you spot the [TOPIC] mistake most people make?",                'Direct Challenge', 'Error Detection',      'Superiority Bias',            ALL),
+
+    // ── CATEGORY 6: STORY OPENER ───────────────────────────────────────────────
+    H("This [TOPIC] discovery changed everything I thought I knew...",     'Story Opener', 'Personal Discovery',     'Narrative Transportation',    ALL),
+    H("I tried [TOPIC] for 30 days and here's what actually happened...",  'Story Opener', 'Personal Experiment',    'Narrative Transportation',    [...MOT, ...HLTH]),
+    H("The moment I understood [TOPIC] was the moment everything shifted...", 'Story Opener', 'Turning Point',       'Narrative Transportation',    MOT),
+    H("A simple [TOPIC] habit completely transformed my [OUTCOME]...",     'Story Opener', 'Transformation Story',   'Social Proof',                MOT),
+    H("Three years ago I learned something about [TOPIC] that I'll never forget...", 'Story Opener', 'Time-Stamped Memory', 'Narrative Transportation', ALL),
+    H("This [TOPIC] mistake cost me everything — don't make it too...",    'Story Opener', 'Cautionary Tale',        'Loss Aversion',               [...FIN, ...MOT]),
+    H("The [TOPIC] lesson that took me years to learn the hard way...",    'Story Opener', 'Hard Lesson',            'Empathy Response',            ALL),
+    H("Here's the [TOPIC] story they don't want you to know...",           'Story Opener', 'Suppressed Story',       'Reactance Theory',            PSY),
+    H("I was completely wrong about [TOPIC] until this happened...",       'Story Opener', 'Belief Reversal',        'Cognitive Dissonance',        ALL),
+    H("The [TOPIC] moment that made me rethink everything...",             'Story Opener', 'Epiphany Moment',        'Narrative Transportation',    ALL),
+
+    // ── CATEGORY 7: DIRECT VALUE PROMISE ──────────────────────────────────────
+    H("Here are X [TOPIC] facts that will make you smarter today...",      'Direct Value Promise', 'Knowledge Boost',    'Self-Enhancement Bias',     ALL),
+    H("The X most important [TOPIC] things you need to know right now...", 'Direct Value Promise', 'Priority List',      'Information Processing',    ALL),
+    H("X [TOPIC] habits that take under 5 minutes but change everything...", 'Direct Value Promise', 'Quick Win',         'Effort Heuristic',         HLTH),
+    H("Learn [TOPIC] in under 60 seconds with this simple breakdown...",   'Direct Value Promise', 'Speed Learning',     'Processing Fluency',        ALL),
+    H("The only [TOPIC] guide you'll ever need, simplified...",            'Direct Value Promise', 'Complete Guide',     'Cognitive Closure',         ALL),
+    H("X [TOPIC] truths that instantly shift your perspective...",         'Direct Value Promise', 'Perspective Shift',  'Cognitive Flexibility',     ALL),
+    H("Master [TOPIC] with these X science-backed principles...",          'Direct Value Promise', 'Scientific Method',  'Authority Heuristic',       [...HLTH, ...FIN]),
+    H("The X [TOPIC] concepts that explain everything...",                 'Direct Value Promise', 'Core Concepts',      'Cognitive Closure',         ALL),
+    H("Understand [TOPIC] better than 99% of people with these X ideas...", 'Direct Value Promise', 'Elite Understanding', 'Social Comparison',       ALL),
+    H("X powerful [TOPIC] insights in under a minute...",                  'Direct Value Promise', 'Rapid Insights',     'Processing Fluency',        ALL),
+
+    // ── CATEGORY 8: AUTHORITY & SOCIAL PROOF ──────────────────────────────────
+    H("Harvard researchers discovered something fascinating about [TOPIC]...", 'Authority And Social Proof', 'Elite Institution',  'Authority Heuristic',       [...HLTH, ...PSY]),
+    H("The world's top psychologists agree on this [TOPIC] principle...",  'Authority And Social Proof', 'Expert Consensus',   'Social Proof',              PSY),
+    H("Neuroscience explains why [TOPIC] affects your brain this way...",  'Authority And Social Proof', 'Brain Science',      'Authority Heuristic',       [...HLTH, ...PSY]),
+    H("Experts have been quietly studying [TOPIC] — here's what they found...", 'Authority And Social Proof', 'Insider Research', 'Authority Heuristic',    ALL),
+    H("The [TOPIC] principle that Nobel Prize winners use daily...",       'Authority And Social Proof', 'Elite Endorsement',  'Authority Heuristic',       FIN),
+    H("What the most successful people in the world do about [TOPIC]...",  'Authority And Social Proof', 'Elite Behaviour',    'Social Proof',              FIN),
+    H("Scientists spent decades studying [TOPIC] and found this...",       'Authority And Social Proof', 'Long Research',      'Authority Heuristic',       HLTH),
+    H("The ancient [TOPIC] wisdom that modern science just confirmed...",   'Authority And Social Proof', 'Ancient Wisdom',     'Temporal Framing',          [...HLTH, ...MOT]),
+    H("The [TOPIC] technique used by world-class performers...",           'Authority And Social Proof', 'Elite Technique',    'Social Proof',              [...FIN, ...MOT]),
+    H("What decades of [TOPIC] research finally revealed...",              'Authority And Social Proof', 'Research Reveal',    'Authority Heuristic',       ALL),
+
+    // ── CATEGORY 9: EMOTIONAL TRIGGER ─────────────────────────────────────────
+    H("This [TOPIC] truth is hard to hear but you need to know it...",     'Emotional Trigger', 'Difficult Truth',      'Empathy Response',            ALL),
+    H("The [TOPIC] reality that most people are too afraid to face...",    'Emotional Trigger', 'Avoidance Pattern',    'Fear Activation',             MOT),
+    H("If [TOPIC] makes you feel this way, you're not alone...",           'Emotional Trigger', 'Shared Feeling',       'Social Proof',                PSY),
+    H("The [TOPIC] feeling everyone has but nobody talks about...",        'Emotional Trigger', 'Silent Struggle',      'Normalisation',               PSY),
+    H("This [TOPIC] insight made me emotional when I first understood it...", 'Emotional Trigger', 'Emotional Recall',  'Emotional Contagion',         MOT),
+    H("Why [TOPIC] hits differently once you truly understand it...",      'Emotional Trigger', 'Depth of Understanding', 'Self-Reference Effect',     MOT),
+    H("The [TOPIC] truth that changes how you see everything...",          'Emotional Trigger', 'World-View Shift',     'Cognitive Dissonance',        ALL),
+    H("You deserve to know this [TOPIC] reality...",                       'Emotional Trigger', 'Empowerment',          'Self-Determination Theory',   ALL),
+    H("This [TOPIC] revelation will make you see yourself differently...", 'Emotional Trigger', 'Self-Perception Shift', 'Self-Reference Effect',      PSY),
+    H("The [TOPIC] understanding that brings instant peace of mind...",    'Emotional Trigger', 'Relief Payoff',        'Stress Reduction',            [...MOT, ...HLTH]),
+
+    // ── CATEGORY 10: REVEAL & TEASE ───────────────────────────────────────────
+    H("By the end of this, you'll never think about [TOPIC] the same way...", 'Reveal And Tease', 'Promised Shift',    'Zeigarnik Effect',            ALL),
+    H("Stay until the end — this [TOPIC] twist will surprise you...",      'Reveal And Tease', 'End Reward',           'Zeigarnik Effect',            ALL),
+    H("The [TOPIC] answer is not what you expect...",                      'Reveal And Tease', 'Unexpected Answer',    'Expectation Violation',       ALL),
+    H("What I'm about to share about [TOPIC] took experts years to figure out...", 'Reveal And Tease', 'Hard-Earned Reveal', 'Authority Heuristic',   ALL),
+    H("The [TOPIC] reveal that changes the entire picture...",             'Reveal And Tease', 'Picture Change',       'Narrative Transportation',    ALL),
+    H("Keep watching — this [TOPIC] gets more surprising every second...", 'Reveal And Tease', 'Escalating Surprise',  'Zeigarnik Effect',            ALL),
+    H("The [TOPIC] ending nobody sees coming...",                          'Reveal And Tease', 'Surprise Ending',      'Expectation Violation',       ALL),
+    H("Watch what happens when you apply this [TOPIC] insight...",         'Reveal And Tease', 'Results Preview',      'Optimism Bias',               ALL),
+    H("The [TOPIC] conclusion that flips conventional wisdom upside down...", 'Reveal And Tease', 'Wisdom Flip',       'Cognitive Dissonance',        ALL),
+    H("What comes next about [TOPIC] is the part nobody expects...",       'Reveal And Tease', 'Unexpected Next',      'Expectation Violation',       ALL),
+  ];
+}
+
+async function seedHooksLibrary() {
+  try {
+    const col   = agentCol('hooksLibrary');
+    const count = await col.countDocuments();
+    if (count >= 100) { console.log(`[Hooks] Library already seeded (${count} hooks) — skipping`); return; }
+    const hooks = buildHooksSeedData();
+    await col.insertMany(hooks);
+    console.log(`[Hooks] Seeded ${hooks.length} hooks into hooksLibrary collection`);
+  } catch (e) { console.error('[Hooks] Seed failed:', e.message); }
+}
+
+async function selectHookForSlot(userId, channelId, nicheName) {
+  try {
+    const col      = agentCol('hooksLibrary');
+    const slotsCol = agentCol('calendar_slots');
+
+    const recentSlots = await slotsCol
+      .find({ userId: String(userId), ...(channelId ? { channelId } : {}), hookId: { $exists: true } })
+      .sort({ postedAt: -1, scheduledPostTime: -1 })
+      .limit(10)
+      .project({ hookId: 1, hookCategory: 1 })
+      .toArray();
+
+    const recentHookIds  = recentSlots.map(s => s.hookId).filter(Boolean);
+    const lastCategory   = recentSlots[0]?.hookCategory || null;
+    const nicheCategory  = mapNicheToCategory(nicheName);
+
+    const query = { isActive: true };
+    if (nicheCategory !== 'default') query.nicheAffinities = { $in: [nicheCategory, 'default'] };
+    if (recentHookIds.length) {
+      try {
+        const { ObjectId } = require('mongoose').Types;
+        query._id = { $nin: recentHookIds.map(id => { try { return new ObjectId(id); } catch { return id; } }) };
+      } catch {}
+    }
+    if (lastCategory) query.category = { $ne: lastCategory };
+
+    let candidates = await col.find(query).sort({ avgEngagementScore: -1 }).limit(5).toArray();
+
+    if (!candidates.length) {
+      candidates = await col.find({ isActive: true }).sort({ avgEngagementScore: -1 }).limit(5).toArray();
+    }
+    if (!candidates.length) return null;
+
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  } catch (e) {
+    console.warn('[Hooks] selectHookForSlot failed (non-fatal):', e.message);
+    return null;
+  }
+}
+
+async function updateHookScores() {
+  try {
+    const col      = agentCol('hooksLibrary');
+    const slotsCol = agentCol('calendar_slots');
+    const cutoff   = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const hookedSlots = await slotsCol.find({
+      hookId: { $exists: true, $ne: null },
+      posted: true,
+      date: { $gte: cutoff },
+    }).project({ hookId: 1, hookCategory: 1, viewCount: 1, likeCount: 1, commentCount: 1 }).toArray();
+
+    if (!hookedSlots.length) {
+      console.log('[Hooks] Weekly score update: no hooked slots found this week');
+      return;
+    }
+
+    const byHook = {};
+    for (const s of hookedSlots) {
+      if (!s.hookId) continue;
+      const k = String(s.hookId);
+      if (!byHook[k]) byHook[k] = { views: 0, engagement: 0, count: 0 };
+      const v = s.viewCount || 0;
+      const e = v > 0 ? ((s.likeCount || 0) + (s.commentCount || 0)) / v : 0;
+      byHook[k].views      += v;
+      byHook[k].engagement += e;
+      byHook[k].count++;
+    }
+
+    const { ObjectId } = require('mongoose').Types;
+    let updated = 0;
+    for (const [hookId, data] of Object.entries(byHook)) {
+      const avgViews = data.views / data.count;
+      const avgEng   = data.engagement / data.count;
+      // Normalize: 10k views = max; 5% engagement = max
+      const viewNorm = Math.min(100, (avgViews / 10000) * 100);
+      const engNorm  = Math.min(100, avgEng * 2000);
+      const newScore = Math.round(viewNorm * 0.6 + engNorm * 0.4);
+
+      const hook = await col.findOne({ _id: new ObjectId(hookId) }).catch(() => null);
+      if (!hook) continue;
+
+      const blendedScore = Math.round((hook.avgEngagementScore * 0.7) + (newScore * 0.3));
+      const shouldDeactivate = hook.timesUsed >= 5 && blendedScore < 40;
+
+      await col.updateOne(
+        { _id: new ObjectId(hookId) },
+        { $set: { avgEngagementScore: blendedScore, ...(shouldDeactivate ? { isActive: false } : {}) } }
+      );
+      updated++;
+    }
+    console.log(`[Hooks] Weekly score update complete — ${updated} hook(s) updated`);
+  } catch (e) { console.error('[Hooks] Weekly score update failed:', e.message); }
+}
+
+async function rebuildHooksMonthly() {
+  if (!process.env.OPENAI_API_KEY) {
+    console.log('[Hooks] Monthly rebuild skipped — no OpenAI key');
+    return;
+  }
+  try {
+    const col = agentCol('hooksLibrary');
+    const { ObjectId } = require('mongoose').Types;
+    const { OpenAI } = require('openai');
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // Stats for prompt context
+    const allHooks = await col.find({}).toArray();
+    const categoryStats = {};
+    for (const h of allHooks) {
+      if (!categoryStats[h.category]) categoryStats[h.category] = { count: 0, totalScore: 0 };
+      categoryStats[h.category].count++;
+      categoryStats[h.category].totalScore += h.avgEngagementScore;
+    }
+    const categoryAvgs = Object.entries(categoryStats).map(([cat, s]) =>
+      `${cat}: avg score ${Math.round(s.totalScore / s.count)}, ${s.count} hooks`
+    ).join('\n');
+
+    const resp = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{
+        role: 'user',
+        content: `You are a viral content strategist. Based on this YouTube Shorts hook library performance data, generate 20 fresh hook templates.
+
+Current category performance:
+${categoryAvgs}
+
+Generate 20 new hook templates that:
+1. Fill gaps in underperforming categories
+2. Use [TOPIC] as the variable placeholder
+3. Are proven patterns for viral short-form video
+4. Vary across psychology triggers
+
+Return JSON array of exactly 20 objects:
+[{"template":"hook text with [TOPIC]","category":"one of: Curiosity Gap|Shocking Statistics|Pattern Interruption|Fear Of Missing Out|Direct Challenge|Story Opener|Direct Value Promise|Authority And Social Proof|Emotional Trigger|Reveal And Tease","psychologyTrigger":"brief psychology principle"}]`,
+      }],
+      temperature: 0.85,
+      response_format: { type: 'json_object' },
+      max_tokens: 2000,
+    });
+
+    let newHooks = [];
+    try {
+      const parsed = JSON.parse(resp.choices[0].message.content);
+      newHooks = Array.isArray(parsed) ? parsed : (parsed.hooks || parsed.templates || []);
+    } catch { newHooks = []; }
+
+    let added = 0;
+    for (const h of newHooks.slice(0, 20)) {
+      if (!h.template || !h.category) continue;
+      await col.insertOne({
+        template: h.template, category: h.category,
+        subcategory: 'AI Generated', psychologyTrigger: h.psychologyTrigger || 'Engagement Optimization',
+        nicheAffinities: ['default'],
+        avgEngagementScore: 70, timesUsed: 0, timesPerformed: 0,
+        lastUsed: null, isActive: true, generatedAt: new Date().toISOString(),
+      });
+      added++;
+    }
+
+    // Remove underperforming hooks (inactive + score < 35 + at least 5 uses)
+    const removed = await col.deleteMany({
+      isActive: false, avgEngagementScore: { $lt: 35 }, timesUsed: { $gte: 5 },
+    });
+
+    // Reactivate high scorers that were deactivated
+    await col.updateMany(
+      { isActive: false, avgEngagementScore: { $gte: 60 } },
+      { $set: { isActive: true } }
+    );
+
+    const total = await col.countDocuments({ isActive: true });
+    const now   = new Date().toISOString();
+    await agentCol('hooksLibraryMeta').updateOne(
+      { _id: 'meta' },
+      { $set: { lastRebuiltAt: now, lastRebuildStats: { added, removed: removed.deletedCount, total } } },
+      { upsert: true }
+    );
+
+    logAPIUsage('openai', 'hooks_monthly_rebuild', null, resp.usage?.total_tokens || 0,
+      ((resp.usage?.prompt_tokens || 0) * API_COSTS.openai_input) +
+      ((resp.usage?.completion_tokens || 0) * API_COSTS.openai_output), true);
+
+    console.log(`[Hooks] Monthly rebuild: ${added} added, ${removed.deletedCount} removed, ${total} total active`);
+  } catch (e) { console.error('[Hooks] Monthly rebuild failed:', e.message); }
+}
 
 // =============================================================================
 // CRON JOBS — all registered via registerCronJobs() after MongoDB connects (see bottom of file)
@@ -4160,6 +4501,66 @@ app.get('/api/channel/:id/health', requireAuth, async (req, res) => {
   }
 });
 
+// ── HOOKS LIBRARY API ─────────────────────────────────────────────────────────
+
+// GET /api/hooks/library — stats for the Hooks Library UI section
+app.get('/api/hooks/library', requireAuth, async (req, res) => {
+  try {
+    const col  = agentCol('hooksLibrary');
+    const meta = await agentCol('hooksLibraryMeta').findOne({ _id: 'meta' }).catch(() => null);
+
+    const totalActive = await col.countDocuments({ isActive: true });
+
+    const [topHooks, bottomHooks] = await Promise.all([
+      col.find({ isActive: true, timesUsed: { $gte: 1 } })
+        .sort({ avgEngagementScore: -1 })
+        .limit(5)
+        .project({ template: 1, category: 1, avgEngagementScore: 1, timesUsed: 1 })
+        .toArray(),
+      col.find({ isActive: true, timesUsed: { $gte: 1 } })
+        .sort({ avgEngagementScore: 1 })
+        .limit(5)
+        .project({ template: 1, category: 1, avgEngagementScore: 1, timesUsed: 1 })
+        .toArray(),
+    ]);
+
+    // Category breakdown
+    const allActive = await col.find({ isActive: true })
+      .project({ category: 1, avgEngagementScore: 1 })
+      .toArray();
+    const catMap = {};
+    for (const h of allActive) {
+      if (!catMap[h.category]) catMap[h.category] = { count: 0, totalScore: 0 };
+      catMap[h.category].count++;
+      catMap[h.category].totalScore += h.avgEngagementScore;
+    }
+    const categoryBreakdown = Object.entries(catMap).map(([cat, d]) => ({
+      category: cat,
+      count: d.count,
+      avgScore: Math.round(d.totalScore / d.count),
+    })).sort((a, b) => b.avgScore - a.avgScore);
+
+    // Next rebuild date — 1st of next month
+    const now = new Date();
+    const nextRebuild = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString().slice(0, 10);
+
+    const stringify = arr => arr.map(h => ({ ...h, _id: String(h._id) }));
+
+    res.json({
+      success: true,
+      totalActive,
+      topHooks:   stringify(topHooks),
+      bottomHooks: stringify(bottomHooks),
+      categoryBreakdown,
+      lastRebuiltAt:  meta?.lastRebuiltAt || null,
+      nextRebuildDate: nextRebuild,
+    });
+  } catch (err) {
+    console.error('[Hooks] GET /api/hooks/library error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── AFFILIATE ─────────────────────────────────────────────────────────────────
 
 // GET /api/affiliate/stats — legacy stub kept for backward compat
@@ -4404,14 +4805,18 @@ app.get('/api/quality/scores', requireAuth, async (req, res) => {
 // Returns { title, script, hook, loopEnding, captions, hashtags, wordCount }
 // Shorts: structured JSON with hook rules, 60-80 word cap, caption segments, hashtags
 // Long-form: plain text wrapped in the same shape for a consistent call site
-async function pipelineGenerateScript(title, nicheName, type) {
+async function pipelineGenerateScript(title, nicheName, type, hookTemplate) {
   const { OpenAI } = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const hookInstruction = hookTemplate
+    ? `\nOPENING HOOK (mandatory): Your script MUST start with this exact opening hook (replace [TOPIC] with the video topic): "${hookTemplate}". Do not modify or rewrite this hook. Begin the script with it verbatim.`
+    : '';
 
   if (type === 'Long-form') {
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: `Write a 3–5 minute YouTube script for: "${title}".\nNiche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.\nStart with a strong hook. End with a clear call-to-action.` }],
+      messages: [{ role: 'user', content: `Write a 3–5 minute YouTube script for: "${title}".\nNiche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.\nStart with a strong hook. End with a clear call-to-action.${hookInstruction}` }],
       temperature: 0.8,
     });
     const inTok  = completion.usage?.prompt_tokens    || 0;
@@ -4425,9 +4830,9 @@ async function pipelineGenerateScript(title, nicheName, type) {
   // ── Shorts: viral-optimised structured JSON ──
   const prompt = `You are a viral YouTube Shorts script writer for a "${nicheName}" channel.
 Write a viral-optimised Shorts script for the video: "${title}"
-
+${hookInstruction}
 STRICT RULES:
-1. HOOK (first 3 seconds): Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.
+1. HOOK (first 3 seconds): ${hookTemplate ? `Use the mandatory hook above verbatim (replace [TOPIC] with the video topic). Do NOT modify it.` : `Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.`}
 2. LENGTH: Script must be 60-80 words total (hard limit — 20-30 seconds of speech). If you reach 100 words, stop.
 3. STRUCTURE: Hook (3 sec) → 3 rapid value points (15 sec) → Loop ending (5 sec). The LAST sentence MUST echo or reference the hook to create a rewatch loop.
 4. STYLE: Short punchy sentences only. Zero filler words (no "basically", "actually", "you know"). Every sentence adds new information.
@@ -5405,6 +5810,10 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
   const setStatus = (fields) => slotsCol.updateOne({ _id: slotId }, { $set: fields }).catch(() => {});
 
+  let hookId       = null;
+  let hookCategory = null;
+  let selectedHook = null;
+
   // Track in PIPELINE_STATUS
   pipelineEnsureTodayStats();
   const psEntry = { slotId: String(slotId), title: slotDoc.title, userId: String(slotDoc.userId), startedAt: new Date().toISOString(), step: '1/5' };
@@ -5415,9 +5824,26 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     // 1/5 Script
     psUpdate('1/5'); console.log(`[JIT] 1/5 Script — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-script' });
-    const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type);
+
+    // Select hook from library (non-fatal — pipeline runs even without a hook)
+    selectedHook = await selectHookForSlot(String(slotDoc.userId), slotDoc.channelId, nicheName);
+    if (selectedHook) {
+      hookId       = String(selectedHook._id);
+      hookCategory = selectedHook.category;
+      console.log(`[JIT] Hook selected: "${selectedHook.template.slice(0, 60)}…" [${hookCategory}]`);
+      agentCol('hooksLibrary').updateOne(
+        { _id: selectedHook._id },
+        { $inc: { timesUsed: 1 }, $set: { lastUsed: new Date().toISOString() } }
+      ).catch(() => {});
+    }
+
+    const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null);
     const script     = scriptData.script;
-    await setStatus({ scriptText: script, scriptCaptions: scriptData.captions, cachedScript: script.slice(0, 2000), pipelineStatus: 'script-done' });
+    await setStatus({
+      scriptText: script, scriptCaptions: scriptData.captions,
+      cachedScript: script.slice(0, 2000), pipelineStatus: 'script-done',
+      hookId, hookCategory, hookTemplate: selectedHook?.template || null,
+    });
     PIPELINE_STATUS.todayStats.generated++;
     console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
 
@@ -5508,6 +5934,14 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       thumbnailPath:  null,
       pipelineError:  null,
     });
+
+    // Track hook posting performance
+    if (hookId && selectedHook) {
+      agentCol('hooksLibrary').updateOne(
+        { _id: selectedHook._id },
+        { $inc: { timesPerformed: 1 } }
+      ).catch(() => {});
+    }
 
     const usedClipIds = footageClips.map(c => c.id).filter(Boolean);
     if (usedClipIds.length > 0) {
@@ -7352,7 +7786,7 @@ function registerCronJobs() {
     });
   }
 
-  // Monday 3 AM UTC — recalculate optimal posting times for all active channels
+  // Monday 3 AM UTC — recalculate optimal posting times + update hook scores
   cron.schedule('0 3 * * 1', async () => {
     console.log('[Timing] Weekly recalculation of optimal posting times starting...');
     try {
@@ -7370,6 +7804,12 @@ function registerCronJobs() {
       }
       console.log(`[Timing] Weekly recalculation complete — ${updated} channel(s) updated`);
     } catch (e) { console.error('[Timing] Weekly cron failed:', e.message); }
+
+    // Weekly hook performance score update
+    if (FEATURES.learningLoop) {
+      console.log('[Hooks] Weekly hook score update starting...');
+      await updateHookScores().catch(e => console.error('[Hooks] Weekly update error:', e.message));
+    }
   }, { timezone: 'UTC' });
 
   // Monthly footage reset — 1st of each month at 00:05 UTC
@@ -7412,6 +7852,12 @@ function registerCronJobs() {
     cutoff.setUTCDate(cutoff.getUTCDate() - 7);
     const cutoffDate = cutoff.toISOString().slice(0, 10);
     agentCol('youtubeQuota').deleteMany({ date: { $lt: cutoffDate } }).catch(() => {});
+  }, { timezone: 'UTC' });
+
+  // Monthly hooks library rebuild — 1st of every month at 01:00 UTC
+  cron.schedule('0 1 1 * *', async () => {
+    console.log('[Hooks] Monthly rebuild cron starting...');
+    await rebuildHooksMonthly().catch(e => console.error('[Hooks] Monthly rebuild error:', e.message));
   }, { timezone: 'UTC' });
 
   cronJobsRegistered = true;
