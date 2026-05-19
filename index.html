@@ -23,6 +23,7 @@
 <meta name="description" content="Automated YouTube channel growth — AI scripts, voiceovers, thumbnails and auto-posting.">
 
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono&display=swap" rel="stylesheet">
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
 <style>
 /* ═══════════════════════════════════════════════
    GLOBAL RESET & DESIGN TOKENS
@@ -451,6 +452,35 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .lb-bar-wrap{height:3px;background:var(--bg3);border-radius:2px;margin-top:4px}
 .lb-bar-fill{height:100%;border-radius:2px;transition:width .4s ease}
 
+/* BILLING MODAL */
+.billing-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9500;display:none;align-items:center;justify-content:center;padding:1rem}
+.billing-modal-overlay.open{display:flex}
+.billing-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:2rem;max-width:480px;width:100%;position:relative;max-height:90vh;overflow-y:auto}
+.billing-modal h2{font-size:1.1rem;font-weight:700;margin-bottom:.25rem}
+.billing-modal .bm-meta{font-size:.73rem;color:var(--text3);margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}
+.bm-plan-badge{display:inline-flex;align-items:center;gap:6px;font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:1rem}
+.bm-plan-badge.trial{background:rgba(245,158,11,.12);color:#fbbf24;border:1px solid rgba(245,158,11,.25)}
+.bm-plan-badge.starter{background:rgba(107,114,128,.12);color:#9ca3af;border:1px solid rgba(107,114,128,.25)}
+.bm-plan-badge.shorts_pro{background:rgba(59,130,246,.12);color:#93c5fd;border:1px solid rgba(59,130,246,.25)}
+.bm-plan-badge.growth{background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.25)}
+.bm-plan-badge.agency{background:rgba(139,92,246,.12);color:#c4b5fd;border:1px solid rgba(139,92,246,.25)}
+.bm-row{display:flex;align-items:center;justify-content:space-between;padding:.6rem 0;border-bottom:1px solid var(--border);font-size:.82rem}
+.bm-row:last-of-type{border-bottom:none}
+.bm-row .bm-label{color:var(--text3)}
+.bm-row .bm-val{color:var(--text);font-weight:500}
+.bm-actions{display:flex;flex-direction:column;gap:8px;margin-top:1.25rem}
+.bm-btn{width:100%;padding:10px 16px;border-radius:9px;font-size:.83rem;font-weight:600;cursor:pointer;border:none;transition:all .15s;text-align:center}
+.bm-btn-primary{background:var(--purple2);color:#fff}.bm-btn-primary:hover{background:var(--purple3)}
+.bm-btn-danger{background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.2)}.bm-btn-danger:hover{background:rgba(239,68,68,.2)}
+.bm-btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border2)}.bm-btn-ghost:hover{border-color:var(--border3);color:var(--text)}
+.bm-btn-green{background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.25)}.bm-btn-green:hover{background:rgba(16,185,129,.25)}
+.bm-close{position:absolute;top:14px;right:16px;background:transparent;border:none;color:var(--text3);font-size:1.3rem;cursor:pointer;line-height:1;padding:0}
+/* Plan badge color in sidebar */
+.user-plan.plan-trial{color:#fbbf24}
+.user-plan.plan-starter{color:var(--text3)}
+.user-plan.plan-shorts_pro{color:#93c5fd}
+.user-plan.plan-growth{color:#6ee7b7}
+.user-plan.plan-agency{color:#c4b5fd}
 /* LEGAL PAGES */
 #page-privacy,#page-terms,#page-cookies,#page-refund{background:var(--bg)}
 .legal-layout{max-width:720px;margin:0 auto;padding:calc(var(--nav-h) + 3rem) 1.5rem 4rem}
@@ -775,10 +805,10 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="pricing-wrap">
   <div id="feat-pricing" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:2rem">
     <div class="price-card"><div class="price-badge" style="background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.2)">Free trial</div><p class="price-name">Trial</p><p><span class="price-num">$0</span><span class="price-per">&nbsp;/ 2 days</span></p><p class="price-desc">Try Viralityy — no credit card</p><ul class="price-features"><li>3 Shorts per day</li><li>1 YouTube channel</li><li>AI scripts, voiceover, thumbnails</li><li>Auto-posting at optimal times</li><li>No credit card required</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free</a></div>
-    <div class="price-card"><p class="price-name">Starter</p><p><span class="price-num" id="p0">$29</span><span class="price-per">/mo</span></p><p id="p0a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Get started with automated Shorts</p><ul class="price-features"><li>3 Shorts per day</li><li>1 YouTube channel</li><li>AI script writing</li><li>6-pass quality layer</li><li>Preview queue</li><li>Niche Engine v2</li><li>Content Planner Agent</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free trial</a></div>
-    <div class="price-card featured"><div class="price-badge">Most popular</div><p class="price-name">Shorts Pro</p><p><span class="price-num" id="p1">$69</span><span class="price-per">/mo</span></p><p id="p1a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Full Shorts automation</p><ul class="price-features"><li>7 Shorts per day</li><li>1 YouTube channel</li><li>TikTok + Instagram</li><li>AI optimisation</li><li>Topic Scout Agent</li><li>Competitor Watcher</li><li>Script Research Agent</li></ul><a class="price-btn price-btn-fill" onclick="nav('signup')">Start free trial</a></div>
-    <div class="price-card"><div class="price-badge" style="background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.25)">Best value</div><p class="price-name">Growth</p><p><span class="price-num" id="p2">$99</span><span class="price-per">/mo</span></p><p id="p2a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Shorts + long-form + 2 channels</p><ul class="price-features"><li>10 Shorts + 1 long-form/wk per channel</li><li>2 YouTube channels (8 long-form/mo)</li><li>All platforms</li><li>Full agent suite</li><li>AI Learning Loop</li><li>Affiliate programme</li><li>Analytics Engine</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free trial</a></div>
-    <div class="price-card"><p class="price-name">Agency</p><p><span class="price-num" id="p3">$249</span><span class="price-per">/mo</span></p><p id="p3a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">For agencies managing 4 channels</p><ul class="price-features"><li>10 Shorts + 1 long-form/wk per channel</li><li>4 YouTube channels (16 long-form/mo)</li><li>All platforms</li><li>Full agent suite</li><li>Trend Scraper Agent</li><li>White-label ready</li><li>Priority support</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free trial</a></div>
+    <div class="price-card"><p class="price-name">Starter</p><p><span class="price-num" id="p0">$29</span><span class="price-per">/mo</span></p><p id="p0a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Get started with automated Shorts</p><ul class="price-features"><li>3 Shorts per day</li><li>1 YouTube channel</li><li>AI script writing</li><li>6-pass quality layer</li><li>Preview queue</li><li>Niche Engine v2</li><li>Content Planner Agent</li></ul><a class="price-btn price-btn-outline" onclick="isLoggedIn()?startPaddleCheckout('starter'):nav('signup')">Get started</a></div>
+    <div class="price-card featured"><div class="price-badge">Most popular</div><p class="price-name">Shorts Pro</p><p><span class="price-num" id="p1">$69</span><span class="price-per">/mo</span></p><p id="p1a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Full Shorts automation</p><ul class="price-features"><li>7 Shorts per day</li><li>1 YouTube channel</li><li>TikTok + Instagram</li><li>AI optimisation</li><li>Topic Scout Agent</li><li>Competitor Watcher</li><li>Script Research Agent</li></ul><a class="price-btn price-btn-fill" onclick="isLoggedIn()?startPaddleCheckout('shorts_pro'):nav('signup')">Get started</a></div>
+    <div class="price-card"><div class="price-badge" style="background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.25)">Best value</div><p class="price-name">Growth</p><p><span class="price-num" id="p2">$99</span><span class="price-per">/mo</span></p><p id="p2a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Shorts + long-form + 2 channels</p><ul class="price-features"><li>10 Shorts + 1 long-form/wk per channel</li><li>2 YouTube channels (8 long-form/mo)</li><li>All platforms</li><li>Full agent suite</li><li>AI Learning Loop</li><li>Affiliate programme</li><li>Analytics Engine</li></ul><a class="price-btn price-btn-outline" onclick="isLoggedIn()?startPaddleCheckout('growth'):nav('signup')">Get started</a></div>
+    <div class="price-card"><p class="price-name">Agency</p><p><span class="price-num" id="p3">$249</span><span class="price-per">/mo</span></p><p id="p3a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">For agencies managing 4 channels</p><ul class="price-features"><li>10 Shorts + 1 long-form/wk per channel</li><li>4 YouTube channels (16 long-form/mo)</li><li>All platforms</li><li>Full agent suite</li><li>Trend Scraper Agent</li><li>White-label ready</li><li>Priority support</li></ul><a class="price-btn price-btn-outline" onclick="isLoggedIn()?startPaddleCheckout('agency'):nav('signup')">Get started</a></div>
   </div>
   <div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:12px;padding:1rem 1.5rem;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;margin-bottom:2.5rem">
     <span style="font-size:.83rem;color:#6ee7b7;display:flex;align-items:center;gap:7px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> 2-day free trial, no credit card</span>
@@ -994,6 +1024,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="sidebar-section">Growth</div>
   <div class="sidebar-item" onclick="dashPage('health',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Channel Health</div>
   <div class="sidebar-item" onclick="dashPage('affiliate',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Affiliate</div>
+  <div class="sidebar-item" onclick="openBillingModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>Billing</div>
   <div class="sidebar-footer">
     <div class="sidebar-user" onclick="openAccountSettings()">
       <div class="user-av">MA</div>
@@ -1001,6 +1032,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
         <p class="user-name"></p>
         <p class="user-plan"></p>
         <p id="sub-status-pill" style="font-size:.6rem;margin-top:2px"></p>
+        <p id="trial-upgrade-pill" style="display:none;font-size:.6rem;margin-top:3px;cursor:pointer;color:#a5b4fc;text-decoration:underline" onclick="nav('pricing')">Upgrade plan →</p>
         <p class="user-tz" style="font-size:.6rem;color:var(--text3);margin-top:1px"></p>
       </div>
     </div>
@@ -1033,14 +1065,26 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
         <p style="font-size:.7rem;color:#6b7280;margin:0">10 Shorts + long-form · 4 ch</p>
       </div>
     </div>
-    <button onclick="openAccountSettings();document.getElementById('sub-expiry-overlay').style.display='none'"
+    <button onclick="document.getElementById('sub-expiry-overlay').style.display='none';nav('pricing')"
       style="width:100%;padding:12px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;margin-bottom:.75rem">
-      Upgrade now →
+      Choose a plan →
     </button>
     <button onclick="document.getElementById('sub-expiry-overlay').style.display='none'"
       style="width:100%;padding:10px;background:transparent;color:#6b7280;border:1px solid #333;border-radius:8px;font-size:.82rem;cursor:pointer">
       View analytics (read-only)
     </button>
+  </div>
+</div>
+
+<!-- BILLING MODAL -->
+<div class="billing-modal-overlay" id="billing-modal-overlay" onclick="if(event.target===this)closeBillingModal()">
+  <div class="billing-modal">
+    <button class="bm-close" onclick="closeBillingModal()">✕</button>
+    <h2>Account &amp; Billing</h2>
+    <p class="bm-meta" id="bm-email-line">Your Viralityy account</p>
+    <div id="bm-plan-badge-wrap"></div>
+    <div id="bm-rows"></div>
+    <div class="bm-actions" id="bm-actions"></div>
   </div>
 </div>
 
@@ -2563,7 +2607,13 @@ function updateUserUI() {
 
   const plan   = CURRENT_USER.plan || 'trial';
   const status = CURRENT_USER.subscriptionStatus || 'trial';
-  if (planEl) planEl.textContent = _fmtPlanName(plan);
+  if (planEl) {
+    planEl.textContent = _fmtPlanName(plan);
+    planEl.className = `user-plan plan-${plan}`;
+  }
+  // Show "Upgrade plan" link only for trial users
+  const upgradePill = document.getElementById('trial-upgrade-pill');
+  if (upgradePill) upgradePill.style.display = (plan === 'trial') ? 'block' : 'none';
 
   // Update the dashboard overview subtitle with live plan + niche info
   const dashSub = document.querySelector('.dash-subtitle');
@@ -2646,6 +2696,7 @@ async function initDashboard() {
   captureTimezone();
   updateUserUI();
   checkSubscriptionStatus(); // async — updates sidebar pill, gates expired users, triggers onboarding
+  initPaddle();              // async — initializes Paddle.js with client token from backend
   await initOverview();
 }
 
@@ -4403,16 +4454,157 @@ async function copyReferralLink() {
   }
 }
 
-function openAccountSettings() {
-  const user = CURRENT_USER;
-  if (user) {
-    const tzOffset = new Date().toLocaleTimeString('en-GB', { timeZoneName: 'short', timeZone: userTZ }).split(' ').slice(-1)[0] || '';
-    alert('Account: ' + (user.email || user.name || 'Unknown') +
-          '\nPlan: ' + (user.plan || 'trial') +
-          '\nMember since: ' + (user.createdAt ? formatDate(user.createdAt) : 'Unknown') +
-          '\nTimezone: ' + userTZ + (tzOffset ? ' (' + tzOffset + ')' : '') +
-          '\n\nTo change your plan, go to the billing section.');
+// ════════════════════════════════════════════
+// PADDLE BILLING — init + checkout + modal
+// ════════════════════════════════════════════
+let _paddleReady = false;
+
+async function initPaddle() {
+  if (_paddleReady || typeof Paddle === 'undefined') return;
+  try {
+    const cfg = await apiCall('/api/billing/config');
+    if (!cfg?.clientToken) return;
+    if (cfg.environment !== 'production') {
+      Paddle.Environment.set('sandbox');
+    }
+    Paddle.Initialize({
+      token: cfg.clientToken,
+      eventCallback: function(event) {
+        if (event.name === 'checkout.completed') {
+          toast('Payment successful! Your plan is being activated…', 'success');
+          setTimeout(() => checkSubscriptionStatus(), 3000);
+        }
+      },
+    });
+    _paddleReady = true;
+  } catch (err) {
+    console.warn('[Paddle] Init failed:', err.message);
   }
+}
+
+async function startPaddleCheckout(planId) {
+  if (!isLoggedIn()) { nav('signup'); return; }
+  if (!_paddleReady) await initPaddle();
+  if (typeof Paddle === 'undefined' || !_paddleReady) {
+    toast('Checkout is not available. Please try again.', 'error');
+    return;
+  }
+  try {
+    const data = await apiCall('/api/billing/create-checkout', 'POST', { planId });
+    if (data?.error) { toast(data.error, 'error'); return; }
+    Paddle.Checkout.open({
+      items: [{ priceId: data.priceId, quantity: 1 }],
+      customData: data.customData,
+      customer: { email: CURRENT_USER?.email || '' },
+    });
+  } catch (err) {
+    toast('Failed to open checkout: ' + err.message, 'error');
+  }
+}
+
+function openAccountSettings() { openBillingModal(); }
+
+async function openBillingModal() {
+  const overlay = document.getElementById('billing-modal-overlay');
+  if (!overlay) return;
+  overlay.classList.add('open');
+
+  const user   = CURRENT_USER;
+  const plan   = user?.plan   || 'trial';
+  const status = user?.subscriptionStatus || 'trial';
+
+  // Email
+  const emailEl = document.getElementById('bm-email-line');
+  if (emailEl) emailEl.textContent = user?.email || 'Your Viralityy account';
+
+  // Plan badge
+  const planNames = { trial: 'Free Trial', starter: 'Starter', shorts_pro: 'Shorts Pro', growth: 'Growth', agency: 'Agency' };
+  const badgeWrap = document.getElementById('bm-plan-badge-wrap');
+  if (badgeWrap) {
+    badgeWrap.innerHTML = `<div class="bm-plan-badge ${plan}">${planNames[plan] || plan}</div>`;
+  }
+
+  // Fetch fresh billing data
+  let billing = null;
+  try { billing = await apiCall('/api/billing/subscription'); } catch {}
+
+  // Rows
+  const rowsEl = document.getElementById('bm-rows');
+  const fmt    = iso => iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  const planPrices = { trial: '$0', starter: '$29/mo', shorts_pro: '$69/mo', growth: '$99/mo', agency: '$249/mo' };
+  let rows = '';
+  rows += `<div class="bm-row"><span class="bm-label">Plan</span><span class="bm-val">${planNames[plan] || plan}</span></div>`;
+  rows += `<div class="bm-row"><span class="bm-label">Price</span><span class="bm-val">${planPrices[plan] || '—'}</span></div>`;
+  rows += `<div class="bm-row"><span class="bm-label">Status</span><span class="bm-val" style="text-transform:capitalize">${status.replace('_',' ')}</span></div>`;
+  if (status === 'trial') {
+    const trialEnd = billing?.trialEndsAt || user?.trialEndsAt;
+    rows += `<div class="bm-row"><span class="bm-label">Trial ends</span><span class="bm-val">${fmt(trialEnd)}</span></div>`;
+  } else if (billing?.subscriptionRenewsAt || billing?.subscriptionEndDate) {
+    const renewDate = billing.subscriptionRenewsAt || billing.subscriptionEndDate;
+    const label = status === 'cancelled' ? 'Access until' : 'Renews';
+    rows += `<div class="bm-row"><span class="bm-label">${label}</span><span class="bm-val">${fmt(renewDate)}</span></div>`;
+  }
+  if (rowsEl) rowsEl.innerHTML = rows;
+
+  // Action buttons
+  const actionsEl = document.getElementById('bm-actions');
+  let btns = '';
+  if (status === 'trial' || plan === 'trial') {
+    btns += `<button class="bm-btn bm-btn-primary" onclick="closeBillingModal();nav('pricing')">Choose a plan →</button>`;
+  } else if (status === 'active') {
+    btns += `<button class="bm-btn bm-btn-ghost" onclick="closeBillingModal();nav('pricing')">Upgrade plan</button>`;
+    btns += `<button class="bm-btn bm-btn-ghost" onclick="openPaddlePortal()">Manage payment method</button>`;
+    btns += `<button class="bm-btn bm-btn-danger" onclick="confirmCancelSubscription()">Cancel subscription</button>`;
+  } else if (status === 'cancelled') {
+    btns += `<button class="bm-btn bm-btn-green" onclick="resumeSubscription()">Resume subscription</button>`;
+    btns += `<button class="bm-btn bm-btn-ghost" onclick="openPaddlePortal()">Manage payment method</button>`;
+  } else if (status === 'past_due') {
+    btns += `<button class="bm-btn bm-btn-primary" onclick="openPaddlePortal()">Update payment method</button>`;
+  } else if (status === 'expired') {
+    btns += `<button class="bm-btn bm-btn-primary" onclick="closeBillingModal();nav('pricing')">Resubscribe →</button>`;
+  }
+  btns += `<button class="bm-btn bm-btn-ghost" onclick="closeBillingModal()">Close</button>`;
+  if (actionsEl) actionsEl.innerHTML = btns;
+}
+
+function closeBillingModal() {
+  const overlay = document.getElementById('billing-modal-overlay');
+  if (overlay) overlay.classList.remove('open');
+}
+
+async function openPaddlePortal() {
+  try {
+    const data = await apiCall('/api/billing/portal');
+    if (data?.portalUrl) window.open(data.portalUrl, '_blank', 'noopener');
+    else toast('Portal not available', 'error');
+  } catch { toast('Could not open billing portal', 'error'); }
+}
+
+async function confirmCancelSubscription() {
+  if (!confirm('Cancel your subscription? You will keep access until the end of the current billing period.')) return;
+  try {
+    const data = await apiCall('/api/billing/cancel', 'POST');
+    if (data?.success) {
+      toast('Subscription cancelled. Access continues until period end.', 'info');
+      if (CURRENT_USER) { CURRENT_USER.subscriptionStatus = 'cancelled'; updateUserUI(); }
+      closeBillingModal();
+    } else {
+      toast(data?.error || 'Failed to cancel subscription', 'error');
+    }
+  } catch (err) { toast('Cancel failed: ' + err.message, 'error'); }
+}
+
+async function resumeSubscription() {
+  try {
+    const data = await apiCall('/api/billing/resume', 'POST');
+    if (data?.success) {
+      toast('Subscription resumed!', 'success');
+      if (CURRENT_USER) { CURRENT_USER.subscriptionStatus = 'active'; updateUserUI(); }
+      closeBillingModal();
+    } else {
+      toast(data?.error || 'Failed to resume subscription', 'error');
+    }
+  } catch (err) { toast('Resume failed: ' + err.message, 'error'); }
 }
 
 // ════════════════════════════════════════════

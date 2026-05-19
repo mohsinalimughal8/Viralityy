@@ -315,6 +315,16 @@ async function runStartupSlotCheck() {
     console.log(`[Startup] GOOGLE_TTS_API_KEY:    ${process.env.GOOGLE_TTS_API_KEY    ? 'SET' : 'MISSING ⚠'}`);
     console.log('[AutoPost Audit] ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? 'SET' : 'MISSING ⚠');
     console.log('[AutoPost Audit] ADMIN_PASSWORD:', process.env.ADMIN_PASSWORD ? 'SET' : 'MISSING ⚠');
+    const paddleEnv = process.env.PADDLE_ENV || 'sandbox';
+    console.log(`[Startup] PADDLE_ENV:               ${paddleEnv}`);
+    console.log(`[Startup] PADDLE_API_KEY:           ${process.env.PADDLE_API_KEY           ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[Startup] PADDLE_CLIENT_TOKEN:      ${process.env.PADDLE_CLIENT_TOKEN      ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[Startup] PADDLE_WEBHOOK_SECRET:    ${process.env.PADDLE_WEBHOOK_SECRET    ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[Startup] PADDLE_STARTER_PRICE_ID:  ${process.env.PADDLE_STARTER_PRICE_ID  ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[Startup] PADDLE_SHORTSPRO_PRICE_ID:${process.env.PADDLE_SHORTSPRO_PRICE_ID ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[Startup] PADDLE_GROWTH_PRICE_ID:   ${process.env.PADDLE_GROWTH_PRICE_ID   ? 'SET' : 'MISSING ⚠'}`);
+    console.log(`[Startup] PADDLE_AGENCY_PRICE_ID:   ${process.env.PADDLE_AGENCY_PRICE_ID   ? 'SET' : 'MISSING ⚠'}`);
+
 
     // Reset any slots that were stuck mid-pipeline when the server went down.
     // Never pre-generate or run any pipeline at startup.
@@ -423,6 +433,8 @@ const userSchema = new mongoose.Schema({
   subscriptionRenewsAt:   { type: Date },
   lemonSqueezyCustomerId:     { type: String },
   lemonSqueezySubscriptionId: { type: String },
+  paddleCustomerId:           { type: String },
+  paddleSubscriptionId:       { type: String },
   billingHistory: [{ date: Date, amount: Number, plan: String, status: String, invoiceId: String }],
   youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, thumbnailsEnabled: Boolean, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date, styleConfig: { captionFont: String, colorScheme: String, musicGenre: String, introText: String } }],
   pendingOAuthChannels: [{ channelId: String, channelName: String, thumbnail: String, subscriberCount: Number }],
@@ -776,11 +788,11 @@ async function checkYoutubeQuota(unitsNeeded, userId) {
 }
 
 const PLAN_CONFIG = {
-  trial:      { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 0 },
-  starter:    { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 29 },
-  shorts_pro: { videosPerDay: 7,  shortsPerDay: 7,  longFormPerWeek: 0, channels: 1, price: 69 },
-  growth:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 2, price: 99 },
-  agency:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 4, price: 249 },
+  trial:      { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 0,   paddlePriceId: null },
+  starter:    { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 29,  paddlePriceId: process.env.PADDLE_STARTER_PRICE_ID   || null },
+  shorts_pro: { videosPerDay: 7,  shortsPerDay: 7,  longFormPerWeek: 0, channels: 1, price: 69,  paddlePriceId: process.env.PADDLE_SHORTSPRO_PRICE_ID || null },
+  growth:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 2, price: 99,  paddlePriceId: process.env.PADDLE_GROWTH_PRICE_ID    || null },
+  agency:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 4, price: 249, paddlePriceId: process.env.PADDLE_AGENCY_PRICE_ID    || null },
 };
 
 function planNicheQuota(plan) {
@@ -1340,205 +1352,290 @@ app.get('/api/niche/status', requireAuth, async (req, res) => {
 });
 
 // =============================================================================
-// STRIPE BILLING ROUTES
+// PADDLE BILLING ROUTES
 // =============================================================================
-const STRIPE_PLANS = {
-  starter_monthly:    process.env.STRIPE_PRICE_STARTER_MONTHLY,
-  starter_annual:     process.env.STRIPE_PRICE_STARTER_ANNUAL,
-  shorts_pro_monthly: process.env.STRIPE_PRICE_SHORTS_PRO_MONTHLY,
-  shorts_pro_annual:  process.env.STRIPE_PRICE_SHORTS_PRO_ANNUAL,
-  growth_monthly:     process.env.STRIPE_PRICE_GROWTH_MONTHLY,
-  growth_annual:      process.env.STRIPE_PRICE_GROWTH_ANNUAL,
-  agency_monthly:     process.env.STRIPE_PRICE_AGENCY_MONTHLY,
-  agency_annual:      process.env.STRIPE_PRICE_AGENCY_ANNUAL,
-};
 
-// POST /api/billing/checkout — create Stripe checkout session
-app.post('/api/billing/checkout', requireAuth, async (req, res) => {
+const PADDLE_BASE       = process.env.PADDLE_ENV === 'production' ? 'https://api.paddle.com' : 'https://sandbox-api.paddle.com';
+const PADDLE_LOG_PREFIX = process.env.PADDLE_ENV === 'production' ? '[Paddle]' : '[Paddle Sandbox]';
+
+// Paddle API helper — uses axios already present in the codebase
+async function paddleApi(method, path, body = null) {
+  const key = process.env.PADDLE_API_KEY;
+  if (!key) throw new Error('PADDLE_API_KEY is not set in environment variables');
+  const opts = {
+    method,
+    url: `${PADDLE_BASE}${path}`,
+    headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+  };
+  if (body !== null) opts.data = body;
+  const res = await axios(opts);
+  return res.data;
+}
+
+// Resolve plan name from Paddle price ID
+function planFromPaddlePriceId(priceId) {
+  if (!priceId) return null;
+  for (const [plan, cfg] of Object.entries(PLAN_CONFIG)) {
+    if (cfg.paddlePriceId && cfg.paddlePriceId === priceId) return plan;
+  }
+  return null;
+}
+
+// Verify Paddle webhook signature (HMAC-SHA256, header: ts=...;h1=...)
+function verifyPaddleWebhook(rawBody, signatureHeader) {
+  const secret = process.env.PADDLE_WEBHOOK_SECRET;
+  if (!secret || !signatureHeader) return false;
   try {
-    const { planKey } = req.body; // e.g. 'growth_monthly'
-    const priceId = STRIPE_PLANS[planKey];
-    if (!priceId) return res.status(400).json({ error: `Unknown plan: ${planKey}` });
+    const ts      = signatureHeader.split(';').find(p => p.startsWith('ts='))?.slice(3);
+    const h1      = signatureHeader.split(';').find(p => p.startsWith('h1='))?.slice(3);
+    if (!ts || !h1) return false;
+    const expected = crypto.createHmac('sha256', secret).update(`${ts}:${rawBody}`).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(h1, 'hex'));
+  } catch { return false; }
+}
 
-    const user = await User.findById(req.user.id);
-    let customerId = user.stripeCustomerId;
+// GET /api/billing/config — public: Paddle client token + env for frontend init
+app.get('/api/billing/config', (req, res) => {
+  res.json({
+    clientToken: process.env.PADDLE_CLIENT_TOKEN || '',
+    environment: process.env.PADDLE_ENV          || 'sandbox',
+  });
+});
 
-    if (!customerId) {
-      const customer = await stripe.customers.create({ email: user.email, name: user.name, metadata: { userId: user.id } });
-      customerId = customer.id;
-      user.stripeCustomerId = customerId;
-      await user.save();
-    }
+// GET /api/billing/plans — public: all plan details with prices
+app.get('/api/billing/plans', (req, res) => {
+  const plans = Object.entries(PLAN_CONFIG).map(([id, cfg]) => ({
+    id,
+    price:                     cfg.price,
+    videosPerDayPerChannel:    cfg.shortsPerDay,
+    maxChannels:               cfg.channels,
+    longformPerWeekPerChannel: cfg.longFormPerWeek,
+    paddlePriceId:             cfg.paddlePriceId || null,
+  }));
+  res.json({ plans });
+});
 
-    const session = await stripe.checkout.sessions.create({
-      customer:   customerId,
-      mode:       'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.APP_URL}/dashboard?subscribed=1`,
-      cancel_url:  `${process.env.APP_URL}/pricing`,
-      metadata:   { userId: user.id, planKey },
+// GET /api/billing/subscription — user's current billing status
+app.get('/api/billing/subscription', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).lean();
+    const cfg  = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
+    res.json({
+      plan:                 user.plan,
+      planPrice:            cfg.price,
+      subscriptionStatus:   user.subscriptionStatus || 'trial',
+      subscriptionEndDate:  user.subscriptionEndDate  || null,
+      subscriptionRenewsAt: user.subscriptionRenewsAt || null,
+      trialEndsAt:          user.trialEndsAt           || null,
+      paddleSubscriptionId: user.paddleSubscriptionId  || null,
+      paddleCustomerId:     user.paddleCustomerId       || null,
     });
-
-    res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/billing/portal — customer portal for managing subscription
-app.post('/api/billing/portal', requireAuth, async (req, res) => {
+// POST /api/billing/create-checkout — returns priceId + customData for Paddle.js overlay
+app.post('/api/billing/create-checkout', requireAuth, async (req, res) => {
+  try {
+    const { planId } = req.body;
+    const cfg = PLAN_CONFIG[planId];
+    if (!cfg || !cfg.paddlePriceId) {
+      return res.status(400).json({ error: `Unknown plan or Paddle price not configured: ${planId}` });
+    }
+    console.log(`${PADDLE_LOG_PREFIX} Checkout initiated — user ${req.user.id} → ${planId} (${cfg.paddlePriceId})`);
+    res.json({
+      priceId:    cfg.paddlePriceId,
+      customData: { userId: String(req.user.id), planId },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/billing/cancel — cancel subscription at period end via Paddle API
+app.post('/api/billing/cancel', requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    if (!user.stripeCustomerId) return res.status(400).json({ error: 'No billing account found' });
-    const session = await stripe.billingPortal.sessions.create({ customer: user.stripeCustomerId, return_url: `${process.env.APP_URL}/dashboard` });
-    res.json({ url: session.url });
+    if (!user.paddleSubscriptionId) {
+      return res.status(400).json({ error: 'No active Paddle subscription found on this account' });
+    }
+    const data = await paddleApi('PATCH', `/subscriptions/${user.paddleSubscriptionId}`, {
+      scheduled_change: { action: 'cancel', effective_at: 'next_billing_period' },
+    });
+    await User.findByIdAndUpdate(req.user.id, { subscriptionStatus: 'cancelled' });
+    console.log(`${PADDLE_LOG_PREFIX} Subscription cancellation scheduled — user ${user.email}`);
+    res.json({ success: true, message: 'Subscription will cancel at the end of the current billing period', data: data?.data || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/billing/promo — promo code plan upgrade bypass
+// POST /api/billing/resume — remove scheduled cancellation to resume subscription
+app.post('/api/billing/resume', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user.paddleSubscriptionId) {
+      return res.status(400).json({ error: 'No Paddle subscription found on this account' });
+    }
+    const data = await paddleApi('PATCH', `/subscriptions/${user.paddleSubscriptionId}`, {
+      scheduled_change: null,
+    });
+    await User.findByIdAndUpdate(req.user.id, { subscriptionStatus: 'active' });
+    console.log(`${PADDLE_LOG_PREFIX} Subscription resumed — user ${user.email}`);
+    res.json({ success: true, message: 'Subscription resumed successfully', data: data?.data || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/billing/portal — Paddle customer portal URL for managing payment methods
+app.get('/api/billing/portal', requireAuth, async (req, res) => {
+  try {
+    const user       = await User.findById(req.user.id).lean();
+    const portalBase = process.env.PADDLE_ENV === 'production'
+      ? 'https://customer.paddle.com'
+      : 'https://sandbox-customer.paddle.com';
+    const portalUrl  = `${portalBase}/?email=${encodeURIComponent(user.email)}`;
+    res.json({ portalUrl });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/billing/promo — internal promo code bypass (VRL-X9K2-M7QP-4TZW)
 app.post('/api/billing/promo', requireAuth, async (req, res) => {
   try {
     const { promoCode, plan } = req.body;
-    const validPlans = ['shorts_pro', 'growth', 'agency'];
+    const validPlans = ['starter', 'shorts_pro', 'growth', 'agency'];
     if (promoCode !== 'VRL-X9K2-M7QP-4TZW') return res.status(400).json({ success: false, error: 'Invalid promo code' });
     if (!validPlans.includes(plan)) return res.status(400).json({ success: false, error: 'Invalid plan' });
-    const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year from now
     await User.findByIdAndUpdate(req.user.id, {
       plan,
-      planUpdatedAt:        new Date(),
-      subscriptionStatus:   'active',
+      planUpdatedAt:         new Date(),
+      subscriptionStatus:    'active',
       subscriptionStartDate: new Date(),
-      subscriptionEndDate:  endDate,
-      subscriptionRenewsAt: endDate,
+      subscriptionEndDate:   endDate,
+      subscriptionRenewsAt:  endDate,
     });
+    console.log(`[Promo] User ${req.user.id} upgraded to ${plan} via promo code (expires ${endDate.toISOString()})`);
     res.json({ success: true, plan, subscriptionStatus: 'active', subscriptionEndDate: endDate });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// POST /webhooks/stripe — Stripe event handler (raw body required)
-app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
+// POST /api/paddle/webhook — Paddle webhook handler (raw body for signature verification)
+// Responds 200 immediately then processes asynchronously
+app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) => {
+  res.status(200).json({ received: true }); // Acknowledge before processing
 
-  const planFromMetadata = (metadata) => {
-    const key = metadata?.planKey || '';
-    if (key.startsWith('starter'))    return 'starter';
-    if (key.startsWith('shorts_pro')) return 'shorts_pro';
-    if (key.startsWith('growth'))     return 'growth';
-    if (key.startsWith('agency'))     return 'agency';
-    return 'starter';
-  };
+  const sig     = req.headers['paddle-signature'];
+  const rawBody = req.body?.toString('utf8') || '';
 
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object;
-        const userId  = session.metadata?.userId;
-        if (userId) {
-          const planName = planFromMetadata(session.metadata);
-          await User.findByIdAndUpdate(userId, { plan: planName, stripeSubscriptionId: session.subscription, stripeCustomerId: session.customer });
-          console.log(`User ${userId} subscribed to ${planName}`);
-        }
-        break;
-      }
-      case 'customer.subscription.deleted': {
-        const sub = event.data.object;
-        const user = await User.findOne({ stripeSubscriptionId: sub.id });
-        if (user) { user.plan = 'trial'; user.stripeSubscriptionId = null; await user.save(); }
-        break;
-      }
-      case 'invoice.payment_failed': {
-        const invoice = event.data.object;
-        const user = await User.findOne({ stripeCustomerId: invoice.customer });
-        if (user) console.log(`Payment failed for user ${user.email}`);
-        break;
-      }
-    }
-    res.json({ received: true });
-  } catch (err) { console.error('Webhook handler error:', err); res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/billing/webhook — LemonSqueezy webhook handler (ready for billing integration)
-app.post('/api/billing/webhook', express.json(), async (req, res) => {
-  const event = req.body;
-  const eventName = event?.meta?.event_name || 'unknown';
-  console.log(`[LemonSqueezy] Webhook: ${eventName}`);
-
-  try {
-    const attrs    = event?.data?.attributes || {};
-    const userId   = event?.meta?.custom_data?.userId || null;
-    const lsSubId  = event?.data?.id || null;
-    const lsCustId = attrs.customer_id ? String(attrs.customer_id) : null;
-    const planKey  = event?.meta?.custom_data?.planKey || '';
-    const plan     = (['starter','shorts_pro','growth','agency'].includes(planKey)) ? planKey : 'starter';
-
-    switch (eventName) {
-      case 'subscription_created': {
-        if (userId) {
-          const endDate = attrs.ends_at ? new Date(attrs.ends_at) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          await User.findByIdAndUpdate(userId, {
-            plan,
-            subscriptionStatus:         'active',
-            subscriptionStartDate:      new Date(),
-            subscriptionEndDate:        endDate,
-            subscriptionRenewsAt:       endDate,
-            lemonSqueezySubscriptionId: lsSubId,
-            lemonSqueezyCustomerId:     lsCustId,
-          });
-          console.log(`[LemonSqueezy] subscription_created — user ${userId} → ${plan}`);
-        }
-        break;
-      }
-      case 'subscription_renewed': {
-        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
-        if (user) {
-          const endDate = attrs.ends_at ? new Date(attrs.ends_at) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          const histEntry = { date: new Date(), amount: (attrs.total || 0) / 100, plan: user.plan, status: 'paid', invoiceId: attrs.order_id ? String(attrs.order_id) : null };
-          await User.findByIdAndUpdate(user._id, {
-            subscriptionStatus:   'active',
-            subscriptionEndDate:  endDate,
-            subscriptionRenewsAt: endDate,
-            $push: { billingHistory: histEntry },
-          });
-          console.log(`[LemonSqueezy] subscription_renewed — user ${user.email}`);
-        }
-        break;
-      }
-      case 'subscription_cancelled': {
-        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
-        if (user) {
-          // Access continues until subscriptionEndDate
-          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'cancelled' });
-          console.log(`[LemonSqueezy] subscription_cancelled — user ${user.email} (access until ${user.subscriptionEndDate})`);
-        }
-        break;
-      }
-      case 'subscription_expired': {
-        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
-        if (user) {
-          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired', plan: 'trial' });
-          console.log(`[LemonSqueezy] subscription_expired — user ${user.email}`);
-        }
-        break;
-      }
-      case 'subscription_payment_failed': {
-        const user = userId ? await User.findById(userId).lean() : await User.findOne({ lemonSqueezySubscriptionId: lsSubId }).lean();
-        if (user) {
-          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'past_due' });
-          agentCol('adminAlerts').insertOne({ type: 'payment_failed', userEmail: user.email, userId: String(user._id), timestamp: new Date().toISOString(), resolved: false }).catch(() => {});
-          console.log(`[LemonSqueezy] payment_failed — user ${user.email} → past_due`);
-        }
-        break;
-      }
-      default:
-        console.log(`[LemonSqueezy] Unhandled event: ${eventName}`);
-    }
-  } catch (err) {
-    console.error('[LemonSqueezy] Webhook handler error:', err.message);
+  if (!verifyPaddleWebhook(rawBody, sig)) {
+    console.warn(`${PADDLE_LOG_PREFIX} ⚠ Webhook signature verification FAILED — payload ignored`);
+    return;
   }
 
-  res.status(200).json({ received: true });
+  let event;
+  try { event = JSON.parse(rawBody); } catch { console.warn(`${PADDLE_LOG_PREFIX} Webhook JSON parse error`); return; }
+
+  const eventType  = event.event_type || 'unknown';
+  const data       = event.data        || {};
+  const customData = data.custom_data  || {};
+  const userId     = customData.userId || null;
+
+  console.log(`${PADDLE_LOG_PREFIX} Webhook received: ${eventType} | userId: ${userId || 'N/A'} | subId: ${data.id || 'N/A'}`);
+
+  try {
+    switch (eventType) {
+
+      case 'subscription.created': {
+        const priceId = data.items?.[0]?.price?.id || null;
+        const plan    = planFromPaddlePriceId(priceId) || customData.planId || 'starter';
+        const endDate = data.next_billed_at
+          ? new Date(data.next_billed_at)
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        if (userId) {
+          await User.findByIdAndUpdate(userId, {
+            plan,
+            subscriptionStatus:    'active',
+            subscriptionStartDate: new Date(),
+            subscriptionEndDate:   endDate,
+            subscriptionRenewsAt:  endDate,
+            paddleSubscriptionId:  data.id            || null,
+            paddleCustomerId:      data.customer_id   || null,
+          });
+          console.log(`${PADDLE_LOG_PREFIX} subscription.created ✓ — user ${userId} → ${plan} (renews ${endDate.toISOString().slice(0,10)})`);
+        } else {
+          console.warn(`${PADDLE_LOG_PREFIX} subscription.created — no userId in customData`);
+        }
+        break;
+      }
+
+      case 'subscription.updated': {
+        const priceId   = data.items?.[0]?.price?.id || null;
+        const newPlan   = planFromPaddlePriceId(priceId);
+        const endDate   = data.next_billed_at ? new Date(data.next_billed_at) : null;
+        const statusMap = { active: 'active', past_due: 'past_due', canceled: 'cancelled', trialing: 'trial', paused: 'cancelled' };
+        const newStatus = statusMap[data.status] || 'active';
+        const user      = userId
+          ? await User.findById(userId).lean()
+          : await User.findOne({ paddleSubscriptionId: data.id }).lean();
+        if (user) {
+          const update = { subscriptionStatus: newStatus };
+          if (newPlan) update.plan = newPlan;
+          if (endDate) { update.subscriptionEndDate = endDate; update.subscriptionRenewsAt = endDate; }
+          await User.findByIdAndUpdate(user._id, update);
+          console.log(`${PADDLE_LOG_PREFIX} subscription.updated ✓ — user ${user.email} → status:${newStatus}${newPlan ? ' plan:'+newPlan : ''}`);
+        }
+        break;
+      }
+
+      case 'subscription.canceled': {
+        const endAt = data.scheduled_change?.effective_at
+          || data.current_billing_period?.ends_at
+          || null;
+        const endDate = endAt ? new Date(endAt) : null;
+        const user    = userId
+          ? await User.findById(userId).lean()
+          : await User.findOne({ paddleSubscriptionId: data.id }).lean();
+        if (user) {
+          const update = { subscriptionStatus: 'cancelled' };
+          if (endDate) update.subscriptionEndDate = endDate;
+          await User.findByIdAndUpdate(user._id, update);
+          console.log(`${PADDLE_LOG_PREFIX} subscription.canceled ✓ — user ${user.email} (access until ${endDate?.toISOString().slice(0,10) || 'unknown'})`);
+        }
+        break;
+      }
+
+      case 'subscription.past_due': {
+        const user = userId
+          ? await User.findById(userId).lean()
+          : await User.findOne({ paddleSubscriptionId: data.id }).lean();
+        if (user) {
+          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'past_due' });
+          agentCol('adminAlerts').insertOne({
+            type: 'paddle_payment_failed', userEmail: user.email,
+            userId: String(user._id), timestamp: new Date().toISOString(), resolved: false,
+          }).catch(() => {});
+          console.warn(`${PADDLE_LOG_PREFIX} subscription.past_due ⚠ — user ${user.email}`);
+        }
+        break;
+      }
+
+      case 'transaction.completed': {
+        const user = userId
+          ? await User.findById(userId).lean()
+          : data.customer_id
+            ? await User.findOne({ paddleCustomerId: data.customer_id }).lean()
+            : null;
+        if (user) {
+          const amount = (data.details?.totals?.grand_total || 0) / 100;
+          await User.findByIdAndUpdate(user._id, {
+            $push: { billingHistory: { date: new Date(), amount, plan: user.plan, status: 'paid', invoiceId: data.id || null } },
+          });
+          console.log(`${PADDLE_LOG_PREFIX} transaction.completed ✓ — user ${user.email} $${amount.toFixed(2)}`);
+        }
+        break;
+      }
+
+      default:
+        console.log(`${PADDLE_LOG_PREFIX} Unhandled event type: ${eventType}`);
+    }
+  } catch (err) {
+    console.error(`${PADDLE_LOG_PREFIX} Webhook handler error [${eventType}]:`, err.message);
+  }
 });
 
 // =============================================================================
