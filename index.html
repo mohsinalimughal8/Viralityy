@@ -452,7 +452,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .lb-bar-fill{height:100%;border-radius:2px;transition:width .4s ease}
 
 /* LEGAL PAGES */
-#page-privacy,#page-terms,#page-cookies{background:var(--bg)}
+#page-privacy,#page-terms,#page-cookies,#page-refund{background:var(--bg)}
 .legal-layout{max-width:720px;margin:0 auto;padding:calc(var(--nav-h) + 3rem) 1.5rem 4rem}
 .legal-layout h1{font-family:'DM Serif Display',serif;font-size:2rem;font-weight:400;letter-spacing:-.02em;margin-bottom:.5rem}
 .legal-meta{font-size:.72rem;color:var(--text3);margin-bottom:2rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}
@@ -744,11 +744,11 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <div><div class="logo" onclick="nav('home')" style="margin-bottom:.5rem"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div><p class="footer-brand-desc">Automated YouTube channel growth. AI creates, posts and optimises your content every day.</p></div>
       <div class="footer-col"><h4>Product</h4><a onclick="nav('home')">Features</a><a onclick="nav('pricing')">Pricing</a><a onclick="nav('signup')">Get started free</a></div>
       <div class="footer-col"><h4>Account</h4><a onclick="nav('signup')">Sign up</a><a onclick="nav('login')">Sign in</a><a onclick="nav('reset')">Forgot password</a></div>
-      <div class="footer-col"><h4>Legal</h4><a onclick="nav('privacy')">Privacy policy</a><a onclick="nav('terms')">Terms of service</a><a onclick="nav('cookies')">Cookie policy</a></div>
+      <div class="footer-col"><h4>Legal</h4><a onclick="nav('privacy')">Privacy policy</a><a onclick="nav('terms')">Terms of service</a><a onclick="nav('refund')">Refund policy</a><a onclick="nav('cookies')">Cookie policy</a></div>
     </div>
     <div class="footer-bottom">
       <p>© 2025 Viralityy. All rights reserved.</p>
-      <div class="footer-links"><a onclick="nav('privacy')">Privacy</a><a onclick="nav('terms')">Terms</a><a onclick="nav('cookies')">Cookies</a></div>
+      <div class="footer-links"><a onclick="nav('privacy')">Privacy</a><a onclick="nav('terms')">Terms</a><a onclick="nav('refund')">Refunds</a><a onclick="nav('cookies')">Cookies</a></div>
     </div>
   </div>
 </footer>
@@ -773,7 +773,8 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   </div>
 </div>
 <div class="pricing-wrap">
-  <div id="feat-pricing" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:2rem">
+  <div id="feat-pricing" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:2rem">
+    <div class="price-card"><div class="price-badge" style="background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.2)">Free trial</div><p class="price-name">Trial</p><p><span class="price-num">$0</span><span class="price-per">&nbsp;/ 2 days</span></p><p class="price-desc">Try Viralityy — no credit card</p><ul class="price-features"><li>3 Shorts per day</li><li>1 YouTube channel</li><li>AI scripts, voiceover, thumbnails</li><li>Auto-posting at optimal times</li><li>No credit card required</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free</a></div>
     <div class="price-card"><p class="price-name">Starter</p><p><span class="price-num" id="p0">$29</span><span class="price-per">/mo</span></p><p id="p0a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Get started with automated Shorts</p><ul class="price-features"><li>3 Shorts per day</li><li>1 YouTube channel</li><li>AI script writing</li><li>6-pass quality layer</li><li>Preview queue</li><li>Niche Engine v2</li><li>Content Planner Agent</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free trial</a></div>
     <div class="price-card featured"><div class="price-badge">Most popular</div><p class="price-name">Shorts Pro</p><p><span class="price-num" id="p1">$69</span><span class="price-per">/mo</span></p><p id="p1a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Full Shorts automation</p><ul class="price-features"><li>7 Shorts per day</li><li>1 YouTube channel</li><li>TikTok + Instagram</li><li>AI optimisation</li><li>Topic Scout Agent</li><li>Competitor Watcher</li><li>Script Research Agent</li></ul><a class="price-btn price-btn-fill" onclick="nav('signup')">Start free trial</a></div>
     <div class="price-card"><div class="price-badge" style="background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.25)">Best value</div><p class="price-name">Growth</p><p><span class="price-num" id="p2">$99</span><span class="price-per">/mo</span></p><p id="p2a" style="font-size:.7rem;color:var(--green);min-height:16px"></p><p class="price-desc">Shorts + long-form + 2 channels</p><ul class="price-features"><li>10 Shorts + 1 long-form/wk per channel</li><li>2 YouTube channels (8 long-form/mo)</li><li>All platforms</li><li>Full agent suite</li><li>AI Learning Loop</li><li>Affiliate programme</li><li>Analytics Engine</li></ul><a class="price-btn price-btn-outline" onclick="nav('signup')">Start free trial</a></div>
@@ -1476,30 +1477,153 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="site-page" id="page-privacy">
 <nav class="mkt-nav"><div class="logo" onclick="nav('home')"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div><div class="nav-right"><a class="btn btn-ghost btn-sm" onclick="nav('home')">← Back to home</a></div></nav>
 <div class="legal-layout">
-  <h1>Privacy Policy</h1><p class="legal-meta">Last updated: 1 May 2025 · Effective: 1 May 2025</p>
-  <h2>1. Overview</h2><p>Viralityy operates an automated YouTube content creation and publishing platform. This Privacy Policy explains how we collect, use, store and share your personal information when you use our website and dashboard application.</p>
-  <h2>2. Data we collect</h2><p>We collect account information (name, email, hashed password), YouTube channel data via Google OAuth (channel name, ID, video performance metrics, OAuth tokens encrypted at rest), usage data (dashboard interactions, video generation logs, hashed IP addresses), and content data (AI-generated scripts, your edit requests and preview queue decisions).</p>
-  <h2>3. How we use your data</h2><p>We use your data to deliver the service, optimise AI content generation, process payments via Stripe, send transactional emails, and prevent fraud. We do not use your data for advertising and we do not sell your personal data.</p>
-  <h2>4. YouTube API compliance</h2><p>Viralityy uses YouTube Data API v3. Our use complies with the Google API Services User Data Policy, including Limited Use requirements. We only use YouTube data to provide and improve the Viralityy service. You can revoke access at any time via your <a href="https://myaccount.google.com/permissions" style="color:#a5b4fc">Google Account permissions page</a>.</p>
-  <h2>5. Security</h2><p>All data transmitted over HTTPS/TLS. Passwords hashed with bcrypt. OAuth tokens encrypted at rest with AES-256. IP addresses stored as one-way SHA-256 hashes with a rotating salt.</p>
-  <h2>6. Your rights</h2><p>You may request access, correction, deletion, portability, or restriction of your personal data at any time. Email <strong>privacy@viralityy.com</strong>. We respond within 30 days.</p>
-  <h2>7. Contact</h2><p>Privacy questions: <strong>privacy@viralityy.com</strong></p>
+  <h1>Privacy Policy</h1>
+  <p class="legal-meta">Effective Date: 20 May 2026 &nbsp;·&nbsp; Last Updated: 20 May 2026</p>
+
+  <h2>1. Introduction</h2>
+  <p>Viralityy ("we", "us", "our") is committed to protecting the privacy of everyone who uses our platform. This Privacy Policy explains clearly what personal data we collect, why we collect it, how we use it, and how we protect it. We do not sell user data to any third party, ever.</p>
+
+  <h2>2. Data Controller</h2>
+  <p>Viralityy operates as the data controller for personal data processed through this platform. For all privacy-related inquiries, contact us at: <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a></p>
+
+  <h2>3. What Data We Collect and Why</h2>
+  <p><strong>a) Account Data</strong> — collected at signup: full name, email address, and Google account identifier (via OAuth). Purpose: to create and manage your account.</p>
+  <p><strong>b) YouTube Channel Data</strong> — collected when you connect your channel: YouTube channel ID and name, channel niche selected by you, and video performance metrics (views, engagement, watch time) fetched via YouTube API. Purpose: to generate content, schedule posts, and analyse performance on your behalf.</p>
+  <p><strong>c) Content Data</strong> — video scripts generated by AI on your behalf, niche preferences, and content calendar data. Purpose: to operate the automated content pipeline.</p>
+  <p><strong>d) Usage Data</strong> — log data including IP address, browser type, pages visited, and timestamps; pipeline activity logs (video generation, posting times, errors). Purpose: to operate, maintain, and improve the service.</p>
+  <p><strong>e) Payment Data</strong> — Viralityy does not store payment card details. Payments are processed by Paddle — their privacy policy governs payment data. We only store subscription status, plan type, and billing dates.</p>
+
+  <h2>4. How We Use Your Data</h2>
+  <ul>
+    <li>To provide, operate, and improve the Viralityy service</li>
+    <li>To generate AI content on your behalf using your chosen niche and preferences</li>
+    <li>To post videos to your connected YouTube channels as instructed by you</li>
+    <li>To send service-related notifications (posting confirmations, errors, billing alerts)</li>
+    <li>To analyse platform performance and resolve bugs</li>
+  </ul>
+  <p>We do <strong>not</strong> use your data for advertising. We do <strong>not</strong> sell, rent, or share your data with third parties except as strictly necessary to operate the service (see Section 5).</p>
+
+  <h2>5. Third-Party Services We Use</h2>
+  <ul>
+    <li><strong>Google / YouTube API</strong> — to connect channels and post videos. <a href="https://policies.google.com/privacy" target="_blank" rel="noopener" style="color:#a5b4fc">Google Privacy Policy</a></li>
+    <li><strong>OpenAI</strong> — to generate video scripts. <a href="https://openai.com/privacy" target="_blank" rel="noopener" style="color:#a5b4fc">OpenAI Privacy Policy</a></li>
+    <li><strong>Google Cloud (TTS + Imagen)</strong> — to generate voiceovers and thumbnails</li>
+    <li><strong>Pexels</strong> — to fetch stock footage. <a href="https://www.pexels.com/privacy-policy/" target="_blank" rel="noopener" style="color:#a5b4fc">Pexels Privacy Policy</a></li>
+    <li><strong>Paddle</strong> — to process payments. <a href="https://www.paddle.com/legal/privacy" target="_blank" rel="noopener" style="color:#a5b4fc">Paddle Privacy Policy</a></li>
+    <li><strong>Railway</strong> — to host backend infrastructure</li>
+    <li><strong>MongoDB Atlas</strong> — to store user and content data securely</li>
+  </ul>
+  <p>All third-party services are contractually bound to protect user data and are GDPR-compliant where applicable.</p>
+
+  <h2>6. YouTube API Data — Special Notice</h2>
+  <p>Viralityy uses YouTube API Services. Data obtained via YouTube API is used solely to operate the service on your behalf. We do not share YouTube API data with any party other than those listed in Section 5. You can revoke Viralityy's YouTube access at any time via your <a href="https://security.google.com/settings/security/permissions" target="_blank" rel="noopener" style="color:#a5b4fc">Google Security Settings</a>. Viralityy's use of YouTube API data complies with the Google API Services User Data Policy, including Limited Use requirements.</p>
+
+  <h2>7. Data Retention</h2>
+  <ul>
+    <li>Account data is retained for as long as your account is active</li>
+    <li>Upon account deletion, all personal data is deleted within 30 days</li>
+    <li>Pipeline logs are retained for 90 days for debugging purposes, then permanently deleted</li>
+    <li>Payment records are retained as required by applicable law (typically 7 years)</li>
+  </ul>
+
+  <h2>8. Data Security</h2>
+  <p>All data is transmitted over HTTPS/TLS encryption. Database access is restricted and monitored. API keys and credentials are stored securely as environment variables, never in source code. In the event of a data breach affecting your personal data, we will notify affected users within 72 hours.</p>
+
+  <h2>9. Your Rights</h2>
+  <p>You have the right to:</p>
+  <ul>
+    <li><strong>Access</strong> — request a copy of all personal data we hold about you</li>
+    <li><strong>Correction</strong> — request correction of inaccurate data</li>
+    <li><strong>Deletion</strong> — request deletion of all your personal data (right to be forgotten)</li>
+    <li><strong>Portability</strong> — request your data in a machine-readable format</li>
+    <li><strong>Objection</strong> — object to certain processing of your data</li>
+    <li><strong>Withdraw consent</strong> — disconnect YouTube access or delete your account at any time</li>
+  </ul>
+  <p>To exercise any of these rights, email <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a>. We respond within 30 days.</p>
+
+  <h2>10. Cookies</h2>
+  <p>Viralityy uses essential session cookies only for authentication purposes. No advertising or tracking cookies are used. No third-party analytics cookies are placed without your consent.</p>
+
+  <h2>11. Children's Privacy</h2>
+  <p>Viralityy is not intended for users under 18 years of age. We do not knowingly collect personal data from minors. If we become aware that data has been collected from a minor, it will be deleted immediately.</p>
+
+  <h2>12. Changes to This Policy</h2>
+  <p>We may update this Privacy Policy periodically. You will be notified of material changes via email or in-app notification. Continued use of the service after changes constitutes acceptance of the updated policy.</p>
+
+  <h2>13. Contact</h2>
+  <p>All privacy questions and requests: <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a>. We take all privacy inquiries seriously and respond within 30 days.</p>
 </div>
 </div>
 
 <div class="site-page" id="page-terms">
 <nav class="mkt-nav"><div class="logo" onclick="nav('home')"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div><div class="nav-right"><a class="btn btn-ghost btn-sm" onclick="nav('home')">← Back to home</a></div></nav>
 <div class="legal-layout">
-  <h1>Terms of Service</h1><p class="legal-meta">Last updated: 1 May 2025 · Effective: 1 May 2025</p>
-  <h2>1. Acceptance</h2><p>By using Viralityy you agree to these Terms. If you do not agree, do not use the service.</p>
-  <h2>2. The service</h2><p>Viralityy is an automated content creation and publishing platform that generates AI-created video content and posts it to your connected YouTube, TikTok, and Instagram accounts on your behalf.</p>
-  <h2>3. Accounts</h2><p>You must be at least 18. You are responsible for all activity under your account. Do not share your account credentials.</p>
-  <h2>4. Billing</h2><p>Subscriptions renew automatically. New accounts include a 2-day free trial with no charge unless you continue. Cancel any time — access continues until period end. No refunds for partial periods. Payments processed by Stripe.</p>
-  <h2>5. Acceptable use</h2><p>You agree not to use Viralityy to create spam, misleading content, or content that violates YouTube's Terms of Service. You are solely responsible for content posted to your channels.</p>
-  <h2>6. YouTube API</h2><p>Viralityy uses YouTube API Services. By using Viralityy you agree to the <a href="https://www.youtube.com/t/terms" style="color:#a5b4fc">YouTube Terms of Service</a>.</p>
-  <h2>7. Liability</h2><p>THE SERVICE IS PROVIDED "AS IS". OUR TOTAL LIABILITY SHALL NOT EXCEED THE AMOUNT YOU PAID IN THE 12 MONTHS PRECEDING THE CLAIM.</p>
-  <h2>8. Governing law</h2><p>These Terms are governed by the laws of England and Wales.</p>
-  <h2>9. Contact</h2><p><strong>legal@viralityy.com</strong></p>
+  <h1>Terms of Service</h1>
+  <p class="legal-meta">Effective Date: 20 May 2026 &nbsp;·&nbsp; Last Updated: 20 May 2026</p>
+
+  <h2>1. Acceptance of Terms</h2>
+  <p>By accessing or using the Viralityy platform ("Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, you must not use the Service. You must be at least 18 years of age to use Viralityy.</p>
+
+  <h2>2. Description of Service</h2>
+  <p>Viralityy is a software-as-a-service (SaaS) platform that automates YouTube content creation and publishing. The Service uses artificial intelligence to generate video scripts, voiceovers, thumbnails, and to post videos to connected YouTube channels on your behalf. The Service operates on a subscription basis with plans as described on our <a style="color:#a5b4fc;cursor:pointer" onclick="nav('pricing')">Pricing page</a>. Viralityy is not affiliated with, endorsed by, or officially connected to YouTube or Google.</p>
+
+  <h2>3. User Accounts and Responsibilities</h2>
+  <ul>
+    <li>You are responsible for maintaining the security of your account credentials and for all activity that occurs under your account</li>
+    <li>You must provide accurate and complete information during registration and keep it up to date</li>
+    <li>You are solely responsible for all content posted to your YouTube channels via Viralityy</li>
+    <li>You must comply with YouTube's Terms of Service, Community Guidelines, and all applicable laws and regulations</li>
+    <li>You must not use Viralityy to post illegal, harmful, misleading, defamatory, or infringing content</li>
+    <li>Viralityy reserves the right to suspend or terminate accounts that violate these Terms</li>
+  </ul>
+
+  <h2>4. YouTube API Services</h2>
+  <p>Viralityy uses YouTube API Services to connect to and post content on behalf of users. By using Viralityy, you also agree to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener" style="color:#a5b4fc">YouTube Terms of Service</a>. You can revoke Viralityy's access to your YouTube account at any time via <a href="https://security.google.com/settings/security/permissions" target="_blank" rel="noopener" style="color:#a5b4fc">Google Security Settings</a>. Viralityy's use and transfer of information received from Google APIs adheres to the Google API Services User Data Policy, including its Limited Use requirements.</p>
+
+  <h2>5. Subscriptions and Billing</h2>
+  <ul>
+    <li>Subscriptions are billed monthly on a recurring basis</li>
+    <li>Billing is processed through Paddle (our payment processor)</li>
+    <li>By subscribing, you authorise recurring charges to your chosen payment method</li>
+    <li>Plan limits (videos per day, channels, longform videos) are enforced as described on the Pricing page</li>
+    <li>Viralityy reserves the right to change pricing with 30 days' notice to existing subscribers</li>
+  </ul>
+
+  <h2>6. Free Trial</h2>
+  <p>New users receive a 2-day free trial with 3 Shorts per day on 1 channel. No credit card is required to start the trial. Trial accounts automatically expire after 2 days. You will not be charged unless you explicitly subscribe to a paid plan.</p>
+
+  <h2>7. Cancellation Policy</h2>
+  <p>You may cancel your subscription at any time from your account settings. Cancellation takes effect at the end of the current billing period. No partial refunds are issued for unused days in the current billing period. After cancellation, you retain full access to your plan until the end of the paid period.</p>
+
+  <h2>8. Refunds</h2>
+  <p>Due to the nature of digital services and AI-generated content, all subscription payments are final and non-refundable. Exceptions may be made at Viralityy's sole discretion for documented technical failures that prevented the Service from functioning for more than 7 consecutive days. Refund requests must be submitted to <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a> within 7 days of the charge. See our full <a style="color:#a5b4fc;cursor:pointer" onclick="nav('refund')">Refund Policy</a> for details.</p>
+
+  <h2>9. AI-Generated Content</h2>
+  <p>All scripts, voiceovers, and thumbnails are generated by third-party AI services (OpenAI, Google). Viralityy does not guarantee that AI-generated content is accurate, original, or free from errors. You are solely responsible for reviewing content before it is published. Viralityy is not liable for any claims arising from AI-generated content posted to your YouTube channels. You grant Viralityy a limited licence to process your niche and channel data solely to generate content on your behalf.</p>
+
+  <h2>10. Intellectual Property</h2>
+  <p>Viralityy and its branding, user interface, and underlying technology are owned by Viralityy and protected by applicable intellectual property laws. AI-generated content produced for users belongs to the user, subject to the terms of the underlying AI providers. You must not copy, reverse engineer, or resell the Viralityy platform or its technology.</p>
+
+  <h2>11. Third-Party Services</h2>
+  <p>Viralityy integrates with third-party services including YouTube (Google), OpenAI, Google Cloud, and Pexels. Viralityy is not responsible for the availability, accuracy, or actions of these third-party services. When using Viralityy, you are also subject to the terms and policies of these third-party services.</p>
+
+  <h2>12. Limitation of Liability</h2>
+  <p>Viralityy is provided on an "as is" and "as available" basis without warranties of any kind. Viralityy makes no warranties regarding uptime, content quality, or YouTube performance results. Viralityy shall not be liable for any indirect, incidental, or consequential damages, including but not limited to loss of revenue, subscribers, or YouTube channel standing. Viralityy's total liability shall not exceed the amount paid by you in the 30 days preceding the claim.</p>
+
+  <h2>13. Indemnification</h2>
+  <p>You agree to indemnify and hold harmless Viralityy and its operators from any claims, damages, losses, or expenses (including legal fees) arising from your use of the Service, your content, or your violation of these Terms.</p>
+
+  <h2>14. Termination</h2>
+  <p>Viralityy reserves the right to suspend or terminate any account that violates these Terms, abuses the Service, or engages in fraudulent activity, without prior notice. Upon termination, your data may be retained for up to 30 days before deletion.</p>
+
+  <h2>15. Changes to Terms</h2>
+  <p>Viralityy may update these Terms at any time. You will be notified of material changes via email or in-app notification. Continued use of the Service after changes are posted constitutes your acceptance of the updated Terms.</p>
+
+  <h2>16. Governing Law</h2>
+  <p>These Terms are governed by the laws of Pakistan. Any disputes shall be resolved through good-faith negotiation before any formal legal action is taken.</p>
+
+  <h2>17. Contact</h2>
+  <p>For any questions regarding these Terms: <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a></p>
 </div>
 </div>
 
@@ -1518,6 +1642,46 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   </ul>
   <h2>Third-party cookies</h2><p>Stripe (payment processing) and Google (OAuth sign-in) may set cookies. We do not use advertising or tracking cookies from third parties.</p>
   <h2>Contact</h2><p><strong>privacy@viralityy.com</strong></p>
+</div>
+</div>
+
+
+<div class="site-page" id="page-refund">
+<nav class="mkt-nav"><div class="logo" onclick="nav('home')"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div><span class="logo-type">Viralityy</span></div><div class="nav-right"><a class="btn btn-ghost btn-sm" onclick="nav('home')">← Back to home</a></div></nav>
+<div class="legal-layout">
+  <h1>Refund Policy</h1>
+  <p class="legal-meta">Effective Date: 20 May 2026 &nbsp;·&nbsp; Last Updated: 20 May 2026</p>
+
+  <h2>1. Free Trial</h2>
+  <p>All new Viralityy accounts receive a 2-day free trial with 3 Shorts per day on 1 YouTube channel. No credit card is required to start the trial. The trial is designed to give you a full experience of the platform before making any financial commitment. No charges occur during the trial period under any circumstances.</p>
+
+  <h2>2. No-Refund Policy</h2>
+  <p>Due to the nature of digital services and the immediate consumption of AI processing resources — including script generation, voiceover synthesis, thumbnail creation, and video scheduling — all subscription payments are <strong>final and non-refundable</strong> once a billing cycle has begun.</p>
+  <p>This policy applies to all plans: Starter ($29/month), Shorts Pro ($69/month), Growth ($99/month), and Agency ($249/month).</p>
+  <p>We strongly encourage all users to take advantage of the free 2-day trial to evaluate whether Viralityy meets their needs before subscribing to a paid plan.</p>
+
+  <h2>3. Cancellation</h2>
+  <ul>
+    <li>You may cancel your subscription at any time from your account dashboard — no phone calls or emails required</li>
+    <li>Cancellation stops all future recurring charges immediately</li>
+    <li>You retain full access to all features of your current plan until the end of the current billing period</li>
+    <li>No partial refunds are issued for unused days remaining in a billing period after cancellation</li>
+  </ul>
+
+  <h2>4. Exceptions</h2>
+  <p>Refunds may be considered at Viralityy's sole discretion in the following limited cases only:</p>
+  <ul>
+    <li><strong>Documented technical failure</strong> — the Service was non-functional for more than 7 consecutive days due to Viralityy's own systems (not caused by third-party service outages such as YouTube API, OpenAI, or Pexels)</li>
+    <li><strong>Duplicate charge</strong> — a billing error caused the same subscription to be charged more than once in the same billing period</li>
+  </ul>
+  <p>All refund requests must be submitted within <strong>7 days</strong> of the charge in question to <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a> with full details, your account email, and supporting evidence where applicable.</p>
+
+  <h2>5. Chargebacks</h2>
+  <p>Filing a chargeback or payment dispute with your bank or card provider without first contacting Viralityy may result in immediate suspension of your account and permanent ban from the platform. We are committed to resolving all legitimate billing issues fairly and promptly — please contact us first. We aim to respond to all billing inquiries within 2 business days.</p>
+
+  <h2>6. Contact</h2>
+  <p>For all billing and refund questions: <a href="mailto:mohsinalimughal8@gmail.com" style="color:#a5b4fc">mohsinalimughal8@gmail.com</a></p>
+  <p>We aim to respond to all inquiries within 2 business days.</p>
 </div>
 </div>
 
@@ -2163,6 +2327,14 @@ function nav(page) {
     el.style.display = 'block';
     el.classList.add('active');
     window.scrollTo(0,0);
+  }
+
+  // Keep URL hash in sync for public-linkable pages
+  const _hashable = ['pricing','terms','privacy','refund'];
+  if (_hashable.includes(page)) {
+    window.history.replaceState(null, '', '#' + page);
+  } else if (window.location.hash && _PUBLIC_HASH_ROUTES[window.location.hash]) {
+    window.history.replaceState(null, '', '/');
   }
 }
 
@@ -4817,6 +4989,9 @@ async function confirmChannel(channelId, channelName, onboardingStep) {
   }
 }
 
+// Init: resolve hash-based public routes first
+const _PUBLIC_HASH_ROUTES = { '#pricing': 'pricing', '#terms': 'terms', '#privacy': 'privacy', '#refund': 'refund' };
+
 // Init: check for hidden admin hash before any other routing
 if (window.location.hash === '#admin-vrl9k2') {
   // Hide all pages, show admin page
@@ -4830,6 +5005,8 @@ if (window.location.hash === '#admin-vrl9k2') {
     document.getElementById('adm-dash').style.display  = 'block';
     admTab('overview');
   }
+} else if (_PUBLIC_HASH_ROUTES[window.location.hash]) {
+  nav(_PUBLIC_HASH_ROUTES[window.location.hash]);
 } else if (isLoggedIn()) {
   const connectingChannel = localStorage.getItem('vly_connecting_channel');
   const pendingNiche = localStorage.getItem('vly_pending_niche');
