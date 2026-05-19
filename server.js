@@ -421,7 +421,7 @@ const userSchema = new mongoose.Schema({
   lemonSqueezyCustomerId:     { type: String },
   lemonSqueezySubscriptionId: { type: String },
   billingHistory: [{ date: Date, amount: Number, plan: String, status: String, invoiceId: String }],
-  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date }],
+  youtubeChannels: [{ channelId: String, channelName: String, accessToken: String, refreshToken: String, nicheId: String, nicheName: String, paused: Boolean, tiktokEnabled: Boolean, instagramEnabled: Boolean, connectedAt: String, subscriberCount: Number, thumbnail: String, optimalPostingTimes: [String], optimalTimesSource: String, optimalTimesCalculatedAt: Date, styleConfig: { captionFont: String, colorScheme: String, musicGenre: String, introText: String } }],
   pendingOAuthChannels: [{ channelId: String, channelName: String, thumbnail: String, subscriberCount: Number }],
   googleAccessToken:  String,
   googleRefreshToken: String,
@@ -1189,6 +1189,49 @@ app.patch('/api/channels/:channelId/platforms', requireAuth, async (req, res) =>
     if (instagramEnabled !== undefined) ch.instagramEnabled = !!instagramEnabled;
     await user.save();
     res.json({ success: true, channel: ch });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/channel/:id/style — return current styleConfig for one channel
+app.get('/api/channel/:id/style', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).lean();
+    const ch = (user?.youtubeChannels || []).find(c => c.channelId === req.params.id);
+    if (!ch) return res.status(404).json({ error: 'Channel not found' });
+    res.json({ styleConfig: ch.styleConfig || {} });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH /api/channel/:id/style — update styleConfig for one channel
+app.patch('/api/channel/:id/style', requireAuth, async (req, res) => {
+  try {
+    const { captionFont, colorScheme, musicGenre, introText } = req.body;
+    const VALID = {
+      captionFont: ['clean', 'bold', 'impact'],
+      colorScheme: ['white-yellow', 'white-green', 'white-orange'],
+      musicGenre:  ['ambient', 'upbeat', 'cinematic', 'lofi', 'none'],
+    };
+    if (captionFont !== undefined && !VALID.captionFont.includes(captionFont))
+      return res.status(400).json({ error: `Invalid captionFont — must be one of: ${VALID.captionFont.join(', ')}` });
+    if (colorScheme !== undefined && !VALID.colorScheme.includes(colorScheme))
+      return res.status(400).json({ error: `Invalid colorScheme — must be one of: ${VALID.colorScheme.join(', ')}` });
+    if (musicGenre !== undefined && !VALID.musicGenre.includes(musicGenre))
+      return res.status(400).json({ error: `Invalid musicGenre — must be one of: ${VALID.musicGenre.join(', ')}` });
+
+    const update = {};
+    if (captionFont !== undefined) update['youtubeChannels.$.styleConfig.captionFont'] = captionFont;
+    if (colorScheme !== undefined) update['youtubeChannels.$.styleConfig.colorScheme'] = colorScheme;
+    if (musicGenre  !== undefined) update['youtubeChannels.$.styleConfig.musicGenre']  = musicGenre;
+    if (introText   !== undefined) update['youtubeChannels.$.styleConfig.introText']   = String(introText).slice(0, 80).trim();
+
+    if (!Object.keys(update).length) return res.status(400).json({ error: 'No valid fields provided' });
+
+    const result = await User.updateOne(
+      { _id: req.user.id, 'youtubeChannels.channelId': req.params.id },
+      { $set: update }
+    );
+    if (!result.matchedCount) return res.status(404).json({ error: 'Channel not found' });
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -4455,17 +4498,30 @@ async function pipelineGenerateVoiceover(script, userId) {
   throw new Error(`Voiceover failed after 3 attempts: ${lastErr.message}`);
 }
 
-// Royalty-free ambient/upbeat tracks for background music (mixed at 15%)
-const ROYALTY_FREE_MUSIC = [
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3',
-  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
-];
+// Royalty-free tracks organised by genre — selected by per-channel styleConfig.musicGenre
+const MUSIC_BY_GENRE = {
+  ambient:   [
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
+  ],
+  upbeat:    [
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',
+  ],
+  cinematic: [
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3',
+  ],
+  lofi:      [
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
+  ],
+  none:      [],
+};
+// Flat pool for callers that don't pass a styleConfig (backward-compatible)
+const ROYALTY_FREE_MUSIC = [...new Set(Object.values(MUSIC_BY_GENRE).flat())];
 
 // Extract 5 distinct Pexels search queries from video title + script
 // Derives 5 diverse search queries from different script aspects.
@@ -4779,12 +4835,29 @@ function sanitizeCaptionText(text) {
 }
 
 // Build an array of ffmpeg drawtext filter strings for two-color two-line captions.
-// Each caption segment produces: line1 (white bold, fontsize=45) + optional line2 (yellow, fontsize=40).
-// Both lines share the same enable= window so they appear/disappear as one unit.
-function buildDrawtextFilters(captions) {
+// Each caption segment produces: line1 (white bold, fontsize=45) + optional line2 (accent, fontsize=40).
+// styleConfig: { captionFont: 'clean'|'bold'|'impact', colorScheme: 'white-yellow'|'white-green'|'white-orange' }
+function buildDrawtextFilters(captions, styleConfig = null) {
   const filters = [];
-  const fontBold = CAPTION_FONT_PATHS.bold    ? `:fontfile='${CAPTION_FONT_PATHS.bold}'`    : '';
-  const fontReg  = CAPTION_FONT_PATHS.regular ? `:fontfile='${CAPTION_FONT_PATHS.regular}'` : '';
+
+  // Resolve font paths from styleConfig
+  const fontOption = (styleConfig?.captionFont) || 'clean';
+  let resolvedBold = CAPTION_FONT_PATHS.bold    || CAPTION_FONT_PATHS.regular;
+  let resolvedReg  = CAPTION_FONT_PATHS.regular || CAPTION_FONT_PATHS.bold;
+  // 'bold' and 'impact' both lines use bold font
+  const useBoldForBoth = fontOption === 'bold' || fontOption === 'impact';
+  if (useBoldForBoth) resolvedReg = resolvedBold || resolvedReg;
+
+  const fontBold = resolvedBold ? `:fontfile='${resolvedBold}'` : '';
+  const fontReg  = resolvedReg  ? `:fontfile='${resolvedReg}'`  : '';
+
+  // Resolve accent color from colorScheme
+  const colorMap = { 'white-yellow': '#FFE500', 'white-green': '#39FF14', 'white-orange': '#FF8C00' };
+  const accentColor = colorMap[(styleConfig?.colorScheme) || 'white-yellow'] || '#FFE500';
+
+  // 'impact' style uses larger font sizes to mimic impact-style captions
+  const size1 = fontOption === 'impact' ? 52 : 45;
+  const size2 = fontOption === 'impact' ? 44 : 40;
 
   for (const cap of captions) {
     const words = String(cap.text).trim().split(/\s+/).filter(Boolean);
@@ -4808,17 +4881,17 @@ function buildDrawtextFilters(captions) {
 
     if (!line1) continue;
 
-    // Line 1 — white #FFFFFF, bold, fontsize=45, 4px black outline, no box, no shadow
+    // Line 1 — white #FFFFFF, bold, 4px black outline, no box
     filters.push(
-      `drawtext=text='${line1}':fontsize=45${fontBold}:fontcolor=#FFFFFF` +
+      `drawtext=text='${line1}':fontsize=${size1}${fontBold}:fontcolor=#FFFFFF` +
       `:borderw=4:bordercolor=black:box=0` +
-      `:x=(w-text_w)/2:y=h*0.72-45:enable='between(t,${s},${e})'`
+      `:x=(w-text_w)/2:y=h*0.72-${size1}:enable='between(t,${s},${e})'`
     );
 
-    // Line 2 — yellow #FFE500, regular, fontsize=40, 4px black outline, no box, no shadow
+    // Line 2 — accent color, 4px black outline, no box
     if (line2) {
       filters.push(
-        `drawtext=text='${line2}':fontsize=40${fontReg}:fontcolor=#FFE500` +
+        `drawtext=text='${line2}':fontsize=${size2}${fontReg}:fontcolor=${accentColor}` +
         `:borderw=4:bordercolor=black:box=0` +
         `:x=(w-text_w)/2:y=h*0.72+10:enable='between(t,${s},${e})'`
       );
@@ -4843,9 +4916,10 @@ function generateSRTFile(captions, slotId) {
   return srtPath;
 }
 
-// Step 4 — Assemble: concat clips, burn-in SRT subtitles (Shorts only), mix voiceover + background music
-// If the subtitles filter fails (e.g. libass not available), retries without subtitles.
-async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true) {
+// Step 4 — Assemble: concat clips, burn-in drawtext captions (Shorts only), mix voiceover + background music
+// styleConfig: { captionFont, colorScheme, musicGenre, introText } — all optional, defaults applied if absent.
+// If the captions filter fails, retries without captions.
+async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true, styleConfig = null) {
   const fs   = require('fs');
   const path = require('path');
   const runId = Date.now();
@@ -4859,18 +4933,24 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     })
   ));
 
-  // Download background music (non-fatal)
-  const musicUrl  = ROYALTY_FREE_MUSIC[Math.floor(Math.random() * ROYALTY_FREE_MUSIC.length)];
+  // Download background music — pick genre pool from styleConfig, fall back to full pool
+  const genre    = styleConfig?.musicGenre || 'ambient';
+  const pool     = (MUSIC_BY_GENRE[genre] && MUSIC_BY_GENRE[genre].length > 0) ? MUSIC_BY_GENRE[genre] : ROYALTY_FREE_MUSIC;
+  const musicUrl = genre === 'none' ? null : pool[Math.floor(Math.random() * pool.length)];
   const musicPath = path.join('/tmp', `vly_music_${runId}.mp3`);
   let hasMus = false;
-  try {
-    await new Promise((resolve, reject) => {
-      exec(`curl -sL --max-time 30 -o "${musicPath}" "${musicUrl}"`, { timeout: 45000 },
-        err => err ? reject(err) : resolve());
-    });
-    hasMus = fs.existsSync(musicPath) && fs.statSync(musicPath).size > 1000;
-  } catch (e) {
-    console.warn('[Assembly] Music download failed (non-fatal):', e.message);
+  if (musicUrl) {
+    try {
+      await new Promise((resolve, reject) => {
+        exec(`curl -sL --max-time 30 -o "${musicPath}" "${musicUrl}"`, { timeout: 45000 },
+          err => err ? reject(err) : resolve());
+      });
+      hasMus = fs.existsSync(musicPath) && fs.statSync(musicPath).size > 1000;
+    } catch (e) {
+      console.warn('[Assembly] Music download failed (non-fatal):', e.message);
+    }
+  } else {
+    console.log('[Assembly] Music genre=none — skipping background music');
   }
 
   const n       = clipPaths.length;
@@ -4892,9 +4972,19 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
     ? `[${voiceIdx}:a][${n + 1}:a]amix=inputs=2:duration=shortest:weights=1 0.15[aout]`
     : `[${voiceIdx}:a]volume=1.0[aout]`;
 
-  // Build drawtext caption filters (Shorts only) — two-color two-line system
-  console.log(`[DIAG] pipelineAssembleVideo — isShort=${isShort}, captions.length=${captions.length}, captions sample:`, JSON.stringify(captions.slice(0,2)));
-  const drawtextFilters = (isShort && captions.length > 0) ? buildDrawtextFilters(captions) : [];
+  // Build drawtext caption filters (Shorts only) — two-color two-line system with per-channel style
+  console.log(`[DIAG] pipelineAssembleVideo — isShort=${isShort}, captions.length=${captions.length}, genre=${styleConfig?.musicGenre||'ambient'}, captions sample:`, JSON.stringify(captions.slice(0,2)));
+  const drawtextFilters = (isShort && captions.length > 0) ? buildDrawtextFilters(captions, styleConfig) : [];
+
+  // Optional 2-second intro text overlay (Shorts only)
+  const introText = isShort ? sanitizeCaptionText(styleConfig?.introText || '') : '';
+  if (introText) {
+    const introFont = CAPTION_FONT_PATHS.bold ? `:fontfile='${CAPTION_FONT_PATHS.bold}'` : '';
+    drawtextFilters.unshift(
+      `drawtext=text='${introText}':fontsize=46${introFont}:fontcolor=#FFFFFF` +
+      `:borderw=4:bordercolor=black:box=0:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,0,2)'`
+    );
+  }
   console.log(`[DIAG] drawtextFilters.length=${drawtextFilters.length}`);
   if (drawtextFilters.length > 0) {
     console.log(`[Assembly] Drawtext: ${drawtextFilters.length} filter(s) for ${captions.length} caption segment(s)`);
@@ -5260,13 +5350,13 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
     console.log(`[DIAG] finalCaptions.length=${finalCaptions.length}, isShort=${isShort}, voResult.captions.length=${voResult.captions.length}, scriptData.captions.length=${scriptData.captions.length}`);
     console.log(`[DIAG] finalCaptions sample:`, JSON.stringify(finalCaptions.slice(0, 3)));
-    console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath}`);
-    await setStatus({ pipelineStatus: 'assembling' });
-    await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort);
-
     const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId)
                  || user.youtubeChannels?.[0];
     if (!channel) throw new Error('No YouTube channel connected');
+
+    console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath} (style: font=${channel.styleConfig?.captionFont||'clean'} color=${channel.styleConfig?.colorScheme||'white-yellow'} music=${channel.styleConfig?.musicGenre||'ambient'})`);
+    await setStatus({ pipelineStatus: 'assembling' });
+    await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort, channel.styleConfig || null);
 
     console.log(`[JIT] Uploading "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'uploading' });
@@ -5587,9 +5677,10 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
       : (Array.isArray(slot.scriptCaptions) ? slot.scriptCaptions : []);
     if (isShort && captions.length === 0) captions = buildFallbackCaptions(scriptText, footageClips.length * 6);
 
-    // Assemble
-    console.log(`[AssembleUpload] 3/3 Assembling "${slot.title}" → ${outPath}`);
-    await pipelineAssembleVideo(footageClips, audioPath, outPath, captions, isShort);
+    // Assemble — use channel's styleConfig if available
+    const assembleStyle = channel?.styleConfig || null;
+    console.log(`[AssembleUpload] 3/3 Assembling "${slot.title}" → ${outPath} (style: font=${assembleStyle?.captionFont||'clean'} color=${assembleStyle?.colorScheme||'white-yellow'} music=${assembleStyle?.musicGenre||'ambient'})`);
+    await pipelineAssembleVideo(footageClips, audioPath, outPath, captions, isShort, assembleStyle);
 
     // Upload
     const description = slot.cachedScript || scriptText || slot.title;

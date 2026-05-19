@@ -337,12 +337,21 @@ footer{background:var(--bg2);border-top:1px solid var(--border);padding:3rem 2.5
 .act-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .act-text{font-size:.75rem;color:var(--text2);flex:1}
 .act-time{font-size:.67rem;color:var(--text3)}
-.channel-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:1rem 1.15rem;margin-bottom:10px;display:flex;align-items:center;gap:12px}
+.channel-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:1rem 1.15rem;margin-bottom:10px;display:flex;flex-direction:column;gap:0}
+.ch-main{display:flex;align-items:center;gap:12px}
 .ch-av{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,var(--purple),var(--pink));display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;color:#fff;flex-shrink:0}
 .ch-info{flex:1}
 .ch-name{font-size:.84rem;font-weight:600;color:var(--text);margin-bottom:2px}
 .ch-meta{font-size:.68rem;color:var(--text3)}
 .ch-actions{display:flex;gap:6px}
+.ch-style-panel{display:none;flex-direction:column;gap:9px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.ch-style-panel.open{display:flex}
+.ch-style-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ch-style-label{font-size:.65rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;min-width:90px}
+.ch-style-select{background:var(--bg2);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:.71rem;padding:3px 8px;cursor:pointer;flex:1}
+.ch-style-intro{background:var(--bg2);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:.71rem;padding:4px 8px;width:100%;box-sizing:border-box}
+.ch-style-save{padding:5px 14px;border-radius:7px;font-size:.7rem;font-weight:600;cursor:pointer;border:1px solid rgba(99,102,241,.4);background:transparent;color:#818cf8;transition:all .14s}
+.ch-style-save:hover{background:rgba(99,102,241,.1);border-color:#6366f1;color:#a5b4fc}
 .act{padding:5px 11px;border-radius:7px;font-size:.7rem;font-weight:600;cursor:pointer;border:1px solid var(--border2);background:transparent;color:var(--text2);transition:all .14s}
 .act:hover{border-color:var(--border3);color:var(--text)}
 .act-ok{border-color:rgba(16,185,129,.3);color:#34d399}.act-ok:hover{background:rgba(16,185,129,.08)}
@@ -2475,17 +2484,56 @@ async function initChannels() {
       const vidsTxt  = ch.videoCount      ? `${ch.videoCount} videos`                     : null;
       const metaParts = [subsTxt, viewsTxt, vidsTxt].filter(Boolean);
       if (ch.paused) metaParts.push('Paused');
+      const cid = ch.channelId || ch._id || '';
       return `
-      <div class="channel-card" data-channel-id="${ch.channelId||ch._id||''}">
-        <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
-        <div class="ch-info">
-          <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
-          ${ch.nicheName ? `<span style="display:inline-block;background:#1D9E75;color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;font-weight:500;margin:4px 0 2px">${ch.nicheName}</span>` : ''}
-          <p class="ch-meta" style="margin-top:4px">${metaParts.join(' · ')}</p>
+      <div class="channel-card" data-channel-id="${cid}">
+        <div class="ch-main">
+          <div class="ch-av">${(ch.channelName||'CH').slice(0,2).toUpperCase()}</div>
+          <div class="ch-info">
+            <p class="ch-name">${ch.channelName || ch.channelId || 'Channel'}</p>
+            ${ch.nicheName ? `<span style="display:inline-block;background:#1D9E75;color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;font-weight:500;margin:4px 0 2px">${ch.nicheName}</span>` : ''}
+            <p class="ch-meta" style="margin-top:4px">${metaParts.join(' · ')}</p>
+          </div>
+          <div class="ch-actions">
+            <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
+            <button class="act act-ok" onclick="dashPage('analytics',null)">Analytics</button>
+            <button class="act" onclick="toggleStylePanel('${cid}',this)">Style</button>
+          </div>
         </div>
-        <div class="ch-actions">
-          <button class="act" onclick="pauseChannel(this)">${ch.paused ? 'Resume' : 'Pause'}</button>
-          <button class="act act-ok" onclick="dashPage('analytics',null)">Analytics</button>
+        <div class="ch-style-panel" id="style-panel-${cid}">
+          <div class="ch-style-row">
+            <span class="ch-style-label">Caption Font</span>
+            <select class="ch-style-select" id="sf-font-${cid}">
+              <option value="clean">Clean (Liberation Sans)</option>
+              <option value="bold">Bold (DejaVu Bold)</option>
+              <option value="impact">Impact Style</option>
+            </select>
+          </div>
+          <div class="ch-style-row">
+            <span class="ch-style-label">Caption Colors</span>
+            <select class="ch-style-select" id="sf-color-${cid}">
+              <option value="white-yellow">White / Yellow (default)</option>
+              <option value="white-green">White / Green</option>
+              <option value="white-orange">White / Orange</option>
+            </select>
+          </div>
+          <div class="ch-style-row">
+            <span class="ch-style-label">Background Music</span>
+            <select class="ch-style-select" id="sf-music-${cid}">
+              <option value="ambient">Ambient (default)</option>
+              <option value="upbeat">Upbeat</option>
+              <option value="cinematic">Cinematic</option>
+              <option value="lofi">Lo-Fi</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <span class="ch-style-label">Intro Text <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3);font-size:.62rem">(optional 2-sec overlay at video start)</span></span>
+            <input type="text" class="ch-style-intro" id="sf-intro-${cid}" placeholder="e.g. Every day is a new chance" maxlength="80">
+          </div>
+          <div style="display:flex;justify-content:flex-end">
+            <button class="ch-style-save" onclick="saveChannelStyle('${cid}',this)">Save Style</button>
+          </div>
         </div>
       </div>`;
     }).join('');
@@ -2515,6 +2563,52 @@ async function initChannels() {
       bar.style.width   = pct + '%';
       hint.textContent  = q.remaining === 0 ? 'Niche change limit reached for this year.' : `${q.used} change${q.used !== 1 ? 's' : ''} used this year.`;
     }
+  }
+}
+
+// ════════════════════════════════════════════
+// CHANNEL STYLE SETTINGS
+// ════════════════════════════════════════════
+async function toggleStylePanel(channelId, btn) {
+  const panel = document.getElementById('style-panel-' + channelId);
+  if (!panel) return;
+  const isOpen = panel.classList.toggle('open');
+  btn.textContent = isOpen ? 'Close' : 'Style';
+  if (isOpen) await loadChannelStyle(channelId);
+}
+
+async function loadChannelStyle(channelId) {
+  try {
+    const data = await apiCall('/api/channel/' + channelId + '/style');
+    const cfg  = data?.styleConfig || {};
+    const set  = (id, val, def) => { const el = document.getElementById(id); if (el) el.value = val || def; };
+    set('sf-font-'  + channelId, cfg.captionFont, 'clean');
+    set('sf-color-' + channelId, cfg.colorScheme, 'white-yellow');
+    set('sf-music-' + channelId, cfg.musicGenre,  'ambient');
+    const intro = document.getElementById('sf-intro-' + channelId);
+    if (intro) intro.value = cfg.introText || '';
+  } catch (e) { console.warn('[Style] Load failed:', e); }
+}
+
+async function saveChannelStyle(channelId, btn) {
+  const g = id => document.getElementById(id)?.value ?? '';
+  const payload = {
+    captionFont: g('sf-font-'  + channelId),
+    colorScheme: g('sf-color-' + channelId),
+    musicGenre:  g('sf-music-' + channelId),
+    introText:   g('sf-intro-' + channelId),
+  };
+  const orig = btn.textContent;
+  btn.textContent = 'Saving…';
+  btn.disabled = true;
+  try {
+    await apiCall('/api/channel/' + channelId + '/style', 'PATCH', payload);
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+    toast('Failed to save style settings', 'error');
   }
 }
 
