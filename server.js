@@ -4028,6 +4028,138 @@ app.get('/api/analytics/videos', requireAuth, async (req, res) => {
   }
 });
 
+// ── CHANNEL HEALTH SCORE ──────────────────────────────────────────────────────
+
+// GET /api/channel/:id/health — weighted health score (cached daily)
+app.get('/api/channel/:id/health', requireAuth, async (req, res) => {
+  try {
+    const channelId = req.params.id;
+    const userId    = String(req.user.id);
+
+    const user = await User.findById(userId).lean();
+    const ch   = (user?.youtubeChannels || []).find(c => c.channelId === channelId);
+    if (!ch) return res.status(404).json({ error: 'Channel not found' });
+
+    const healthCol   = agentCol('channel_health');
+    const CACHE_TTL   = 24 * 60 * 60 * 1000; // 24 hours
+    const cached      = await healthCol.findOne({ channelId, userId }).catch(() => null);
+    if (cached?.score !== undefined && (Date.now() - new Date(cached.cachedAt).getTime()) < CACHE_TTL) {
+      return res.json({ success: true, ...cached, _id: undefined, fromCache: true });
+    }
+
+    const analytics = await fetchLiveAnalytics(userId);
+    if (!analytics || analytics.noChannel) {
+      return res.status(503).json({ error: 'Analytics data unavailable — try again later' });
+    }
+
+    // ── Growth Rate (30%) ─────────────────────────────────────────────────────
+    const subscribersGained = analytics.stats.subscribersGained || 0;
+    // 300+ new subs / month → 100; linear below
+    const growthScore = Math.min(100, Math.round((subscribersGained / 3)));
+
+    // ── Engagement / CTR proxy (30%) ──────────────────────────────────────────
+    const topVideos = analytics.topVideos || [];
+    let avgEngagementRate = 0;
+    if (topVideos.length) {
+      const rates = topVideos.map(v => v.viewCount ? (v.likeCount + v.commentCount) / v.viewCount : 0);
+      avgEngagementRate = rates.reduce((a, b) => a + b, 0) / rates.length;
+    }
+    // 5%+ engagement → 100
+    const ctrScore = Math.min(100, Math.round(avgEngagementRate * 2000));
+
+    // ── Retention via avg watch-time (20%) ───────────────────────────────────
+    const watchTimeMinutes = analytics.stats.watchTimeMinutes || 0;
+    const periodViews      = (analytics.dailyViews || []).reduce((a, d) => a + d.views, 0) || 1;
+    const avgWatchSeconds  = (watchTimeMinutes * 60) / periodViews;
+    // 30s avg for Shorts (50% retention) → 100
+    const retentionScore = Math.min(100, Math.round((avgWatchSeconds / 30) * 100));
+
+    // ── Posting Consistency (20%) ─────────────────────────────────────────────
+    const slotsCol       = agentCol('calendar_slots');
+    const thirtyDaysAgo  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const [postedCount, scheduledCount] = await Promise.all([
+      slotsCol.countDocuments({ userId, channelId, posted: true, date: { $gte: thirtyDaysAgo } }).catch(() => 0),
+      slotsCol.countDocuments({ userId, channelId, date: { $gte: thirtyDaysAgo } }).catch(() => 0),
+    ]);
+    const consistencyScore = scheduledCount > 0
+      ? Math.min(100, Math.round((postedCount / scheduledCount) * 100))
+      : 50;
+
+    // ── Overall score ─────────────────────────────────────────────────────────
+    const score = Math.round(
+      growthScore     * 0.30 +
+      ctrScore        * 0.30 +
+      retentionScore  * 0.20 +
+      consistencyScore * 0.20
+    );
+
+    // ── Week-over-week trend ──────────────────────────────────────────────────
+    const dv           = analytics.dailyViews || [];
+    const prevWeekViews = dv.slice(0, 7).reduce((a, d) => a + d.views, 0);
+    const thisWeekViews = dv.slice(-7).reduce((a, d) => a + d.views, 0);
+    const trend = thisWeekViews > prevWeekViews * 1.05 ? 'up'
+                : thisWeekViews < prevWeekViews * 0.95 ? 'down' : 'stable';
+
+    // ── AI tip for the weakest metric ─────────────────────────────────────────
+    const metricList = [
+      { name: 'Growth Rate',          score: growthScore,      label: 'subscriber growth' },
+      { name: 'Engagement (CTR)',      score: ctrScore,         label: 'click-through and engagement' },
+      { name: 'Retention',             score: retentionScore,   label: 'viewer retention and watch time' },
+      { name: 'Posting Consistency',   score: consistencyScore, label: 'posting schedule consistency' },
+    ];
+    const weakest = metricList.reduce((a, b) => a.score < b.score ? a : b);
+
+    let aiTip = null;
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        const { OpenAI } = require('openai');
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const prompt  = `You are a YouTube growth advisor. Channel niche: "${ch.nicheName || 'general'}". Health score: ${score}/100. Weakest area: "${weakest.name}" (score ${weakest.score}/100). Stats: +${subscribersGained} subs/30d, ${(avgEngagementRate * 100).toFixed(1)}% engagement, ${Math.round(avgWatchSeconds)}s avg watch time, ${postedCount}/${Math.max(1, scheduledCount)} videos on schedule. Give ONE specific, actionable tip (2 sentences max) to improve their ${weakest.label}. No generic advice.`;
+        const resp    = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 120,
+          temperature: 0.7,
+        });
+        aiTip = resp.choices[0]?.message?.content?.trim() || null;
+        logAPIUsage('openai', 'channel_health_tip', userId,
+          resp.usage?.total_tokens || 0,
+          ((resp.usage?.prompt_tokens || 0) * API_COSTS.openai_input) +
+          ((resp.usage?.completion_tokens || 0) * API_COSTS.openai_output), true);
+      } catch (e) {
+        console.warn('[Health] AI tip failed:', e.message);
+      }
+    }
+
+    const result = {
+      channelId,
+      channelName: ch.channelName,
+      score,
+      trend,
+      metrics: {
+        growth:      { score: growthScore,       weight: 30, label: 'Growth Rate',          value: `+${subscribersGained} subs/mo`,                  explanation: 'New subscribers gained in the last 30 days' },
+        ctr:         { score: ctrScore,           weight: 30, label: 'Engagement (CTR)',     value: `${(avgEngagementRate * 100).toFixed(1)}% eng.`,   explanation: 'Average likes + comments relative to views' },
+        retention:   { score: retentionScore,     weight: 20, label: 'Retention',            value: `${Math.round(avgWatchSeconds)}s avg`,             explanation: 'Average viewer watch time per video' },
+        consistency: { score: consistencyScore,   weight: 20, label: 'Posting Consistency',  value: `${postedCount}/${Math.max(1, scheduledCount)} on schedule`, explanation: 'Videos posted as scheduled in last 30 days' },
+      },
+      weakestMetric: weakest.name,
+      aiTip,
+      cachedAt: new Date().toISOString(),
+    };
+
+    await healthCol.updateOne(
+      { channelId, userId },
+      { $set: result },
+      { upsert: true }
+    ).catch(() => {});
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[Health] GET /api/channel/:id/health error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── AFFILIATE ─────────────────────────────────────────────────────────────────
 
 // GET /api/affiliate/stats — legacy stub kept for backward compat

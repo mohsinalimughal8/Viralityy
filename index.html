@@ -924,6 +924,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   <div class="sidebar-item" onclick="dashPage('quality',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Content Quality</div>
   <div class="sidebar-item" onclick="dashPage('preview',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Preview Queue <span class="s-badge" id="badge-preview">3</span></div>
   <div class="sidebar-section">Growth</div>
+  <div class="sidebar-item" onclick="dashPage('health',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Channel Health</div>
   <div class="sidebar-item" onclick="dashPage('affiliate',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Affiliate</div>
   <div class="sidebar-footer">
     <div class="sidebar-user" onclick="openAccountSettings()">
@@ -1252,6 +1253,58 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
   </div>
 </div>
 
+<div class="dash-page" id="dp-health">
+  <div class="dash-topbar">
+    <div>
+      <p class="ph">Channel Health</p>
+      <p class="ps" id="health-subtitle">Score across growth, engagement, retention &amp; consistency</p>
+    </div>
+    <button onclick="initHealth(true)" class="btn btn-ghost btn-sm">Refresh</button>
+  </div>
+
+  <!-- Channel selector (shown when user has multiple channels) -->
+  <div id="health-channel-sel" class="health-channel-sel" style="display:none"></div>
+
+  <!-- Loading / error state -->
+  <div id="health-loading" style="text-align:center;padding:3rem 1.5rem;color:var(--text3);font-size:.82rem">Loading health score…</div>
+
+  <!-- Main content (hidden until data loads) -->
+  <div id="health-content" style="display:none">
+    <!-- Score ring + summary -->
+    <div class="health-header">
+      <div class="health-score-ring" id="health-ring-wrap">
+        <svg width="140" height="140" viewBox="0 0 140 140">
+          <circle class="ring-bg" cx="70" cy="70" r="60"/>
+          <circle class="ring-fill" id="health-ring" cx="70" cy="70" r="60" stroke-dasharray="377" stroke-dashoffset="377"/>
+        </svg>
+        <div class="health-score-center">
+          <span class="health-score-num" id="health-score-num">—</span>
+          <span class="health-score-label">/ 100</span>
+        </div>
+      </div>
+      <div class="health-header-info">
+        <div class="health-channel-name" id="health-ch-name"></div>
+        <div class="health-score-desc" id="health-score-desc"></div>
+        <div class="health-trend" id="health-trend"></div>
+        <p style="font-size:.67rem;color:var(--text3);margin-top:.6rem" id="health-cached-at"></p>
+      </div>
+    </div>
+
+    <!-- Per-metric cards -->
+    <div class="health-metrics" id="health-metrics"></div>
+
+    <!-- AI tip -->
+    <div class="health-tip" id="health-tip" style="display:none">
+      <div class="health-tip-head">
+        <div class="health-tip-icon">✦</div>
+        <span class="health-tip-title">AI Growth Tip</span>
+        <span class="health-tip-weak" id="health-tip-weak"></span>
+      </div>
+      <p class="health-tip-body" id="health-tip-body"></p>
+    </div>
+  </div>
+</div>
+
 </div><!-- /dash-main -->
 </div><!-- /page-dashboard -->
 
@@ -1414,6 +1467,53 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .adm-badge-warn{background:rgba(245,158,11,.15);color:#fbbf24}
 .adm-badge-err{background:rgba(239,68,68,.15);color:#f87171}
 .adm-tab.active{background:#6366f1 !important;color:#fff !important}
+
+/* ═══ CHANNEL HEALTH SCORE ═══ */
+.health-score-ring{position:relative;width:140px;height:140px;flex-shrink:0}
+.health-score-ring svg{transform:rotate(-90deg)}
+.health-score-ring .ring-bg{fill:none;stroke:rgba(255,255,255,.06);stroke-width:10}
+.health-score-ring .ring-fill{fill:none;stroke-width:10;stroke-linecap:round;transition:stroke-dashoffset .6s ease}
+.health-score-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0}
+.health-score-num{font-family:'DM Serif Display',serif;font-size:2.2rem;line-height:1;color:var(--text)}
+.health-score-label{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3)}
+.health-header{display:flex;align-items:center;gap:1.5rem;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;margin-bottom:1.1rem}
+.health-header-info{flex:1}
+.health-channel-name{font-size:1rem;font-weight:600;color:var(--text);margin-bottom:.25rem}
+.health-score-desc{font-size:.79rem;color:var(--text2)}
+.health-trend{display:inline-flex;align-items:center;gap:5px;font-size:.73rem;font-weight:600;padding:4px 10px;border-radius:20px;margin-top:.4rem}
+.health-trend.up{background:rgba(16,185,129,.1);color:#34d399}
+.health-trend.down{background:rgba(239,68,68,.1);color:#fca5a5}
+.health-trend.stable{background:rgba(255,255,255,.05);color:var(--text3)}
+.health-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:1.1rem}
+.health-metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.15rem}
+.hm-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem}
+.hm-label{font-size:.72rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.06em}
+.hm-weight{font-size:.62rem;color:var(--text3)}
+.hm-score-row{display:flex;align-items:baseline;gap:6px;margin-bottom:.5rem}
+.hm-score{font-family:'DM Serif Display',serif;font-size:1.55rem;line-height:1}
+.hm-value{font-size:.73rem;color:var(--text3)}
+.hm-bar{height:5px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;margin-bottom:.5rem}
+.hm-fill{height:100%;border-radius:3px;transition:width .5s ease}
+.hm-explanation{font-size:.7rem;color:var(--text3);line-height:1.4}
+.health-tip{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(236,72,153,.05));border:1px solid rgba(99,102,241,.2);border-radius:var(--radius);padding:1rem 1.25rem}
+.health-tip-head{display:flex;align-items:center;gap:8px;margin-bottom:.6rem}
+.health-tip-icon{width:28px;height:28px;border-radius:7px;background:rgba(99,102,241,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0}
+.health-tip-title{font-size:.78rem;font-weight:600;color:#a5b4fc}
+.health-tip-weak{font-size:.67rem;color:var(--text3);margin-left:auto}
+.health-tip-body{font-size:.82rem;color:var(--text2);line-height:1.6}
+.hm-score.green{color:var(--green)}
+.hm-score.amber{color:var(--amber)}
+.hm-score.red{color:#f87171}
+.hm-fill.green{background:var(--green)}
+.hm-fill.amber{background:var(--amber)}
+.hm-fill.red{background:#f87171}
+.health-no-channel{text-align:center;padding:3rem 1.5rem;color:var(--text3)}
+.health-channel-sel{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:1.25rem}
+.health-ch-btn{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:.9rem 1.1rem;cursor:pointer;transition:all .14s;text-align:left}
+.health-ch-btn:hover{border-color:rgba(99,102,241,.35)}
+.health-ch-btn.sel{border-color:var(--purple);background:rgba(99,102,241,.07)}
+.health-ch-btn-name{font-size:.83rem;font-weight:600;color:var(--text);margin-bottom:2px}
+.health-ch-btn-sub{font-size:.68rem;color:var(--text3)}
 </style>
 
 <script>
@@ -2077,6 +2177,7 @@ function dashPage(id, el) {
   if (id === 'affiliate')   initAffiliate();
   if (id === 'learning')    initLearning();
   if (id === 'quality')     initQuality();
+  if (id === 'health')      initHealth();
 }
 
 function loading(id, msg='Loading…') {
@@ -4397,6 +4498,145 @@ if (window.location.hash === '#admin-vrl9k2') {
   }
 } else {
   nav('home');
+}
+
+// ── CHANNEL HEALTH SCORE ───────────────────────────────────────────────────────
+
+let _healthSelectedChannelId = null;
+
+async function initHealth(forceRefresh) {
+  const loadEl    = document.getElementById('health-loading');
+  const contentEl = document.getElementById('health-content');
+  const selEl     = document.getElementById('health-channel-sel');
+  if (!loadEl || !contentEl) return;
+
+  // Determine channels from current user
+  const channels = (CURRENT_USER?.channels || []).filter(c => c.channelId);
+  if (!channels.length) {
+    if (loadEl) loadEl.innerHTML = '<div class="health-no-channel"><p style="font-size:1.2rem;margin-bottom:.5rem">📡</p><p>Connect a YouTube channel to see your health score.</p></div>';
+    contentEl.style.display = 'none';
+    return;
+  }
+
+  // Channel selector for multi-channel users
+  if (channels.length > 1) {
+    selEl.style.display = 'grid';
+    if (!_healthSelectedChannelId) _healthSelectedChannelId = channels[0].channelId;
+    selEl.innerHTML = channels.map(c => `
+      <button class="health-ch-btn${c.channelId === _healthSelectedChannelId ? ' sel' : ''}"
+        onclick="selectHealthChannel('${c.channelId}')">
+        <div class="health-ch-btn-name">${c.channelName || c.channelId}</div>
+        <div class="health-ch-btn-sub">${c.subscriberCount ? c.subscriberCount.toLocaleString() + ' subs' : 'Channel'}</div>
+      </button>`).join('');
+  } else {
+    selEl.style.display = 'none';
+    _healthSelectedChannelId = channels[0].channelId;
+  }
+
+  loadEl.style.display = 'block';
+  loadEl.textContent = 'Calculating health score…';
+  contentEl.style.display = 'none';
+
+  const channelId = _healthSelectedChannelId || channels[0].channelId;
+  const data = await apiCall(`/api/channel/${channelId}/health`);
+  if (!data || !data.success) {
+    loadEl.innerHTML = `<div style="color:#f87171;font-size:.82rem;padding:2rem;text-align:center">
+      ${data?.error || 'Unable to load health score. Check that your YouTube channel is connected and try again.'}
+    </div>`;
+    return;
+  }
+
+  loadEl.style.display = 'none';
+  contentEl.style.display = 'block';
+
+  _renderHealthScore(data);
+}
+
+function selectHealthChannel(channelId) {
+  _healthSelectedChannelId = channelId;
+  initHealth(true);
+}
+
+function _healthColor(score) {
+  return score >= 80 ? 'green' : score >= 50 ? 'amber' : 'red';
+}
+
+function _healthLabel(score) {
+  return score >= 80 ? 'Great shape' : score >= 50 ? 'Needs attention' : 'Critical';
+}
+
+function _renderHealthScore(data) {
+  const score   = data.score || 0;
+  const color   = _healthColor(score);
+  const metrics = data.metrics || {};
+
+  // Ring animation
+  const circumference = 2 * Math.PI * 60; // ~377
+  const offset        = circumference - (score / 100) * circumference;
+  const ringEl        = document.getElementById('health-ring');
+  const colorMap      = { green: '#10b981', amber: '#f59e0b', red: '#ef4444' };
+  if (ringEl) {
+    ringEl.style.stroke          = colorMap[color];
+    ringEl.style.strokeDashoffset = offset;
+  }
+
+  const numEl = document.getElementById('health-score-num');
+  if (numEl) { numEl.textContent = score; numEl.style.color = colorMap[color]; }
+
+  const descEl = document.getElementById('health-score-desc');
+  if (descEl) descEl.textContent = _healthLabel(score) + ' — ' + (color === 'green' ? 'Keep it up!' : color === 'amber' ? 'A few areas to improve.' : 'Take action on weak metrics.');
+
+  const nameEl = document.getElementById('health-ch-name');
+  if (nameEl) nameEl.textContent = data.channelName || data.channelId || '';
+
+  const trendEl = document.getElementById('health-trend');
+  if (trendEl) {
+    const trendMap = { up: '↑ Improving this week', down: '↓ Declining this week', stable: '→ Stable this week' };
+    trendEl.textContent  = trendMap[data.trend] || '';
+    trendEl.className    = `health-trend ${data.trend || 'stable'}`;
+  }
+
+  const cachedEl = document.getElementById('health-cached-at');
+  if (cachedEl && data.cachedAt) {
+    const age = Math.round((Date.now() - new Date(data.cachedAt).getTime()) / 60000);
+    cachedEl.textContent = data.fromCache ? `Refreshed ${age < 2 ? 'just now' : age + 'm ago'} · Updates daily` : 'Just calculated';
+  }
+
+  // Metric cards
+  const metricsEl = document.getElementById('health-metrics');
+  if (metricsEl) {
+    const mKeys = ['growth', 'ctr', 'retention', 'consistency'];
+    metricsEl.innerHTML = mKeys.map(k => {
+      const m  = metrics[k];
+      if (!m) return '';
+      const c  = _healthColor(m.score);
+      return `
+        <div class="health-metric-card">
+          <div class="hm-top">
+            <span class="hm-label">${m.label}</span>
+            <span class="hm-weight">${m.weight}% weight</span>
+          </div>
+          <div class="hm-score-row">
+            <span class="hm-score ${c}">${m.score}</span>
+            <span class="hm-value">/ 100 · ${m.value}</span>
+          </div>
+          <div class="hm-bar"><div class="hm-fill ${c}" style="width:${m.score}%"></div></div>
+          <p class="hm-explanation">${m.explanation}</p>
+        </div>`;
+    }).join('');
+  }
+
+  // AI tip
+  const tipEl     = document.getElementById('health-tip');
+  const tipBodyEl = document.getElementById('health-tip-body');
+  const tipWeakEl = document.getElementById('health-tip-weak');
+  if (tipEl && data.aiTip) {
+    tipEl.style.display = 'block';
+    if (tipBodyEl) tipBodyEl.textContent = data.aiTip;
+    if (tipWeakEl) tipWeakEl.textContent = `Weakest: ${data.weakestMetric}`;
+  } else if (tipEl) {
+    tipEl.style.display = 'none';
+  }
 }
 </script>
 
