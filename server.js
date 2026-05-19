@@ -414,7 +414,7 @@ const userSchema = new mongoose.Schema({
   googleId:       { type: String },
   plan:           { type: String, enum: ['trial','starter','shorts_pro','growth','agency'], default: 'trial' },
   trialStartedAt: { type: Date, default: Date.now },
-  trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+  trialEndsAt:    { type: Date, default: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) },
   stripeCustomerId:     { type: String },
   stripeSubscriptionId: { type: String },
   subscriptionStatus:   { type: String, enum: ['active', 'cancelled', 'expired', 'trial', 'past_due'], default: 'trial' },
@@ -597,7 +597,7 @@ passport.use(new GoogleStrategy({
         googleId:        profile.id,
         plan:            'trial',
         trialStartedAt:  new Date(),
-        trialEndsAt:     new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        trialEndsAt:     new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
         youtubeChannels: [],
         affiliateCode:   generateAffiliateCode(),
         ...(affiliateRef && { referredBy: affiliateRef }),
@@ -776,11 +776,11 @@ async function checkYoutubeQuota(unitsNeeded, userId) {
 }
 
 const PLAN_CONFIG = {
-  trial:      { videosPerDay: 1,  shortsPerDay: 1,  longFormPerWeek: 0, channels: 1, price: 0 },
-  starter:    { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 49 },
-  shorts_pro: { videosPerDay: 7,  shortsPerDay: 7,  longFormPerWeek: 0, channels: 1, price: 79 },
-  growth:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 3, price: 99 },
-  agency:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 5, price: 249 },
+  trial:      { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 0 },
+  starter:    { videosPerDay: 3,  shortsPerDay: 3,  longFormPerWeek: 0, channels: 1, price: 29 },
+  shorts_pro: { videosPerDay: 7,  shortsPerDay: 7,  longFormPerWeek: 0, channels: 1, price: 69 },
+  growth:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 2, price: 99 },
+  agency:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 4, price: 249 },
 };
 
 function planNicheQuota(plan) {
@@ -907,7 +907,7 @@ app.post('/api/auth/register', async (req, res) => {
     const affiliateCode = generateAffiliateCode();
 
     const ref = typeof req.body.ref === 'string' && req.body.ref.trim() ? req.body.ref.trim() : null;
-    const trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const trialEnd = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
     const user = await User.create({
       name, email: email.toLowerCase(), passwordHash, affiliateCode,
       plan: 'trial',
@@ -4725,7 +4725,7 @@ app.get('/api/affiliate/dashboard', requireAuth, async (req, res) => {
       starter:    Math.round(PLAN_CONFIG.starter?.price  * 0.20 * 100) / 100 || 9.80,
       growth:     Math.round(PLAN_CONFIG.growth?.price   * 0.20 * 100) / 100 || 19.80,
       agency:     Math.round(PLAN_CONFIG.agency?.price   * 0.20 * 100) / 100 || 49.80,
-      shorts_pro: 15.80,
+      shorts_pro: Math.round(PLAN_CONFIG.shorts_pro?.price * 0.20 * 100) / 100 || 13.80,
     };
 
     // All users who came via this code
