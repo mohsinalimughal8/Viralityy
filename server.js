@@ -4955,7 +4955,7 @@ app.get('/api/quality/scores', requireAuth, async (req, res) => {
 // Step 1 — Generate video script via OpenAI
 // Step 1 — Generate viral-optimised script via OpenAI
 // Returns { title, script, hook, loopEnding, captions, hashtags, wordCount }
-// Shorts: structured JSON with hook rules, 60-80 word cap, caption segments, hashtags
+// Shorts: structured JSON with hook rules, 130-150 word target, caption segments, hashtags
 // Long-form: plain text wrapped in the same shape for a consistent call site
 async function pipelineGenerateScript(title, nicheName, type, hookTemplate) {
   const { OpenAI } = require('openai');
@@ -4985,9 +4985,9 @@ Write a viral-optimised Shorts script for the video: "${title}"
 ${hookInstruction}
 STRICT RULES:
 1. HOOK (first 3 seconds): ${hookTemplate ? `Use the mandatory hook above verbatim (replace [TOPIC] with the video topic). Do NOT modify it.` : `Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.`}
-2. LENGTH: Script must be 60-80 words total (hard limit — 20-30 seconds of speech). If you reach 100 words, stop.
-3. STRUCTURE: Hook (3 sec) → 3 rapid value points (15 sec) → Loop ending (5 sec). The LAST sentence MUST echo or reference the hook to create a rewatch loop.
-4. STYLE: Short punchy sentences only. Zero filler words (no "basically", "actually", "you know"). Every sentence adds new information.
+2. LENGTH: Script must be EXACTLY 130-150 words total. This is a hard requirement — do NOT write fewer than 130 words under any circumstances. Count every word. 130-150 words at natural speaking pace produces a 55-65 second video.
+3. STRUCTURE: Hook (5 sec) → 5 value-packed points with examples (40 sec) → powerful call-to-action + Loop ending (10 sec). The LAST sentence MUST echo or reference the hook to create a rewatch loop.
+4. STYLE: Short punchy sentences only. Zero filler words (no "basically", "actually", "you know"). Every sentence adds new information or a concrete example.
 5. TITLE: Generate a viral title using power words. Format: "[Number] [Topic] That [Surprising Outcome]" OR "Why [Common Belief] Is Wrong" OR "The [Topic] Secret Nobody Tells You".
 6. HASHTAGS: Generate exactly 5 hashtags relevant to the ${nicheName} niche.
 7. CAPTIONS: Split the full script into caption segments — each segment MAX 4 words, estimated timestamps at ~2.5 words/sec pace.
@@ -4995,8 +4995,8 @@ STRICT RULES:
 Return valid JSON only — no prose, no markdown:
 {
   "title": "viral title here",
-  "script": "full spoken script, 60-80 words, no stage directions",
-  "wordCount": 72,
+  "script": "full spoken script, 130-150 words, no stage directions",
+  "wordCount": 140,
   "hook": "the opening hook sentence only",
   "loopEnding": "the last sentence that echoes the hook",
   "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
@@ -5019,17 +5019,20 @@ Return valid JSON only — no prose, no markdown:
       const wordCount = (parsed.script || '').split(/\s+/).filter(Boolean).length;
       const inTok2    = res.usage?.prompt_tokens    || 0;
       const outTok2   = res.usage?.completion_tokens || 0;
+      const ok = wordCount >= 120 && wordCount <= 180;
       logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
-        inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, wordCount <= 100);
-      console.log(`[Script] Attempt ${attempt}/3 — ${wordCount} words`);
-      if (wordCount <= 100) { best = { ...parsed, wordCount }; break; }
-      console.warn(`[Script] ${wordCount} words exceeds 100 — regenerating`);
+        inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, ok);
+      console.log(`[Script] Attempt ${attempt}/3 — ${wordCount} words (target: 130-150)`);
+      if (ok) { best = { ...parsed, wordCount }; break; }
+      if (wordCount < 120) console.warn(`[Script] ${wordCount} words is too short (< 120) — regenerating`);
+      else console.warn(`[Script] ${wordCount} words exceeds 180 — regenerating`);
     } catch (err) {
       logAPIUsage('openai', 'script_short', null, 0, 0, false);
       console.warn(`[Script] Attempt ${attempt}/3 failed: ${err.message}`);
     }
   }
-  if (!best) throw new Error('Script generation failed to produce a sub-100-word script after 3 attempts');
+  // Accept best effort if all 3 attempts are out of range
+  if (!best) throw new Error('Script generation failed to produce a 120-180 word script after 3 attempts');
 
   return {
     title:      best.title      || title,
@@ -5301,24 +5304,25 @@ function deriveFootageQueries(title, script, nicheName = '', excludeQueries = ne
       chosen.push(q);
       break; // one per aspect
     }
-    if (chosen.length >= 5) break;
+    if (chosen.length >= 8) break;
   }
 
-  // Pad with generic fallbacks if fewer than 5
+  // Pad with generic fallbacks if fewer than 8
   const generic = [
     'productive morning','focused mindset','success journey','bright future','motivated action',
     'hands typing laptop','sunrise landscape','person walking city','calm nature scene','team collaboration',
+    'confident person walking','sunrise time lapse','modern workspace focus','positive energy outdoor',
   ];
   for (const g of generic) {
-    if (chosen.length >= 5) break;
+    if (chosen.length >= 8) break;
     if (!chosenSet.has(g) && !excludeQueries.has(g)) { chosenSet.add(g); chosen.push(g); }
   }
 
-  return chosen.slice(0, 5);
+  return chosen.slice(0, 8);
 }
 
-// Step 3 — Fetch 5 unique portrait clips from Pexels, excluding previously used video IDs.
-// Paginates up to 3 pages per query until 5 unused clips are found.
+// Step 3 — Fetch 8 unique portrait clips from Pexels, excluding previously used video IDs.
+// Paginates up to 3 pages per query until 8 unused clips are found.
 async function pipelineFetchMultipleFootage(title, script, nicheName = '', userId = null) {
   const apiKey = process.env.PEXELS_API_KEY;
   if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
@@ -5643,7 +5647,7 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   }
 
   const n       = clipPaths.length;
-  const clipDur = 6;
+  const clipDur = 8; // 8s per clip × 8 clips = 64s footage — covers a 55-65s voiceover with headroom
 
   // Base filter parts: scale/crop/trim each clip, then concat
   const baseParts = [];
@@ -6064,7 +6068,10 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     }
 
     // 3/5 Voiceover
-    psUpdate('3/5'); console.log(`[JIT] 3/5 Voiceover — "${slotDoc.title}"`);
+    psUpdate('3/5');
+    const scriptWordCount = script.split(/\s+/).filter(Boolean).length;
+    const estimatedSecs   = Math.round((scriptWordCount / 130) * 60 / 1.1); // 130 WPM, TTS speakingRate=1.1
+    console.log(`[JIT] 3/5 Voiceover — "${slotDoc.title}" | script: ${scriptWordCount} words → ~${estimatedSecs}s audio`);
     await setStatus({ pipelineStatus: 'generating-voiceover' });
     const voResult = await pipelineGenerateVoiceover(script, String(slotDoc.userId));
     audioPath = voResult.audioPath;
