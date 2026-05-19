@@ -7202,10 +7202,27 @@ function registerCronJobs() {
 // =============================================================================
 // SERVE STATIC FRONTEND
 // =============================================================================
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve project root as static directory (index.html, sw.js, manifest.json, icons live here)
+app.use(express.static(__dirname, {
+  index: false, // let the catchall handle / so API routes take priority
+  setHeaders: (res, filePath) => {
+    // Service worker must not be cached by the browser
+    if (filePath.endsWith('sw.js')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Service-Worker-Allowed', '/');
+    }
+    if (filePath.endsWith('manifest.json')) {
+      res.setHeader('Content-Type', 'application/manifest+json');
+    }
+    if (filePath.endsWith('.svg')) {
+      res.setHeader('Content-Type', 'image/svg+xml');
+    }
+  },
+}));
+
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/auth') || req.path.startsWith('/webhooks')) return res.status(404).json({ error: 'Not found' });
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // =============================================================================

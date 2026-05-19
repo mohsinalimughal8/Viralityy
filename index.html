@@ -4,6 +4,24 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Viralityy — Automated YouTube Channel Growth</title>
+
+<!-- PWA: manifest + theme -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#07070d">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- iOS standalone / fullscreen support -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Viralityy">
+<link rel="apple-touch-icon" href="/icon-192.svg">
+
+<!-- Standard favicons -->
+<link rel="icon" type="image/svg+xml" href="/icon-192.svg">
+
+<!-- SEO / Open Graph -->
+<meta name="description" content="Automated YouTube channel growth — AI scripts, voiceovers, thumbnails and auto-posting.">
+
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono&display=swap" rel="stylesheet">
 <style>
 /* ═══════════════════════════════════════════════
@@ -4291,5 +4309,20 @@ if (window.location.hash === '#admin-vrl9k2') {
 <div id="vly-overlay" class="vly-overlay" style="display:none" onclick="if(event.target===this)closeNicheModal()">
   <div class="vly-modal" id="vly-modal"></div>
 </div>
+
+<script>
+// ── Service Worker registration ───────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .then(reg => {
+        console.log('[PWA] Service worker registered, scope:', reg.scope);
+        // Check for updates in background
+        reg.update().catch(() => {});
+      })
+      .catch(err => console.warn('[PWA] Service worker registration failed:', err));
+  });
+}
+</script>
 </body>
 </html>
