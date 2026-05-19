@@ -576,6 +576,13 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .snc-mod{background:rgba(245,158,11,.12);color:#fcd34d}
 .snc-weak{background:rgba(107,114,128,.1);color:#9ca3af}
 .niche-sort-pill.active{background:rgba(99,102,241,.12);color:#a5b4fc;border-color:rgba(99,102,241,.3)}
+/* ═══ POLICY FOOTER ═══ */
+#policy-footer{position:fixed;bottom:0;left:0;right:0;z-index:9000;background:rgba(10,10,15,.96);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,.07);padding:10px 20px;display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}
+#policy-footer a{font-size:.72rem;color:var(--text3);cursor:pointer;transition:color .15s;white-space:nowrap}
+#policy-footer a:hover{color:var(--text)}
+#policy-footer .pf-sep{font-size:.72rem;color:rgba(255,255,255,.18);user-select:none}
+/* give non-dashboard pages breathing room above the footer */
+#page-home,#page-pricing,#page-login,#page-signup,#page-reset,#page-privacy,#page-terms,#page-cookies,#page-refund{padding-bottom:44px}
 </style>
 
 </head>
@@ -2372,6 +2379,10 @@ function nav(page) {
     el.classList.add('active');
     window.scrollTo(0,0);
   }
+
+  // Show/hide policy footer — hidden on dashboard, visible everywhere else
+  const _pf = document.getElementById('policy-footer');
+  if (_pf) _pf.style.display = (page === 'dashboard') ? 'none' : 'flex';
 
   // Keep URL hash in sync for public-linkable pages
   const _hashable = ['pricing','terms','privacy','refund'];
@@ -5420,6 +5431,30 @@ if ('serviceWorker' in navigator) {
       .catch(err => console.warn('[PWA] Service worker registration failed:', err));
   });
 }
+</script>
+
+<!-- ═══ POLICY FOOTER — always visible, hides only on dashboard ═══ -->
+<footer id="policy-footer">
+  <a onclick="nav('pricing')">Pricing</a>
+  <span class="pf-sep">·</span>
+  <a onclick="nav('terms')">Terms of Service</a>
+  <span class="pf-sep">·</span>
+  <a onclick="nav('privacy')">Privacy Policy</a>
+  <span class="pf-sep">·</span>
+  <a onclick="nav('refund')">Refund Policy</a>
+</footer>
+
+<!-- ═══ EARLY HASH ROUTING — synchronous, runs before main init ═══ -->
+<script>
+(function(){
+  var map={'#pricing':'page-pricing','#terms':'page-terms','#privacy':'page-privacy','#refund':'page-refund'};
+  var target=map[window.location.hash];
+  if(!target)return;
+  var pages=document.querySelectorAll('.site-page');
+  for(var i=0;i<pages.length;i++){pages[i].style.display='none';pages[i].classList.remove('active');}
+  var el=document.getElementById(target);
+  if(el){el.style.display='block';el.classList.add('active');}
+})();
 </script>
 </body>
 </html>
