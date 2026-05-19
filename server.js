@@ -431,8 +431,9 @@ const userSchema = new mongoose.Schema({
   nicheChangesYear: { type: Number, default: () => new Date().getFullYear() },
   affiliateCode:   { type: String, unique: true, sparse: true },
   referredBy:      { type: String },
-  autoPost:        { type: Boolean, default: true },
-  timezone:        { type: String },
+  autoPost:           { type: Boolean, default: true },
+  onboardingComplete: { type: Boolean, default: false },
+  timezone:           { type: String },
   usedFootageIds:  { type: [String], default: [] },
   blocked:         { type: Boolean, default: false },
   blockedAt:       { type: Date },
@@ -4094,6 +4095,17 @@ app.patch('/api/user/timezone', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[User] PATCH /timezone error:', err);
     res.status(500).json({ error: 'Failed to update timezone' });
+  }
+});
+
+// PATCH /api/user/onboarding-complete — mark onboarding walkthrough as finished
+app.patch('/api/user/onboarding-complete', requireAuth, async (req, res) => {
+  try {
+    await User.updateOne({ _id: req.user.id }, { $set: { onboardingComplete: true } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[User] PATCH /onboarding-complete error:', err);
+    res.status(500).json({ error: 'Failed to mark onboarding complete' });
   }
 });
 

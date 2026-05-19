@@ -397,6 +397,35 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .vly-modal-close{padding:6px 16px;border-radius:8px;font-size:.75rem;font-weight:600;cursor:pointer;border:1px solid var(--border2);background:transparent;color:var(--text2)}
 .toast-success{background:rgba(16,185,129,.9);border:1px solid rgba(16,185,129,.4)}
 .toast-error{background:rgba(239,68,68,.9);border:1px solid rgba(239,68,68,.4)}
+
+/* ── Onboarding walkthrough ── */
+#ob-backdrop{position:fixed;inset:0;z-index:9988;background:rgba(0,0,0,.78);display:none}
+#ob-spotlight{position:fixed;z-index:9990;display:none;border-radius:10px;pointer-events:none;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.78),0 0 0 2px #6366f1,0 0 24px rgba(99,102,241,.45);
+  transition:top .25s ease,left .25s ease,width .25s ease,height .25s ease}
+#ob-modal{position:fixed;z-index:9995;background:var(--bg2);border:1px solid rgba(99,102,241,.3);
+  border-radius:16px;padding:2rem;width:min(440px,92vw);
+  box-shadow:0 24px 64px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.04);
+  top:50%;left:50%;transform:translate(-50%,-50%);display:none;flex-direction:column;gap:1.25rem}
+#ob-header{display:flex;align-items:center;justify-content:space-between}
+#ob-dots{display:flex;gap:6px}
+.ob-dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.15);transition:all .2s}
+.ob-dot.active{background:#6366f1;width:22px;border-radius:4px}
+.ob-dot.done{background:rgba(99,102,241,.4)}
+#ob-step-label{font-size:.68rem;font-weight:600;color:var(--text3);letter-spacing:.08em;text-transform:uppercase}
+#ob-icon{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;
+  background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);font-size:1.5rem}
+#ob-title{font-size:1.1rem;font-weight:700;color:var(--text);line-height:1.3}
+#ob-body{font-size:.85rem;color:var(--text2);line-height:1.7}
+#ob-footer{display:flex;align-items:center;justify-content:space-between;margin-top:.25rem;gap:.75rem}
+#ob-skip{background:none;border:none;color:var(--text3);font-size:.78rem;cursor:pointer;padding:.35rem .5rem;border-radius:6px;transition:color .15s}
+#ob-skip:hover{color:var(--text2)}
+#ob-nav{display:flex;gap:.5rem}
+.ob-btn{padding:.55rem 1.1rem;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;border:none;transition:all .15s}
+.ob-btn-ghost{background:rgba(255,255,255,.06);color:var(--text2);border:1px solid var(--border2)}
+.ob-btn-ghost:hover{background:rgba(255,255,255,.1);color:var(--text)}
+.ob-btn-primary{background:#6366f1;color:#fff}
+.ob-btn-primary:hover{background:#4f46e5}
 .toast-info{background:rgba(99,102,241,.9);border:1px solid rgba(99,102,241,.4)}
 @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -447,6 +476,33 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
 <!-- ═══ TOAST CONTAINER ═══ -->
 <div id="toast"></div>
+
+<!-- ═══ ONBOARDING WALKTHROUGH ═══ -->
+<div id="ob-backdrop"></div>
+<div id="ob-spotlight"></div>
+<div id="ob-modal">
+  <div id="ob-header">
+    <div id="ob-dots">
+      <span class="ob-dot"></span>
+      <span class="ob-dot"></span>
+      <span class="ob-dot"></span>
+      <span class="ob-dot"></span>
+    </div>
+    <span id="ob-step-label">Step 1 of 4</span>
+  </div>
+  <div id="ob-icon"></div>
+  <div>
+    <h2 id="ob-title"></h2>
+    <p id="ob-body" style="margin-top:.5rem"></p>
+  </div>
+  <div id="ob-footer">
+    <button id="ob-skip" class="ob-btn" onclick="finishOnboarding(true)">Skip walkthrough</button>
+    <div id="ob-nav">
+      <button id="ob-back" class="ob-btn ob-btn-ghost" onclick="obBack()">← Back</button>
+      <button id="ob-next" class="ob-btn ob-btn-primary" onclick="obNext()">Next →</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════════════════════════════════════
      HOME PAGE
@@ -2076,11 +2132,16 @@ async function checkSubscriptionStatus() {
     CURRENT_USER.subscriptionRenewsAt = data.subscriptionRenewsAt;
     CURRENT_USER.trialEndsAt          = data.user.trialEndsAt;
     CURRENT_USER.autoPost             = data.user.autoPost ?? true;
+    CURRENT_USER.onboardingComplete   = data.user.onboardingComplete ?? false;
+    CURRENT_USER.youtubeChannels      = data.user.youtubeChannels ?? CURRENT_USER.youtubeChannels ?? [];
     localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
     updateUserUI();
     // Apply authoritative autoPost state to toggle if it's in the DOM
     const _apToggle = document.getElementById('auto-post-toggle');
     if (_apToggle) _apToggle.checked = CURRENT_USER.autoPost !== false;
+
+    // Show onboarding for first-time users with no channel connected
+    maybeShowOnboarding();
 
     if (data.subscriptionStatus === 'expired') {
       // Gate feature-heavy pages — allow analytics and dashboard overview only
@@ -2100,8 +2161,147 @@ async function initDashboard() {
   dashInited = true;
   captureTimezone();
   updateUserUI();
-  checkSubscriptionStatus(); // async — updates sidebar pill + gates expired users
+  checkSubscriptionStatus(); // async — updates sidebar pill, gates expired users, triggers onboarding
   await initOverview();
+}
+
+// ════════════════════════════════════════════
+// ONBOARDING WALKTHROUGH
+// ════════════════════════════════════════════
+const OB_STEPS = [
+  {
+    icon: '👋',
+    title: 'Welcome to Viralityy',
+    body: 'Viralityy creates, posts and optimises YouTube Shorts and long-form videos for you — every single day. No editing. No scripting. No scheduling. Set it up once and it runs forever.',
+    target: null,
+  },
+  {
+    icon: '📺',
+    title: 'Connect your YouTube channel',
+    body: 'Head to My Channels and connect your YouTube account via Google OAuth. Viralityy will automatically post videos to it once the pipeline is running.',
+    target: '[onclick="dashPage(\'channels\',this)"]',
+    action: () => dashPage('channels', document.querySelector('[onclick="dashPage(\'channels\',this)"]')),
+  },
+  {
+    icon: '🎯',
+    title: 'Pick your niche',
+    body: 'Open Niche Finder and choose a content niche. Our AI scores 27+ niches by CPM, competition level and trend momentum — so you start in the most profitable lane.',
+    target: '[onclick="dashPage(\'niches\',this)"]',
+    action: () => dashPage('niches', document.querySelector('[onclick="dashPage(\'niches\',this)"]')),
+  },
+  {
+    icon: '🚀',
+    title: "You're all set!",
+    body: "That's everything. Viralityy's pipeline now runs automatically — writing scripts, generating voiceovers, assembling videos and posting them. Check your dashboard tomorrow for your first results.",
+    target: null,
+  },
+];
+
+let _obStep = 0;
+
+function maybeShowOnboarding() {
+  if (!CURRENT_USER) return;
+  if (CURRENT_USER.onboardingComplete) return;
+  if ((CURRENT_USER.youtubeChannels || []).length > 0) return;
+  _obStep = 0;
+  _obRender();
+}
+
+function _obRender() {
+  const step  = OB_STEPS[_obStep];
+  const total = OB_STEPS.length;
+
+  document.getElementById('ob-step-label').textContent = `Step ${_obStep + 1} of ${total}`;
+  document.getElementById('ob-icon').textContent  = step.icon;
+  document.getElementById('ob-title').textContent = step.title;
+  document.getElementById('ob-body').textContent  = step.body;
+
+  // Progress dots
+  document.querySelectorAll('.ob-dot').forEach((dot, i) => {
+    dot.classList.toggle('active', i === _obStep);
+    dot.classList.toggle('done',   i < _obStep);
+    dot.classList.remove('active');
+    dot.classList.remove('done');
+    if (i === _obStep) dot.classList.add('active');
+    else if (i < _obStep) dot.classList.add('done');
+  });
+
+  // Back button visibility
+  document.getElementById('ob-back').style.display = _obStep === 0 ? 'none' : '';
+
+  // Next button label
+  document.getElementById('ob-next').textContent = _obStep === total - 1 ? 'Get started ✓' : 'Next →';
+
+  // Show/hide spotlight vs backdrop
+  _obClearSpotlight();
+  if (step.target) {
+    const el = document.querySelector(step.target);
+    if (el) _obApplySpotlight(el);
+    else     _obShowBackdrop();
+  } else {
+    _obShowBackdrop();
+  }
+
+  // Show modal
+  const modal = document.getElementById('ob-modal');
+  modal.style.display = 'flex';
+}
+
+function _obApplySpotlight(el) {
+  const rect = el.getBoundingClientRect();
+  const pad  = 10;
+  const spot = document.getElementById('ob-spotlight');
+  spot.style.left   = (rect.left   - pad) + 'px';
+  spot.style.top    = (rect.top    - pad) + 'px';
+  spot.style.width  = (rect.width  + pad * 2) + 'px';
+  spot.style.height = (rect.height + pad * 2) + 'px';
+  spot.style.display = 'block';
+  // Position modal to the right of the sidebar
+  const modal = document.getElementById('ob-modal');
+  modal.style.top       = '50%';
+  modal.style.left      = 'calc(var(--sidebar) + 40px + 220px)';
+  modal.style.transform = 'translateY(-50%)';
+  document.getElementById('ob-backdrop').style.display = 'none';
+}
+
+function _obShowBackdrop() {
+  document.getElementById('ob-backdrop').style.display = 'block';
+  // Re-center modal
+  const modal = document.getElementById('ob-modal');
+  modal.style.top       = '50%';
+  modal.style.left      = '50%';
+  modal.style.transform = 'translate(-50%, -50%)';
+}
+
+function _obClearSpotlight() {
+  document.getElementById('ob-spotlight').style.display = 'none';
+  document.getElementById('ob-backdrop').style.display  = 'none';
+}
+
+function obNext() {
+  const step = OB_STEPS[_obStep];
+  if (step.action) try { step.action(); } catch (_) {}
+  if (_obStep < OB_STEPS.length - 1) {
+    _obStep++;
+    _obRender();
+  } else {
+    finishOnboarding(false);
+  }
+}
+
+function obBack() {
+  if (_obStep > 0) { _obStep--; _obRender(); }
+}
+
+async function finishOnboarding(skipped) {
+  _obClearSpotlight();
+  document.getElementById('ob-modal').style.display = 'none';
+  if (CURRENT_USER) {
+    CURRENT_USER.onboardingComplete = true;
+    localStorage.setItem('vly_user', JSON.stringify(CURRENT_USER));
+  }
+  await apiCall('/api/user/onboarding-complete', 'PATCH').catch(() => {});
+  if (!skipped) toast('Setup complete — your first videos will be ready soon!', 'success');
 }
 
 // ════════════════════════════════════════════
