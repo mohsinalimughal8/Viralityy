@@ -1531,12 +1531,11 @@ app.post('/api/billing/promo', requireAuth, async (req, res) => {
   try {
     const { promoCode } = req.body;
     if (promoCode !== 'VRL-X9K2-M7QP-4TZW') return res.status(400).json({ success: false, error: 'Invalid promo code' });
-    const plan    = 'agency';
-    const limits  = getPlanLimits(plan);
+    const plan   = 'agency'; // matches PLAN_LIMITS key exactly
+    const limits = getPlanLimits(plan);  // { videosPerDayPerChannel:10, maxChannels:4, longformEnabled:true }
     const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
     await User.findByIdAndUpdate(req.user.id, {
       plan,
-      planUpdatedAt:          new Date(),
       subscriptionStatus:     'active',
       subscriptionStartDate:  new Date(),
       subscriptionEndDate:    endDate,
@@ -1545,7 +1544,7 @@ app.post('/api/billing/promo', requireAuth, async (req, res) => {
       maxChannels:            limits.maxChannels,
       longformEnabled:        limits.longformEnabled,
     });
-    console.log(`[Promo] User ${req.user.email} upgraded to agency via promo code (expires ${endDate.toISOString().slice(0,10)})`);
+    console.log(`[Promo] User ${req.user.email} upgraded to ${plan} via promo code (expires ${endDate.toISOString().slice(0,10)})`);
     res.json({ success: true, plan, subscriptionStatus: 'active', subscriptionEndDate: endDate });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
@@ -7704,6 +7703,38 @@ app.post('/api/admin/users/:userId/subscription', requireAdmin, async (req, res)
   } catch (err) {
     console.error('[Admin] Subscription override error:', err.message);
     res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// POST /api/admin/activate-account — directly set any user to any plan by email (admin JWT required)
+app.post('/api/admin/activate-account', requireAdmin, async (req, res) => {
+  try {
+    const { email, plan } = req.body || {};
+    if (!email) return res.status(400).json({ success: false, error: 'email is required' });
+    if (!plan || !PLAN_LIMITS[plan]) {
+      return res.status(400).json({ success: false, error: `Invalid plan "${plan}". Valid plans: ${Object.keys(PLAN_LIMITS).join(', ')}` });
+    }
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('_id email plan subscriptionStatus').lean();
+    if (!user) return res.status(404).json({ success: false, error: `No user found with email: ${email}` });
+    const limits  = getPlanLimits(plan);
+    const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    await User.findByIdAndUpdate(user._id, {
+      plan,
+      subscriptionStatus:     'active',
+      subscriptionStartDate:  new Date(),
+      subscriptionEndDate:    endDate,
+      subscriptionRenewsAt:   endDate,
+      videosPerDayPerChannel: limits.videosPerDayPerChannel,
+      maxChannels:            limits.maxChannels,
+      longformEnabled:        limits.longformEnabled,
+    });
+    console.log(`[Admin] ${req.adminUser?.email || 'admin'} activated ${email} → plan:${plan} (expires ${endDate.toISOString().slice(0,10)})`);
+    const updated = await User.findById(user._id)
+      .select('email plan subscriptionStatus subscriptionEndDate videosPerDayPerChannel maxChannels longformEnabled').lean();
+    res.json({ success: true, user: updated });
+  } catch (err) {
+    console.error('[Admin] activate-account error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
