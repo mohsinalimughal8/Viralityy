@@ -19,21 +19,6 @@ const crypto         = require('crypto');
 const path           = require('path');
 const { exec, spawn } = require('child_process');
 const axios           = require('axios');
-// Stripe lazy-initialised — missing key does not crash startup
-let _stripeInstance = null;
-function getStripeClient() {
-  if (_stripeInstance) return _stripeInstance;
-  if (!process.env.STRIPE_SECRET_KEY) {
-    throw new Error('STRIPE_SECRET_KEY not set — add it in Railway env vars before using billing');
-  }
-  _stripeInstance = require('stripe')(process.env.STRIPE_SECRET_KEY);
-  return _stripeInstance;
-}
-const stripe = new Proxy({}, {
-  get(_, prop) {
-    return (...args) => getStripeClient()[prop](...args);
-  }
-});
 const jwt            = require('jsonwebtoken');
 const bcrypt         = require('bcryptjs');
 
@@ -573,7 +558,7 @@ app.get('/health', async (req, res) => {
     uptime:  process.uptime(),
     env:     process.env.NODE_ENV || 'development',
     mongo:   mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    stripe:  !!process.env.STRIPE_SECRET_KEY ? 'configured' : 'not configured (billing disabled)',
+    paddle:  process.env.PADDLE_API_KEY ? 'configured' : 'not configured',
     youtube: !!process.env.YOUTUBE_API_KEY   ? 'configured' : 'not configured',
     openai:  !!process.env.OPENAI_API_KEY    ? 'configured' : 'not configured',
     pipeline,
@@ -5993,11 +5978,14 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
       const thumbMime = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      console.log(`[DIAG] Calling yt.thumbnails.set for videoId=${videoId}, mime=${thumbMime}`);
-      await yt.thumbnails.set({
+      const thumbSizeBytes = fs.statSync(thumbPath).size;
+      console.log(`[DIAG] Calling yt.thumbnails.set — videoId=${videoId}, mime=${thumbMime}, fileSize=${thumbSizeBytes} bytes (${(thumbSizeBytes/1024/1024).toFixed(2)} MB)`);
+      const thumbSetResult = await yt.thumbnails.set({
         videoId,
         media: { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
       });
+      console.log(`[DIAG] thumbnails.set HTTP status: ${thumbSetResult?.status}`);
+      console.log(`[DIAG] thumbnails.set response data:`, JSON.stringify(thumbSetResult?.data || {}).slice(0, 800));
       logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
       logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
       console.log(`[Thumbnail] ✓ Uploaded for video ${videoId}`);
@@ -6065,7 +6053,7 @@ async function callImagenAPI(prompt, aspectRatio) {
   const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:predict?key=${apiKey}`;
   const imagenBody   = {
     instances:  [{ prompt }],
-    parameters: { sampleCount: 1, aspectRatio },
+    parameters: { sampleCount: 1, aspectRatio, outputMimeType: 'image/jpeg' },
   };
 
   console.log(`[Imagen] POST ${imagenUrl.replace(apiKey, 'KEY=...'+apiKey.slice(-4))}`);
@@ -6126,8 +6114,13 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
     const thumbPath = `/tmp/vly_thumb_${slotId}.${thumbExt}`;
     fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
     const sizeBytes = fs.statSync(thumbPath).size;
-    console.log(`[Thumbnail] Saved: ${thumbPath} (${sizeBytes} bytes)`);
+    console.log(`[Thumbnail] Saved: ${thumbPath} (${sizeBytes} bytes, ${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
     if (sizeBytes < 1000) throw new Error(`Thumbnail suspiciously small: ${sizeBytes} bytes`);
+    if (sizeBytes > 2 * 1024 * 1024) {
+      console.error(`[Thumbnail] File too large: ${(sizeBytes / 1024 / 1024).toFixed(2)} MB — YouTube max is 2 MB. Discarding.`);
+      fs.unlink(thumbPath, () => {});
+      return null;
+    }
 
     logAPIUsage('imagen4', 'thumbnail', null, 0, 0.02, true).catch(() => {});
     return thumbPath;
@@ -7784,6 +7777,121 @@ app.get('/api/admin/test-imagen', requireAuth, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/admin/test-thumbnail-upload?videoId=REAL_YOUTUBE_VIDEO_ID
+// Generates a thumbnail via Imagen 4, uploads it to a real YouTube video, returns full success/error detail.
+app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
+  const { videoId } = req.query;
+  if (!videoId) return res.status(400).json({ error: 'videoId query param is required (a real YouTube video ID, e.g. dQw4w9WgXcQ)' });
+
+  const fs = require('fs');
+  const { google } = require('googleapis');
+
+  try {
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
+    const user = await User.findOne({ email: adminEmail });
+    if (!user) return res.status(404).json({ error: `No user found for ADMIN_EMAIL ${adminEmail}` });
+
+    const channel = (user.youtubeChannels || []).find(ch => /all.*everything/i.test(ch.channelName || ''))
+                 || user.youtubeChannels?.[0];
+    if (!channel) return res.status(404).json({ error: 'No YouTube channel found for admin user' });
+
+    console.log(`[TestThumb] Channel: "${channel.channelName}" (${channel.channelId}), thumbnailsEnabled=${channel.thumbnailsEnabled}`);
+    console.log(`[TestThumb] Target YouTube videoId: ${videoId}`);
+
+    // Step 1: Generate thumbnail via Imagen 4
+    const thumbPath = await generateThumbnail('Amazing Facts You Never Knew', 'General Knowledge', 'Short', `testthumb_${Date.now()}`);
+    if (!thumbPath) {
+      return res.status(500).json({ error: 'Imagen 4 failed to generate thumbnail — see server logs for details' });
+    }
+    const thumbStat = fs.statSync(thumbPath);
+    const thumbMime = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    console.log(`[TestThumb] Generated: ${thumbPath}, size=${thumbStat.size} bytes (${(thumbStat.size/1024/1024).toFixed(2)} MB), mime=${thumbMime}`);
+
+    // Step 2: Upload via thumbnails.set — try with current token, refresh once on 401
+    const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+    let accessToken = channel.accessToken;
+
+    const doSet = async (token) => {
+      oauth2.setCredentials({ access_token: token, refresh_token: channel.refreshToken });
+      const yt = google.youtube({ version: 'v3', auth: oauth2 });
+      console.log(`[TestThumb] Calling thumbnails.set — videoId=${videoId}, mime=${thumbMime}, fileSize=${thumbStat.size}`);
+      return yt.thumbnails.set({
+        videoId,
+        media: { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
+      });
+    };
+
+    let uploadResult = null;
+    let uploadError  = null;
+    try {
+      let setRes;
+      try {
+        setRes = await doSet(accessToken);
+      } catch (e) {
+        if (e.code === 401 || e.status === 401 || /invalid_grant|token/i.test(e.message)) {
+          console.log(`[TestThumb] 401 on thumbnails.set — refreshing token and retrying`);
+          accessToken = await pipelineRefreshToken(channel);
+          setRes = await doSet(accessToken);
+        } else {
+          throw e;
+        }
+      }
+      uploadResult = { httpStatus: setRes?.status, data: setRes?.data };
+      console.log(`[TestThumb] thumbnails.set SUCCESS — HTTP ${setRes?.status}:`, JSON.stringify(setRes?.data || {}).slice(0, 600));
+
+      // Confirm channel is thumbnail-eligible
+      await User.findOneAndUpdate(
+        { _id: user._id, 'youtubeChannels.channelId': channel.channelId },
+        { $set: { 'youtubeChannels.$.thumbnailsEnabled': true } }
+      );
+      console.log(`[TestThumb] ✓ Marked ${channel.channelId} thumbnailsEnabled=true in MongoDB`);
+    } catch (e) {
+      uploadError = { message: e.message, code: e.code || e.status || null, responseData: e?.response?.data || null };
+      console.error(`[TestThumb] thumbnails.set FAILED:`, JSON.stringify(uploadError));
+
+      const reason = e?.response?.data?.error?.errors?.[0]?.reason || '';
+      const isThumbnailDisabled = reason === 'forbidden' || /thumbnail.*not.*enabl|custom.*thumbnail/i.test(e.message);
+      if (isThumbnailDisabled) {
+        console.warn(`[TestThumb] Channel not eligible for custom thumbnails — enable it in YouTube Studio first`);
+      }
+    } finally {
+      fs.unlink(thumbPath, () => {});
+    }
+
+    res.json({
+      success:      !uploadError,
+      videoId,
+      channel:      { channelId: channel.channelId, channelName: channel.channelName, thumbnailsEnabled: channel.thumbnailsEnabled },
+      thumbnail:    { path: thumbPath, sizeMB: (thumbStat.size / 1024 / 1024).toFixed(2), mime: thumbMime },
+      uploadResult: uploadResult || null,
+      uploadError:  uploadError  || null,
+      hint:         uploadError ? 'Check server logs for full error detail. Common causes: channel not eligible for custom thumbnails (enable in YouTube Studio), file > 2 MB, or token expired.' : null,
+    });
+  } catch (err) {
+    console.error('[TestThumb] Fatal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/channels/:channelId/thumbnail-enabled — force-set thumbnailsEnabled for a channel
+app.post('/api/admin/channels/:channelId/thumbnail-enabled', requireAdmin, async (req, res) => {
+  const { channelId } = req.params;
+  const enabled = req.body?.enabled !== false; // default true
+  try {
+    const result = await User.findOneAndUpdate(
+      { 'youtubeChannels.channelId': channelId },
+      { $set: { 'youtubeChannels.$.thumbnailsEnabled': enabled } },
+      { new: true }
+    );
+    if (!result) return res.status(404).json({ error: `No user found with channelId ${channelId}` });
+    const ch = (result.youtubeChannels || []).find(c => c.channelId === channelId);
+    res.json({ success: true, channelId, channelName: ch?.channelName, thumbnailsEnabled: enabled });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
