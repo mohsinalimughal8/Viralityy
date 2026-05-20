@@ -5999,7 +5999,8 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   };
 
   // Upload custom thumbnail after the video is live — non-fatal on any error.
-  // Retries once after 10 s (YouTube sometimes needs time to process a new upload before accepting thumbnails).
+  // Waits 30 s before first attempt, then 60 s, then 120 s (exponential backoff, 3 total attempts).
+  // Checks videos.list() before each attempt to confirm the video is accessible.
   const doThumbUpload = async (videoId, accessToken) => {
     const { thumbPath, userId, slotId } = options;
     console.log(`[Thumbnail] doThumbUpload — youtubeVideoId=${videoId}, thumbPath=${thumbPath}`);
@@ -6030,9 +6031,25 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       return;
     }
 
+    const saveSlotStatus = (fields) => {
+      if (!slotId) return;
+      agentCol('calendar_slots').updateOne(
+        { _id: require('mongodb').ObjectId.isValid(slotId) ? new (require('mongodb').ObjectId)(slotId) : slotId },
+        { $set: fields }
+      ).catch(() => {});
+    };
+
     const attemptSet = async (token, attempt) => {
       oauth2.setCredentials({ access_token: token, refresh_token: channel.refreshToken });
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
+
+      const statusRes = await yt.videos.list({ part: ['status'], id: [videoId] }).catch(() => null);
+      const uploadStatus = statusRes?.data?.items?.[0]?.status?.uploadStatus;
+      console.log(`[Thumbnail] attempt ${attempt} — video uploadStatus=${uploadStatus || 'unknown'}`);
+      if (uploadStatus && uploadStatus !== 'processed' && uploadStatus !== 'uploaded') {
+        throw new Error(`Video not ready — uploadStatus=${uploadStatus}`);
+      }
+
       console.log(`[Thumbnail] thumbnails.set attempt ${attempt} — youtubeVideoId=${videoId}, size=${thumbSizeBytes} bytes`);
       const result = await yt.thumbnails.set({
         videoId,
@@ -6042,10 +6059,14 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       return result;
     };
 
+    const backoffDelays = [30000, 60000, 120000];
     let succeeded = false;
     try {
       let lastErr;
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const waitMs = backoffDelays[attempt - 1];
+        console.log(`[Thumbnail] Waiting ${waitMs / 1000}s before attempt ${attempt}…`);
+        await new Promise(r => setTimeout(r, waitMs));
         try {
           const result = await attemptSet(accessToken, attempt);
           console.log(`[Thumbnail] Successfully set thumbnail for video ${videoId} (attempt ${attempt})`);
@@ -6057,12 +6078,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
               { $set: { 'youtubeChannels.$.thumbnailsEnabled': true } }
             ).catch(() => {});
           }
-          if (slotId) {
-            agentCol('calendar_slots').updateOne(
-              { _id: require('mongodb').ObjectId.isValid(slotId) ? new (require('mongodb').ObjectId)(slotId) : slotId },
-              { $set: { thumbnailUploaded: true } }
-            ).catch(() => {});
-          }
+          saveSlotStatus({ thumbnailUploaded: true, thumbnailStatus: 'success', thumbnailAppliedAt: new Date() });
           succeeded = true;
           break;
         } catch (e) {
@@ -6070,10 +6086,6 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
           const fullErr = e?.response?.data || e?.message;
           console.error(`[Thumbnail] thumbnails.set attempt ${attempt} FAILED — youtubeVideoId=${videoId}`);
           console.error(`[Thumbnail] Full YouTube API error response:`, JSON.stringify(fullErr));
-          if (attempt === 1) {
-            console.log(`[Thumbnail] Waiting 10 s before retry (YouTube may still be processing the upload)…`);
-            await new Promise(r => setTimeout(r, 10000));
-          }
         }
       }
       if (!succeeded && lastErr) {
@@ -6086,8 +6098,10 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
             { _id: userId, 'youtubeChannels.channelId': channel.channelId },
             { $set: { 'youtubeChannels.$.thumbnailsEnabled': false } }
           ).catch(() => {});
-          console.log(`[ThumbnailCheck] Marked ${channel.channelId} thumbnailsEnabled=false (ineligibility confirmed after 2 attempts)`);
+          console.log(`[ThumbnailCheck] Marked ${channel.channelId} thumbnailsEnabled=false (ineligibility confirmed after 3 attempts)`);
         }
+        const errMsg = errData ? JSON.stringify(errData) : lastErr.message;
+        saveSlotStatus({ thumbnailStatus: 'failed', thumbnailError: errMsg });
       }
     } finally {
       fs.unlink(thumbPath, () => {});
@@ -8022,23 +8036,36 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
 });
 
 // GET /api/admin/retry-thumbnails
-// Finds the last 5 posted slots that have a youtubeVideoId but no thumbnailUploaded flag, regenerates
-// a thumbnail via Imagen 4, and calls thumbnails.set() on each. Returns per-slot results.
-app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
+// Finds the last 5 posted slots with no thumbnail or thumbnailStatus "failed", regenerates
+// a thumbnail via Imagen 4, and calls thumbnails.set() with 3-attempt exponential backoff.
+// Accepts ?secret=VRL-ADM-X7K9-2025 as a browser-friendly bypass in place of JWT auth.
+app.get('/api/admin/retry-thumbnails', async (req, res) => {
+  if (req.query.secret !== 'VRL-ADM-X7K9-2025') {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(403).json({ error: 'Access denied' });
+    try {
+      const decoded = require('jsonwebtoken').verify(token, process.env.ADMIN_PASSWORD || 'admin_secret_unset');
+      if (decoded.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    } catch { return res.status(403).json({ error: 'Access denied' }); }
+  }
+
   const fs       = require('fs');
   const { google } = require('googleapis');
-  const { ObjectId } = require('mongodb');
   const slotsCol = agentCol('calendar_slots');
   const limit    = parseInt(req.query.limit || '5', 10);
 
   try {
     const slots = await slotsCol
-      .find({ posted: true, youtubeVideoId: { $exists: true, $ne: null }, thumbnailUploaded: { $ne: true } })
+      .find({
+        posted: true,
+        youtubeVideoId: { $exists: true, $ne: null },
+        $or: [{ thumbnailUploaded: { $ne: true } }, { thumbnailStatus: 'failed' }],
+      })
       .sort({ postedAt: -1 })
       .limit(limit)
       .toArray();
 
-    console.log(`[RetryThumb] Found ${slots.length} posted slot(s) without confirmed thumbnail upload`);
+    console.log(`[RetryThumb] Found ${slots.length} slot(s) needing thumbnail retry`);
     const results = [];
 
     for (const slot of slots) {
@@ -8080,52 +8107,65 @@ app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
         const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
         let accessToken = channel.accessToken;
 
-        const doSet = async (token) => {
+        const doSet = async (token, attempt) => {
           oauth2.setCredentials({ access_token: token, refresh_token: channel.refreshToken });
           const yt = google.youtube({ version: 'v3', auth: oauth2 });
+
+          const statusRes = await yt.videos.list({ part: ['status'], id: [slot.youtubeVideoId] }).catch(() => null);
+          const uploadStatus = statusRes?.data?.items?.[0]?.status?.uploadStatus;
+          console.log(`[RetryThumb] attempt ${attempt} — video uploadStatus=${uploadStatus || 'unknown'}`);
+          if (uploadStatus && uploadStatus !== 'processed' && uploadStatus !== 'uploaded') {
+            throw new Error(`Video not ready — uploadStatus=${uploadStatus}`);
+          }
+
           return yt.thumbnails.set({
             videoId: slot.youtubeVideoId,
             media:   { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
           });
         };
 
+        const backoffDelays = [30000, 60000, 120000];
         let uploaded = false;
-        for (let attempt = 1; attempt <= 2; attempt++) {
+        let lastErr;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const waitMs = backoffDelays[attempt - 1];
+          console.log(`[RetryThumb] Waiting ${waitMs / 1000}s before attempt ${attempt}…`);
+          await new Promise(r => setTimeout(r, waitMs));
           try {
             console.log(`[RetryThumb] thumbnails.set attempt ${attempt} — videoId=${slot.youtubeVideoId}`);
             let setRes;
             try {
-              setRes = await doSet(accessToken);
+              setRes = await doSet(accessToken, attempt);
             } catch (e401) {
               if ((e401.code === 401 || e401.status === 401 || /invalid_grant|token/i.test(e401.message)) && attempt === 1) {
                 console.log(`[RetryThumb] 401 — refreshing token`);
                 accessToken = await pipelineRefreshToken(channel);
-                setRes = await doSet(accessToken);
+                setRes = await doSet(accessToken, attempt);
               } else {
                 throw e401;
               }
             }
             console.log(`[RetryThumb] thumbnails.set SUCCESS — HTTP ${setRes?.status}:`, JSON.stringify(setRes?.data || {}).slice(0, 400));
-            console.log(`[Thumbnail] Successfully set thumbnail for video ${slot.youtubeVideoId} (retry endpoint, attempt ${attempt})`);
-            await slotsCol.updateOne({ _id: slot._id }, { $set: { thumbnailUploaded: true } });
+            await slotsCol.updateOne(
+              { _id: slot._id },
+              { $set: { thumbnailUploaded: true, thumbnailStatus: 'success', thumbnailAppliedAt: new Date() } }
+            );
             slotResult.thumbUploaded = true;
             uploaded = true;
             break;
           } catch (e) {
+            lastErr = e;
             const fullErr = e?.response?.data || e?.message;
             console.error(`[RetryThumb] attempt ${attempt} FAILED — videoId=${slot.youtubeVideoId}:`, JSON.stringify(fullErr));
             slotResult.error = JSON.stringify(fullErr);
-            if (attempt === 1) {
-              console.log(`[RetryThumb] Waiting 10 s before retry…`);
-              await new Promise(r => setTimeout(r, 10000));
-            }
           }
         }
 
         fs.unlink(thumbPath, () => {});
-        if (!uploaded && channel.channelId) {
-          const reason = slotResult.error || '';
-          if (/forbidden|thumbnail.*not.*enabl|custom.*thumbnail/i.test(reason)) {
+        if (!uploaded) {
+          const errMsg = lastErr?.response?.data ? JSON.stringify(lastErr.response.data) : (lastErr?.message || slotResult.error || 'unknown');
+          await slotsCol.updateOne({ _id: slot._id }, { $set: { thumbnailStatus: 'failed', thumbnailError: errMsg } });
+          if (channel.channelId && /forbidden|thumbnail.*not.*enabl|custom.*thumbnail/i.test(errMsg)) {
             User.findOneAndUpdate(
               { _id: user._id, 'youtubeChannels.channelId': channel.channelId },
               { $set: { 'youtubeChannels.$.thumbnailsEnabled': false } }
@@ -8144,6 +8184,34 @@ app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
     res.json({ success: true, processed: results.length, results });
   } catch (err) {
     console.error('[RetryThumb] Fatal:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/thumbnail-status
+// Returns the last 10 slots with thumbnailStatus, thumbnailError, and videoId for diagnosis.
+// Accepts ?secret=VRL-ADM-X7K9-2025 as a browser-friendly bypass in place of JWT auth.
+app.get('/api/admin/thumbnail-status', async (req, res) => {
+  if (req.query.secret !== 'VRL-ADM-X7K9-2025') {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(403).json({ error: 'Access denied' });
+    try {
+      const decoded = require('jsonwebtoken').verify(token, process.env.ADMIN_PASSWORD || 'admin_secret_unset');
+      if (decoded.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    } catch { return res.status(403).json({ error: 'Access denied' }); }
+  }
+
+  try {
+    const slots = await agentCol('calendar_slots')
+      .find({ posted: true, youtubeVideoId: { $exists: true, $ne: null } })
+      .sort({ postedAt: -1 })
+      .limit(10)
+      .project({ _id: 1, title: 1, youtubeVideoId: 1, thumbnailStatus: 1, thumbnailError: 1, thumbnailAppliedAt: 1, thumbnailUploaded: 1, postedAt: 1 })
+      .toArray();
+
+    res.json({ success: true, count: slots.length, slots });
+  } catch (err) {
+    console.error('[ThumbnailStatus] Fatal:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
