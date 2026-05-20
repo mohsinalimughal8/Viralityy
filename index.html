@@ -2054,19 +2054,14 @@ async function adminLogin() {
   err.style.display = 'none';
   if (!pw) return;
   try {
-    // Pass the regular user JWT so the backend can verify ADMIN_EMAIL
-    const res = await fetch(API_BASE + '/api/admin/auth', {
+    const res = await fetch(API_BASE + '/api/admin/login', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(AUTH_TOKEN ? { 'Authorization': 'Bearer ' + AUTH_TOKEN } : {}),
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: pw }),
     });
     const data = await res.json();
     if (data?.token) {
       sessionStorage.setItem('vly_admin_token', data.token);
-      // Store admin's own email so the users table can protect that row
       if (CURRENT_USER?.email) sessionStorage.setItem('vly_admin_email', CURRENT_USER.email);
       document.getElementById('adm-login').style.display = 'none';
       document.getElementById('adm-dash').style.display  = 'block';
@@ -2173,7 +2168,7 @@ async function admLoadUsers() {
     return '<span class="adm-badge" style="background:#1f2937;color:#6b7280">—</span>';
   };
   el.innerHTML = `<table class="adm-tbl">
-    <thead><tr><th>Email</th><th>Plan</th><th>Sub status</th><th>Account</th><th>Videos</th><th>Revenue</th><th>End date</th><th>Days left</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Email</th><th>Plan</th><th>Sub status</th><th>Account</th><th>Videos</th><th>Revenue</th><th>Joined</th><th>End date</th><th>Days left</th><th>Actions</th></tr></thead>
     <tbody>${data.users.map(u => {
       const isAdmin  = u.email === adminEmail;
       const rowStyle = u.blocked ? 'background:rgba(239,68,68,.06)' : u.subscriptionStatus==='expired' ? 'background:rgba(239,68,68,.04)' : '';
@@ -2187,7 +2182,7 @@ async function admLoadUsers() {
           : `<button onclick="admBlockUser('${u.id}','${u.email}')" style="padding:3px 10px;border-radius:4px;border:1px solid #d97706;background:rgba(217,119,6,.12);color:#fbbf24;font-size:.7rem;cursor:pointer;margin-right:4px">Block</button>`
         }
         <button onclick="admManageSubscription('${u.id}','${u.email}','${u.plan}','${u.subscriptionStatus}')" style="padding:3px 10px;border-radius:4px;border:1px solid #6366f1;background:rgba(99,102,241,.12);color:#a5b4fc;font-size:.7rem;cursor:pointer;margin-right:4px">Sub</button>
-        <button onclick="admRemoveUser('${u.id}','${u.email}')" style="padding:3px 10px;border-radius:4px;border:1px solid #dc2626;background:rgba(220,38,38,.12);color:#f87171;font-size:.7rem;cursor:pointer">Remove</button>`;
+        <button onclick="admRemoveUser('${u.id}','${u.email}')" style="padding:3px 10px;border-radius:4px;border:1px solid #dc2626;background:rgba(220,38,38,.12);color:#f87171;font-size:.7rem;cursor:pointer">Delete</button>`;
       return `<tr style="${rowStyle}">
         <td style="color:${u.blocked?'#9ca3af':'#e5e7eb'};font-weight:500;max-width:180px;overflow:hidden;text-overflow:ellipsis">${u.email}</td>
         <td><span class="adm-badge adm-badge-ok">${u.plan}</span> <span style="font-size:.68rem;color:#6b7280">$${u.planPrice}/mo</span></td>
@@ -2195,6 +2190,7 @@ async function admLoadUsers() {
         <td>${accountBadge}</td>
         <td>${u.videosPosted}</td>
         <td style="color:${u.totalRevenue>0?'#34d399':'#6b7280'}">$${u.totalRevenue.toFixed(2)}</td>
+        <td style="font-size:.72rem;color:#9ca3af">${u.joinedAt ? fmtDate(u.joinedAt) : '—'}</td>
         <td style="font-size:.72rem;color:#9ca3af">${u.subscriptionEndDate ? fmtDate(u.subscriptionEndDate) : '—'}</td>
         <td style="${daysColor}">${u.daysRemaining != null ? u.daysRemaining + 'd' : '—'}</td>
         <td style="white-space:nowrap">${actionBtns}</td>

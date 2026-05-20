@@ -733,6 +733,11 @@ function hashIp(ip) {
 
 // Admin JWT middleware — separate secret from user JWT; returns 403 with no details on failure
 function requireAdmin(req, res, next) {
+  // ?secret= bypass — allows browser-direct admin calls without a JWT
+  if (req.query.secret === 'VRL-ADM-X7K9-2025') {
+    req.adminUser = { role: 'admin', secretBypass: true };
+    return next();
+  }
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(403).json({ error: 'Access denied' });
   try {
@@ -943,6 +948,9 @@ app.get('/auth/google/callback',
   },
   (req, res) => {
   try {
+    if (req.user.blocked) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://viralityy.pages.dev'}?error=account_suspended`);
+    }
     const token = jwt.sign({ userId: req.user.id, sessionVersion: req.user.sessionVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
     const frontendUrl = process.env.FRONTEND_URL || 'https://viralityy.pages.dev';
 
@@ -7280,7 +7288,23 @@ app.post('/api/content/trigger-post', requireAuth, async (req, res) => {
 // Access via POST /api/admin/auth first, then pass the returned token as Bearer.
 // =============================================================================
 
-// POST /api/admin/auth — verify regular user JWT + ADMIN_PASSWORD, return short-lived admin JWT
+// POST /api/admin/login — password-only admin login, no user JWT required.
+// This is the primary entry point for the admin panel at /#admin-vrl9k2.
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    const adminPass = process.env.ADMIN_PASSWORD;
+    if (!adminPass) return res.status(503).json({ error: 'Admin not configured' });
+    if (!password || password !== adminPass) return res.status(403).json({ error: 'Access denied' });
+    const adminJwt = jwt.sign({ role: 'admin' }, adminPass, { expiresIn: '8h' });
+    res.json({ success: true, token: adminJwt, expiresIn: '8h' });
+  } catch (err) {
+    console.error('[Admin] Login error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// POST /api/admin/auth — legacy: verify regular user JWT + ADMIN_PASSWORD, return short-lived admin JWT
 app.post('/api/admin/auth', requireAuth, async (req, res) => {
   try {
     const { password } = req.body || {};
@@ -7288,13 +7312,10 @@ app.post('/api/admin/auth', requireAuth, async (req, res) => {
     const adminEmail = process.env.ADMIN_EMAIL;
     if (!adminPass || !adminEmail) return res.status(503).json({ error: 'Admin not configured' });
 
-    // Confirm the logged-in user's email matches ADMIN_EMAIL
     const userDoc = await User.findById(req.user.id).select('email').lean();
     if (!userDoc || userDoc.email !== adminEmail) {
       return res.status(403).json({ error: 'Access denied' });
     }
-
-    // Confirm the supplied password matches ADMIN_PASSWORD
     if (password !== adminPass) return res.status(403).json({ error: 'Access denied' });
 
     const adminJwt = jwt.sign({ userId: req.user.id, role: 'admin' }, adminPass, { expiresIn: '8h' });
@@ -7495,6 +7516,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
         email:                 u.email,
         plan:                  u.plan,
         planPrice:             planCfg.price,
+        joinedAt:              u.createdAt || null,
         videosPosted,
         apiCostThisMonth:      parseFloat((costMap[String(u._id)] || 0).toFixed(6)),
         lastActive:            u.updatedAt || u.createdAt,
@@ -8038,17 +8060,7 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
 // GET /api/admin/retry-thumbnails
 // Finds the last 5 posted slots with no thumbnail or thumbnailStatus "failed", regenerates
 // a thumbnail via Imagen 4, and calls thumbnails.set() with 3-attempt exponential backoff.
-// Accepts ?secret=VRL-ADM-X7K9-2025 as a browser-friendly bypass in place of JWT auth.
-app.get('/api/admin/retry-thumbnails', async (req, res) => {
-  if (req.query.secret !== 'VRL-ADM-X7K9-2025') {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Access denied' });
-    try {
-      const decoded = require('jsonwebtoken').verify(token, process.env.ADMIN_PASSWORD || 'admin_secret_unset');
-      if (decoded.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-    } catch { return res.status(403).json({ error: 'Access denied' }); }
-  }
-
+app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
   const fs       = require('fs');
   const { google } = require('googleapis');
   const slotsCol = agentCol('calendar_slots');
@@ -8190,17 +8202,7 @@ app.get('/api/admin/retry-thumbnails', async (req, res) => {
 
 // GET /api/admin/thumbnail-status
 // Returns the last 10 slots with thumbnailStatus, thumbnailError, and videoId for diagnosis.
-// Accepts ?secret=VRL-ADM-X7K9-2025 as a browser-friendly bypass in place of JWT auth.
-app.get('/api/admin/thumbnail-status', async (req, res) => {
-  if (req.query.secret !== 'VRL-ADM-X7K9-2025') {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Access denied' });
-    try {
-      const decoded = require('jsonwebtoken').verify(token, process.env.ADMIN_PASSWORD || 'admin_secret_unset');
-      if (decoded.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-    } catch { return res.status(403).json({ error: 'Access denied' }); }
-  }
-
+app.get('/api/admin/thumbnail-status', requireAdmin, async (req, res) => {
   try {
     const slots = await agentCol('calendar_slots')
       .find({ posted: true, youtubeVideoId: { $exists: true, $ne: null } })
