@@ -7782,11 +7782,14 @@ app.post('/api/admin/activate-account', requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/admin/force-activate — emergency agency activation by email, no plan validation (admin JWT required)
+// POST /api/admin/force-activate — emergency agency activation by email.
+// Accepts ADMIN_PASSWORD directly in body (no pre-existing user JWT needed).
 // Bypasses all plan/promo logic; always sets agency limits directly in MongoDB.
-app.post('/api/admin/force-activate', requireAdmin, async (req, res) => {
+app.post('/api/admin/force-activate', async (req, res) => {
   try {
-    const { email } = req.body || {};
+    const { email, secret } = req.body || {};
+    const adminPass = process.env.ADMIN_PASSWORD;
+    if (!adminPass || secret !== adminPass) return res.status(403).json({ success: false, error: 'Access denied' });
     if (!email) return res.status(400).json({ success: false, error: 'email is required' });
     const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
     const result  = await User.findOneAndUpdate(
