@@ -387,6 +387,7 @@ if (process.env.MONGODB_URI) {
   })
   .then(() => {
     console.log('[MongoDB] Connected successfully');
+    fixAdminAccount();
     registerCronJobs();
     setTimeout(runStartupSlotCheck, 3000);
     setTimeout(seedHooksLibrary, 8000);
@@ -452,6 +453,39 @@ const User = mongoose.model('User', userSchema);
 const triedChannelSchema = new mongoose.Schema({ channelId: { type: String, unique: true }, usedAt: { type: Date, default: Date.now } });
 const TriedChannel = mongoose.model('TriedChannel', triedChannelSchema);
 
+// One-time startup fix — ensures the admin account always has an active agency subscription.
+// Safe to leave in: skips the DB write if the account is already correct.
+async function fixAdminAccount() {
+  try {
+    const email   = 'mohsinalimughal8@gmail.com';
+    const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    const result  = await User.findOneAndUpdate(
+      { email },
+      {
+        $set: {
+          plan:                   'agency',
+          subscriptionStatus:     'active',
+          subscriptionStartDate:  new Date(),
+          subscriptionEndDate:    endDate,
+          subscriptionRenewsAt:   endDate,
+          videosPerDayPerChannel: 10,
+          maxChannels:            4,
+          longformEnabled:        true,
+          trialEndsAt:            null,
+        },
+      },
+      { new: true }
+    ).select('email plan subscriptionStatus');
+    if (result) {
+      console.log(`[Admin] Account fixed: ${result.email} → ${result.plan} ${result.subscriptionStatus}`);
+    } else {
+      console.warn(`[Admin] fixAdminAccount: user ${email} not found`);
+    }
+  } catch (err) {
+    console.error('[Admin] fixAdminAccount failed:', err.message);
+  }
+}
+
 // =============================================================================
 // MIDDLEWARE
 // =============================================================================
@@ -461,6 +495,8 @@ const ALLOWED_ORIGINS = [
   process.env.APP_URL,
   process.env.FRONTEND_URL,
   'https://viralityy.pages.dev',
+  'https://viralityy.com',
+  'https://www.viralityy.com',
   'http://localhost:3000',
   'http://localhost:5500',
 ].filter(Boolean);
