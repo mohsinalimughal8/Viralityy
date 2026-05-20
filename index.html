@@ -1194,12 +1194,19 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     <p style="font-size:.82rem;color:var(--text3)">Loading analytics…</p>
   </div>
 
-  <!-- No channel connected -->
+  <!-- No channel connected (shown only when user genuinely has no channel) -->
   <div id="anal-no-channel" style="display:none;padding:3rem 1rem;text-align:center">
     <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="1.5" style="margin-bottom:1rem"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 0 0 1.46 6.42 29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
     <p style="font-size:.88rem;font-weight:600;color:var(--text);margin-bottom:.35rem">Connect your YouTube channel to see analytics</p>
     <p style="font-size:.75rem;color:var(--text3);margin-bottom:1.1rem">Sign in with Google to pull live views, watch time and subscriber data.</p>
     <button class="btn btn-primary btn-sm" onclick="window.location.href=API_BASE+'/auth/google'">Connect YouTube</button>
+  </div>
+  <!-- Analytics load error (shown when channel exists but data fetch failed) -->
+  <div id="anal-error" style="display:none;padding:3rem 1rem;text-align:center">
+    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="1.5" style="margin-bottom:.75rem"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <p id="anal-error-msg" style="font-size:.84rem;font-weight:600;color:var(--text);margin-bottom:.35rem">Analytics loading failed — please refresh</p>
+    <p style="font-size:.73rem;color:var(--text3);margin-bottom:1rem">Your channel is connected. Data will load shortly.</p>
+    <button class="btn btn-sm" style="background:var(--bg2);border:1px solid var(--border2);color:var(--text2)" onclick="initAnalytics()">Try again</button>
   </div>
 
   <!-- Main content -->
@@ -3226,12 +3233,14 @@ function _fmtHours(mins) {
 async function initAnalytics() {
   const loadEl   = document.getElementById('anal-loading');
   const noChEl   = document.getElementById('anal-no-channel');
+  const errEl    = document.getElementById('anal-error');
   const contentEl= document.getElementById('anal-content');
   const chartEl  = document.getElementById('anal-chart');
   const topEl    = document.getElementById('anal-top-videos');
 
   if (loadEl)    loadEl.style.display    = 'block';
   if (noChEl)    noChEl.style.display    = 'none';
+  if (errEl)     errEl.style.display     = 'none';
   if (contentEl) contentEl.style.display = 'none';
 
   try {
@@ -3239,7 +3248,19 @@ async function initAnalytics() {
 
     if (loadEl) loadEl.style.display = 'none';
 
-    if (data?.noChannel || !data?.success) {
+    if (!data || !data.success) {
+      // Server error or network failure — user HAS a channel, just data fetch failed
+      if (errEl) {
+        const msgEl = document.getElementById('anal-error-msg');
+        if (msgEl) msgEl.textContent = data?.error === 'analytics_unavailable'
+          ? 'Analytics temporarily unavailable — quota limit reached, try again later'
+          : 'Analytics loading failed — please refresh';
+        errEl.style.display = 'block';
+      }
+      return;
+    }
+
+    if (data.noChannel) {
       if (noChEl) noChEl.style.display = 'block';
       return;
     }
@@ -3313,9 +3334,9 @@ async function initAnalytics() {
   } catch (err) {
     console.error('[initAnalytics]', err);
     if (loadEl)  loadEl.style.display  = 'none';
-    if (noChEl)  noChEl.style.display  = 'block';
-    const p = noChEl?.querySelector('p');
-    if (p) p.textContent = 'Could not load analytics — refresh to try again.';
+    if (errEl)   errEl.style.display   = 'block';
+    const msgEl = document.getElementById('anal-error-msg');
+    if (msgEl) msgEl.textContent = 'Analytics loading failed — please refresh';
   }
 
   // Auto-refresh every 30 minutes without page reload

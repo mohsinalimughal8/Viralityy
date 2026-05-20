@@ -921,6 +921,7 @@ app.get('/auth/google', (req, res, next) => {
     'email',
     'https://www.googleapis.com/auth/youtube',
     'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/yt-analytics.readonly',
   ],
   accessType: 'offline',
   prompt: 'consent',
@@ -4417,7 +4418,7 @@ app.post('/api/agents/preview/skip', requireAuth, async (req, res) => {
 // ── ANALYTICS ────────────────────────────────────────────────────────────────
 
 // Shared helper — fetches live YouTube Analytics for a user and caches in MongoDB for 30 min.
-// Returns the full analytics payload or null on total failure.
+// Returns a payload with success:true on any result, or null only on total unrecoverable failure.
 async function fetchLiveAnalytics(userId) {
   const cacheCol = agentCol('analytics_cache');
   const CACHE_TTL_MS = 30 * 60 * 1000;
@@ -4435,23 +4436,23 @@ async function fetchLiveAnalytics(userId) {
   const ch = channels.find(c => !c.paused && c.channelId) || channels[0];
   if (!ch) return { success: true, noChannel: true };
 
-  // quota check: probe channels (1) + channels.list (1) + search.list (100) + videos.list (1) = 103 units
-  const analyticsQC2 = await checkYoutubeQuota(103, String(userId)).catch(() => ({ allowed: true }));
+  // Quota check: channels.list (1) + videos.list (1) = 2 units.
+  // search.list was removed (100 units) — we now use calendar_slots instead.
+  const analyticsQC2 = await checkYoutubeQuota(2, String(userId)).catch(() => ({ allowed: true }));
   if (!analyticsQC2.allowed) {
     console.warn(`[Quota] fetchLiveAnalytics blocked for user ${userId} — ${analyticsQC2.reason}`);
-    return null;
+    // Return stale cache rather than a blank 500 error
+    if (cached?.data) return { ...cached.data, fromCache: true, quotaLimited: true };
+    return { success: true, quotaLimited: true, channelName: ch.channelName, channelId: ch.channelId,
+      stats: { totalViews: 0, totalSubs: 0, watchTimeMinutes: null, subscribersGained: null, avgViews: null, videosPosted: 0 },
+      topVideos: [], dailyViews: [] };
   }
 
-  // Refresh token if needed (channels?part=id probe — 1 unit)
-  const probe = await fetch(
-    `https://www.googleapis.com/youtube/v3/channels?part=id&mine=true`,
-    { headers: { Authorization: `Bearer ${ch.accessToken}` } }
-  );
-  logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, String(userId)).catch(() => {});
-  let accessToken = ch.accessToken;
-  if (probe.status === 401) {
+  // Shared token refresh helper
+  const refreshAccessToken = async (token) => {
     const refreshToken = ch.refreshToken || user.googleRefreshToken;
-    if (refreshToken) {
+    if (!refreshToken) return token;
+    try {
       const tokRes = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4464,70 +4465,95 @@ async function fetchLiveAnalytics(userId) {
       });
       const tokData = await tokRes.json();
       if (tokData.access_token) {
-        accessToken = tokData.access_token;
         await User.updateOne(
           { 'youtubeChannels.channelId': ch.channelId },
-          { $set: { 'youtubeChannels.$.accessToken': accessToken } }
+          { $set: { 'youtubeChannels.$.accessToken': tokData.access_token } }
         ).catch(() => {});
         console.log(`[Analytics] Token refreshed for channel ${ch.channelId}`);
+        return tokData.access_token;
       }
-    }
-  }
+    } catch (e) { console.warn('[Analytics] Token refresh failed:', e.message); }
+    return token;
+  };
 
-  const auth   = { Authorization: `Bearer ${accessToken}` };
-  const apiKey = process.env.YOUTUBE_API_KEY ? `&key=${process.env.YOUTUBE_API_KEY}` : '';
+  const apiKey = process.env.YOUTUBE_API_KEY;
 
   // 1. Channel-level statistics (1 unit)
-  const chanRes   = await fetch(
-    `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${ch.channelId}${apiKey}`,
-    { headers: auth }
-  );
-  logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, String(userId)).catch(() => {});
-  const chanData  = await chanRes.json();
-  const chanStats = chanData?.items?.[0]?.statistics || {};
+  // Prefer API key for public channel data — no OAuth needed, immune to token expiry.
+  let chanStats = {};
+  try {
+    const chanUrl = apiKey
+      ? `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${ch.channelId}&key=${apiKey}`
+      : `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${ch.channelId}`;
+    const chanHeaders = apiKey ? {} : { Authorization: `Bearer ${ch.accessToken}` };
+    let chanRes = await fetch(chanUrl, { headers: chanHeaders });
 
-  // 2. Top videos in last 30 days (100 units)
-  const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const searchRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${ch.channelId}&type=video&order=viewCount&publishedAfter=${encodeURIComponent(publishedAfter)}&maxResults=10${apiKey}`,
-    { headers: auth }
-  );
-  logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, String(userId)).catch(() => {});
-  const searchData = await searchRes.json();
-  const videoIds   = (searchData?.items || []).map(v => v.id?.videoId).filter(Boolean);
+    // If no API key and token is expired, refresh then retry
+    if (!apiKey && (chanRes.status === 401 || chanRes.status === 403)) {
+      const newToken = await refreshAccessToken(ch.accessToken);
+      chanRes = await fetch(chanUrl, { headers: { Authorization: `Bearer ${newToken}` } });
+    }
+
+    logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, String(userId)).catch(() => {});
+    const chanData = await chanRes.json();
+    chanStats = chanData?.items?.[0]?.statistics || {};
+  } catch (e) { console.warn('[Analytics] channels.list failed:', e.message); }
+
+  // 2. Top videos — query calendar_slots (0 quota), then videos.list (1 unit) for stats.
+  // Replaces the search.list call which cost 100 units per request.
+  const slotsCol = agentCol('calendar_slots');
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const videosPosted = await slotsCol.countDocuments({ userId: String(userId), posted: true }).catch(() => 0);
+
+  const recentSlots = await slotsCol
+    .find({ userId: String(userId), posted: true, date: { $gte: thirtyDaysAgo }, youtubeVideoId: { $exists: true, $ne: null } })
+    .sort({ date: -1 })
+    .limit(10)
+    .toArray()
+    .catch(() => []);
+  const videoIds = recentSlots.map(s => s.youtubeVideoId).filter(Boolean);
 
   let topVideos = [];
   if (videoIds.length) {
-    const vidRes  = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds.join(',')}${apiKey}`,
-      { headers: auth }
-    );
-    logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => {});
-    const vidData = await vidRes.json();
-    topVideos = (vidData?.items || [])
-      .map(v => ({
-        id:           v.id,
-        title:        v.snippet?.title || '',
-        publishedAt:  v.snippet?.publishedAt || '',
-        viewCount:    parseInt(v.statistics?.viewCount   || 0),
-        likeCount:    parseInt(v.statistics?.likeCount   || 0),
-        commentCount: parseInt(v.statistics?.commentCount || 0),
-      }))
-      .sort((a, b) => b.viewCount - a.viewCount)
-      .slice(0, 5);
+    try {
+      const vidUrl = apiKey
+        ? `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds.join(',')}&key=${apiKey}`
+        : `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds.join(',')}`;
+      const vidHeaders = apiKey ? {} : { Authorization: `Bearer ${ch.accessToken}` };
+      const vidRes = await fetch(vidUrl, { headers: vidHeaders });
+      logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, String(userId)).catch(() => {});
+      const vidData = await vidRes.json();
+      topVideos = (vidData?.items || [])
+        .map(v => ({
+          id:           v.id,
+          title:        v.snippet?.title || '',
+          publishedAt:  v.snippet?.publishedAt || '',
+          viewCount:    parseInt(v.statistics?.viewCount   || 0),
+          likeCount:    parseInt(v.statistics?.likeCount   || 0),
+          commentCount: parseInt(v.statistics?.commentCount || 0),
+        }))
+        .sort((a, b) => b.viewCount - a.viewCount)
+        .slice(0, 5);
+    } catch (e) { console.warn('[Analytics] videos.list failed:', e.message); }
   }
 
-  // 3. YouTube Analytics API — 30-day daily breakdown (requires yt-analytics scope)
+  // 3. YouTube Analytics API — 30-day daily breakdown (requires yt-analytics.readonly scope).
+  // Silently degrades if scope not granted or token has no analytics permission.
   let dailyViews      = [];
   let watchTimeMinutes  = null;
   let subscribersGained = null;
+  let analyticsToken = ch.accessToken;
   try {
     const endDate   = new Date().toISOString().slice(0, 10);
     const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const analyticsRes = await fetch(
-      `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3D${ch.channelId}&startDate=${startDate}&endDate=${endDate}&metrics=views,estimatedMinutesWatched,subscribersGained&dimensions=day&sort=day`,
-      { headers: auth }
-    );
+    const analyticsUrl = `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3D${ch.channelId}&startDate=${startDate}&endDate=${endDate}&metrics=views,estimatedMinutesWatched,subscribersGained&dimensions=day&sort=day`;
+
+    let analyticsRes = await fetch(analyticsUrl, { headers: { Authorization: `Bearer ${analyticsToken}` } });
+    if (analyticsRes.status === 401 || analyticsRes.status === 403) {
+      analyticsToken = await refreshAccessToken(analyticsToken);
+      analyticsRes   = await fetch(analyticsUrl, { headers: { Authorization: `Bearer ${analyticsToken}` } });
+    }
+
     const analyticsData = await analyticsRes.json();
     if (Array.isArray(analyticsData?.rows)) {
       dailyViews        = analyticsData.rows.map(r => ({ date: r[0], views: parseInt(r[1] || 0) }));
@@ -4541,10 +4567,6 @@ async function fetchLiveAnalytics(userId) {
   const totalSubs  = parseInt(chanStats.subscriberCount || 0);
   const avgViews   = topVideos.length
     ? Math.round(topVideos.reduce((a, v) => a + v.viewCount, 0) / topVideos.length) : null;
-
-  // Videos posted — count directly from calendar_slots (authoritative source)
-  const slotsCol   = agentCol('calendar_slots');
-  const videosPosted = await slotsCol.countDocuments({ userId: String(userId), posted: true }).catch(() => 0);
 
   const payload = {
     success:     true,
@@ -4570,11 +4592,11 @@ async function fetchLiveAnalytics(userId) {
 app.get('/api/analytics', requireAuth, async (req, res) => {
   try {
     const data = await fetchLiveAnalytics(req.user.id);
-    if (!data) return res.status(500).json({ error: 'Analytics unavailable' });
+    if (!data) return res.json({ success: false, error: 'analytics_unavailable' });
     res.json(data);
   } catch (err) {
     console.error('[Analytics] GET /api/analytics error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.json({ success: false, error: err.message });
   }
 });
 
@@ -4582,19 +4604,20 @@ app.get('/api/analytics', requireAuth, async (req, res) => {
 app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
   try {
     const data = await fetchLiveAnalytics(req.user.id);
-    if (!data) return res.status(500).json({ error: 'Stats unavailable' });
+    if (!data) return res.json({ success: false, error: 'stats_unavailable' });
     if (data.noChannel) return res.json({ success: true, noChannel: true });
     res.json({
-      success:     true,
-      channelName: data.channelName,
-      channelId:   data.channelId,
-      stats:       data.stats,
-      topVideo:    (data.topVideos || [])[0] || null,
-      fromCache:   data.fromCache || false,
+      success:      true,
+      channelName:  data.channelName,
+      channelId:    data.channelId,
+      stats:        data.stats,
+      topVideo:     (data.topVideos || [])[0] || null,
+      fromCache:    data.fromCache || false,
+      quotaLimited: data.quotaLimited || false,
     });
   } catch (err) {
     console.error('[Dashboard] GET /api/dashboard/stats error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.json({ success: false, error: err.message });
   }
 });
 
@@ -4648,8 +4671,10 @@ app.get('/api/channel/:id/health', requireAuth, async (req, res) => {
     }
 
     const analytics = await fetchLiveAnalytics(userId);
-    if (!analytics || analytics.noChannel) {
-      return res.status(503).json({ error: 'Analytics data unavailable — try again later' });
+    if (!analytics || analytics.noChannel || analytics.quotaLimited) {
+      // Return cached health score if available, rather than a blank error
+      if (cached?.score !== undefined) return res.json({ success: true, ...cached, _id: undefined, fromCache: true });
+      return res.status(503).json({ error: 'Analytics data unavailable — your channel is connected but data is still loading. Try again in a few minutes.' });
     }
 
     // ── Growth Rate (30%) ─────────────────────────────────────────────────────
