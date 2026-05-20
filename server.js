@@ -7782,6 +7782,36 @@ app.post('/api/admin/activate-account', requireAdmin, async (req, res) => {
   }
 });
 
+// POST /api/admin/force-activate — emergency agency activation by email, no plan validation (admin JWT required)
+// Bypasses all plan/promo logic; always sets agency limits directly in MongoDB.
+app.post('/api/admin/force-activate', requireAdmin, async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ success: false, error: 'email is required' });
+    const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    const result  = await User.findOneAndUpdate(
+      { email: email.toLowerCase().trim() },
+      {
+        plan:                   'agency',
+        subscriptionStatus:     'active',
+        subscriptionStartDate:  new Date(),
+        subscriptionEndDate:    endDate,
+        subscriptionRenewsAt:   endDate,
+        videosPerDayPerChannel: 10,
+        maxChannels:            4,
+        longformEnabled:        true,
+      },
+      { new: true }
+    ).select('email plan subscriptionStatus subscriptionEndDate videosPerDayPerChannel maxChannels longformEnabled');
+    if (!result) return res.status(404).json({ success: false, error: `No user found with email: ${email}` });
+    console.log(`[Admin] force-activate: ${result.email} → agency (expires ${endDate.toISOString().slice(0,10)})`);
+    res.json({ success: true, user: result.email, plan: 'agency', subscriptionStatus: 'active', subscriptionEndDate: endDate });
+  } catch (err) {
+    console.error('[Admin] force-activate error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // POST /api/admin/run-pipeline — manually trigger daily generation + scheduled posting (admin only)
 app.post('/api/admin/run-pipeline', requireAdmin, async (req, res) => {
   try {
