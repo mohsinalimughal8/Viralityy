@@ -431,6 +431,10 @@ const userSchema = new mongoose.Schema({
   subscriptionStartDate:  { type: Date },
   subscriptionEndDate:    { type: Date },
   subscriptionRenewsAt:   { type: Date },
+  pastDueSince:           { type: Date },
+  videosPerDayPerChannel: { type: Number, default: 3 },
+  maxChannels:            { type: Number, default: 1 },
+  longformEnabled:        { type: Boolean, default: false },
   lemonSqueezyCustomerId:     { type: String },
   lemonSqueezySubscriptionId: { type: String },
   paddleCustomerId:           { type: String },
@@ -603,17 +607,23 @@ passport.use(new GoogleStrategy({
     if (!user) {
       isNewUser = true;
       const affiliateRef = req.session?.affiliateRef || null;
+      const trialEnd = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
       user = await User.create({
-        name:            profile.displayName,
-        email:           profile.emails[0].value,
-        googleId:        profile.id,
-        plan:            'trial',
-        trialStartedAt:  new Date(),
-        trialEndsAt:     new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
-        youtubeChannels: [],
-        affiliateCode:   generateAffiliateCode(),
+        name:                   profile.displayName,
+        email:                  profile.emails[0].value,
+        googleId:               profile.id,
+        plan:                   'trial',
+        subscriptionStatus:     'trial',
+        trialStartedAt:         new Date(),
+        trialEndsAt:            trialEnd,
+        videosPerDayPerChannel: 3,
+        maxChannels:            1,
+        longformEnabled:        false,
+        youtubeChannels:        [],
+        affiliateCode:          generateAffiliateCode(),
         ...(affiliateRef && { referredBy: affiliateRef }),
       });
+      console.log(`[OAuth] New user ${user.email} — trial until ${trialEnd.toISOString()}}`);
       if (affiliateRef) console.log(`[OAuth] New user ${user.email} referred by code: ${affiliateRef}`);
     }
 
@@ -795,20 +805,57 @@ const PLAN_CONFIG = {
   agency:     { videosPerDay: 10, shortsPerDay: 10, longFormPerWeek: 1, channels: 4, price: 249, paddlePriceId: process.env.PADDLE_AGENCY_PRICE_ID    || null },
 };
 
+// Single source of truth for plan limits — used everywhere plan limits are checked
+const PLAN_LIMITS = {
+  trial:      { videosPerDayPerChannel: 3,  maxChannels: 1, longformEnabled: false },
+  starter:    { videosPerDayPerChannel: 3,  maxChannels: 1, longformEnabled: false },
+  shorts_pro: { videosPerDayPerChannel: 7,  maxChannels: 1, longformEnabled: false },
+  growth:     { videosPerDayPerChannel: 10, maxChannels: 2, longformEnabled: true  },
+  agency:     { videosPerDayPerChannel: 10, maxChannels: 4, longformEnabled: true  },
+};
+
+function getPlanLimits(plan) {
+  return PLAN_LIMITS[plan] || PLAN_LIMITS.trial;
+}
+
 function planNicheQuota(plan) {
   return plan === 'trial' ? 0 : Infinity; // trial locked, all paid plans unlimited
 }
 
 function isPlanActive(user) {
   const status = user.subscriptionStatus;
+  const now = new Date();
   if (status === 'active')    return true;
-  if (status === 'past_due')  return true; // keep access during payment retry window
-  if (status === 'trial')     return new Date() < new Date(user.trialEndsAt);
-  if (status === 'cancelled') return !!(user.subscriptionEndDate && new Date() < new Date(user.subscriptionEndDate));
-  if (status === 'expired')   return false;
-  // Legacy: users created before subscriptionStatus field existed
-  if (!status && user.plan !== 'trial') return !!(user.stripeSubscriptionId) || true;
-  return new Date() < new Date(user.trialEndsAt);
+  if (status === 'trial')     return !!(user.trialEndsAt) && now < new Date(user.trialEndsAt);
+  if (status === 'cancelled') return !!(user.subscriptionEndDate && now < new Date(user.subscriptionEndDate));
+  if (status === 'past_due') {
+    // Allow during 3-day grace period
+    if (!user.pastDueSince) return true;
+    return now < new Date(new Date(user.pastDueSince).getTime() + 3 * 24 * 60 * 60 * 1000);
+  }
+  if (status === 'expired') return false;
+  // Legacy fallback
+  if (!status && user.plan !== 'trial') return true;
+  return !!(user.trialEndsAt) && now < new Date(user.trialEndsAt);
+}
+
+// Check whether a user's subscription is blocked for pipeline use
+// Returns { blocked: true, reason: '...' } or { blocked: false }
+function getPipelineBlock(user) {
+  const status = user.subscriptionStatus || 'trial';
+  const now = new Date();
+  if (status === 'expired') return { blocked: true, reason: 'expired' };
+  if (status === 'trial') {
+    if (user.trialEndsAt && now > new Date(user.trialEndsAt)) return { blocked: true, reason: 'trial-expired' };
+  }
+  if (status === 'cancelled') {
+    if (!(user.subscriptionEndDate && now < new Date(user.subscriptionEndDate))) return { blocked: true, reason: 'cancelled-period-ended' };
+  }
+  if (status === 'past_due') {
+    const since = user.pastDueSince ? new Date(user.pastDueSince) : now;
+    if (now > new Date(since.getTime() + 3 * 24 * 60 * 60 * 1000)) return { blocked: true, reason: 'past_due-grace-expired' };
+  }
+  return { blocked: false };
 }
 
 function subscriptionDaysRemaining(user) {
@@ -1494,22 +1541,26 @@ app.get('/api/billing/portal', requireAuth, async (req, res) => {
 });
 
 // POST /api/billing/promo — internal promo code bypass (VRL-X9K2-M7QP-4TZW)
+// Always grants Agency plan for 1 year — plan in body is ignored
 app.post('/api/billing/promo', requireAuth, async (req, res) => {
   try {
-    const { promoCode, plan } = req.body;
-    const validPlans = ['starter', 'shorts_pro', 'growth', 'agency'];
+    const { promoCode } = req.body;
     if (promoCode !== 'VRL-X9K2-M7QP-4TZW') return res.status(400).json({ success: false, error: 'Invalid promo code' });
-    if (!validPlans.includes(plan)) return res.status(400).json({ success: false, error: 'Invalid plan' });
-    const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year from now
+    const plan    = 'agency';
+    const limits  = getPlanLimits(plan);
+    const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
     await User.findByIdAndUpdate(req.user.id, {
       plan,
-      planUpdatedAt:         new Date(),
-      subscriptionStatus:    'active',
-      subscriptionStartDate: new Date(),
-      subscriptionEndDate:   endDate,
-      subscriptionRenewsAt:  endDate,
+      planUpdatedAt:          new Date(),
+      subscriptionStatus:     'active',
+      subscriptionStartDate:  new Date(),
+      subscriptionEndDate:    endDate,
+      subscriptionRenewsAt:   endDate,
+      videosPerDayPerChannel: limits.videosPerDayPerChannel,
+      maxChannels:            limits.maxChannels,
+      longformEnabled:        limits.longformEnabled,
     });
-    console.log(`[Promo] User ${req.user.id} upgraded to ${plan} via promo code (expires ${endDate.toISOString()})`);
+    console.log(`[Promo] User ${req.user.email} upgraded to agency via promo code (expires ${endDate.toISOString().slice(0,10)})`);
     res.json({ success: true, plan, subscriptionStatus: 'active', subscriptionEndDate: endDate });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
@@ -1540,25 +1591,32 @@ app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) =
   try {
     switch (eventType) {
 
+      case 'subscription.activated':
       case 'subscription.created': {
         const priceId = data.items?.[0]?.price?.id || null;
         const plan    = planFromPaddlePriceId(priceId) || customData.planId || 'starter';
-        const endDate = data.next_billed_at
-          ? new Date(data.next_billed_at)
-          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const limits  = getPlanLimits(plan);
+        const endDate = data.current_billing_period?.ends_at
+          ? new Date(data.current_billing_period.ends_at)
+          : data.next_billed_at
+            ? new Date(data.next_billed_at)
+            : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
         if (userId) {
           await User.findByIdAndUpdate(userId, {
             plan,
-            subscriptionStatus:    'active',
-            subscriptionStartDate: new Date(),
-            subscriptionEndDate:   endDate,
-            subscriptionRenewsAt:  endDate,
-            paddleSubscriptionId:  data.id            || null,
-            paddleCustomerId:      data.customer_id   || null,
+            subscriptionStatus:     'active',
+            subscriptionStartDate:  new Date(),
+            subscriptionEndDate:    endDate,
+            subscriptionRenewsAt:   endDate,
+            paddleSubscriptionId:   data.id          || null,
+            paddleCustomerId:       data.customer_id || null,
+            videosPerDayPerChannel: limits.videosPerDayPerChannel,
+            maxChannels:            limits.maxChannels,
+            longformEnabled:        limits.longformEnabled,
           });
-          console.log(`${PADDLE_LOG_PREFIX} subscription.created ✓ — user ${userId} → ${plan} (renews ${endDate.toISOString().slice(0,10)})`);
+          console.log(`${PADDLE_LOG_PREFIX} ${eventType} ✓ — user ${userId} → ${plan} (renews ${endDate.toISOString().slice(0,10)})`);
         } else {
-          console.warn(`${PADDLE_LOG_PREFIX} subscription.created — no userId in customData`);
+          console.warn(`${PADDLE_LOG_PREFIX} ${eventType} — no userId in customData`);
         }
         break;
       }
@@ -1566,14 +1624,23 @@ app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) =
       case 'subscription.updated': {
         const priceId   = data.items?.[0]?.price?.id || null;
         const newPlan   = planFromPaddlePriceId(priceId);
-        const endDate   = data.next_billed_at ? new Date(data.next_billed_at) : null;
+        const endDate   = data.current_billing_period?.ends_at
+          ? new Date(data.current_billing_period.ends_at)
+          : data.next_billed_at ? new Date(data.next_billed_at) : null;
         const statusMap = { active: 'active', past_due: 'past_due', canceled: 'cancelled', trialing: 'trial', paused: 'cancelled' };
         const newStatus = statusMap[data.status] || 'active';
         const user      = userId
           ? await User.findById(userId).lean()
           : await User.findOne({ paddleSubscriptionId: data.id }).lean();
         if (user) {
-          const update = { subscriptionStatus: newStatus };
+          const resolvedPlan = newPlan || user.plan;
+          const limits = getPlanLimits(resolvedPlan);
+          const update = {
+            subscriptionStatus:     newStatus,
+            videosPerDayPerChannel: limits.videosPerDayPerChannel,
+            maxChannels:            limits.maxChannels,
+            longformEnabled:        limits.longformEnabled,
+          };
           if (newPlan) update.plan = newPlan;
           if (endDate) { update.subscriptionEndDate = endDate; update.subscriptionRenewsAt = endDate; }
           await User.findByIdAndUpdate(user._id, update);
@@ -1604,12 +1671,17 @@ app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) =
           ? await User.findById(userId).lean()
           : await User.findOne({ paddleSubscriptionId: data.id }).lean();
         if (user) {
-          await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'past_due' });
+          const gracePeriodEnd = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+          await User.findByIdAndUpdate(user._id, {
+            subscriptionStatus: 'past_due',
+            pastDueSince:       new Date(),
+          });
           agentCol('adminAlerts').insertOne({
             type: 'paddle_payment_failed', userEmail: user.email,
-            userId: String(user._id), timestamp: new Date().toISOString(), resolved: false,
+            userId: String(user._id), timestamp: new Date().toISOString(),
+            gracePeriodEnd: gracePeriodEnd.toISOString(), resolved: false,
           }).catch(() => {});
-          console.warn(`${PADDLE_LOG_PREFIX} subscription.past_due ⚠ — user ${user.email}`);
+          console.warn(`${PADDLE_LOG_PREFIX} subscription.past_due ⚠ — user ${user.email} (grace until ${gracePeriodEnd.toISOString().slice(0,10)})`);
         }
         break;
       }
@@ -1623,6 +1695,7 @@ app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) =
         if (user) {
           const amount = (data.details?.totals?.grand_total || 0) / 100;
           await User.findByIdAndUpdate(user._id, {
+            lastPaymentDate: new Date(),
             $push: { billingHistory: { date: new Date(), amount, plan: user.plan, status: 'paid', invoiceId: data.id || null } },
           });
           console.log(`${PADDLE_LOG_PREFIX} transaction.completed ✓ — user ${user.email} $${amount.toFixed(2)}`);
@@ -6686,7 +6759,7 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
     const usersWithChannels = await User.find({
       'youtubeChannels.0': { $exists: true },
       nicheName: { $exists: true, $ne: '' },
-      subscriptionStatus: { $nin: ['expired', 'cancelled'] },
+      subscriptionStatus: { $nin: ['expired'] },
     }).lean().catch(() => []);
 
     let fallbackCount = 0;
@@ -6723,21 +6796,10 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
         continue;
       }
 
-      // Subscription enforcement — never generate for expired/cancelled users
-      const subStatus = user.subscriptionStatus || (user.plan !== 'trial' ? 'active' : 'trial');
-      const now = new Date();
-      if (subStatus === 'expired' || subStatus === 'cancelled') {
-        console.log(`[DailyGen] Skipping ${subStatus} user ${user.email}`);
-        continue;
-      }
-      if (subStatus === 'active' && user.subscriptionEndDate && now > new Date(user.subscriptionEndDate)) {
-        await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired' }).catch(() => {});
-        console.log(`[DailyGen] Subscription expired for ${user.email} — skipping`);
-        continue;
-      }
-      if ((subStatus === 'trial' || !user.subscriptionStatus) && user.trialEndsAt && now > new Date(user.trialEndsAt)) {
-        await User.findByIdAndUpdate(user._id, { subscriptionStatus: 'expired' }).catch(() => {});
-        console.log(`[DailyGen] Trial expired for ${user.email} — skipping`);
+      // Subscription enforcement — use getPipelineBlock() as single source of truth
+      const pipelineBlock = getPipelineBlock(user);
+      if (pipelineBlock.blocked) {
+        console.log(`[Pipeline] Blocked user ${user.email} — subscription status: ${pipelineBlock.reason}`);
         continue;
       }
 
@@ -6994,6 +7056,12 @@ async function runScheduledPosting() {
     if (user.blocked) {
       console.warn(`[PostingCron] User ${user.email} is blocked — skipping slot "${fresh.title}"`);
       await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'skipped', pipelineStatus: 'user-blocked', pipelineError: 'User account suspended' } }).catch(() => {});
+      continue;
+    }
+    const subBlock = getPipelineBlock(user);
+    if (subBlock.blocked) {
+      console.log(`[Pipeline] Blocked user ${user.email} — subscription status: ${subBlock.reason}`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'skipped', pipelineStatus: `subscription-${subBlock.reason}`, pipelineError: `Subscription blocked: ${subBlock.reason}` } }).catch(() => {});
       continue;
     }
 
@@ -7582,6 +7650,70 @@ app.delete('/api/admin/users/:userId', requireAdmin, async (req, res) => {
   }
 });
 
+// POST /api/admin/users/:userId/subscription — admin override subscription state
+// Body: { action: 'set_plan'|'reset_trial'|'expire', plan?: string }
+app.post('/api/admin/users/:userId/subscription', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { action, plan } = req.body || {};
+    const user = await User.findById(userId).select('email plan subscriptionStatus').lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    let update = {};
+    let logMsg = '';
+
+    if (action === 'set_plan') {
+      if (!PLAN_LIMITS[plan]) return res.status(400).json({ error: `Unknown plan: ${plan}` });
+      const limits = getPlanLimits(plan);
+      const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+      update = {
+        plan,
+        subscriptionStatus:     'active',
+        subscriptionStartDate:  new Date(),
+        subscriptionEndDate:    endDate,
+        subscriptionRenewsAt:   endDate,
+        videosPerDayPerChannel: limits.videosPerDayPerChannel,
+        maxChannels:            limits.maxChannels,
+        longformEnabled:        limits.longformEnabled,
+      };
+      logMsg = `[Admin] Set ${user.email} → plan:${plan} status:active`;
+
+    } else if (action === 'reset_trial') {
+      const trialEnd = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+      update = {
+        plan:                   'trial',
+        subscriptionStatus:     'trial',
+        trialStartedAt:         new Date(),
+        trialEndsAt:            trialEnd,
+        subscriptionStartDate:  null,
+        subscriptionEndDate:    null,
+        subscriptionRenewsAt:   null,
+        paddleSubscriptionId:   null,
+        paddleCustomerId:       null,
+        videosPerDayPerChannel: 3,
+        maxChannels:            1,
+        longformEnabled:        false,
+      };
+      logMsg = `[Admin] Reset ${user.email} → fresh trial (until ${trialEnd.toISOString().slice(0,10)})`;
+
+    } else if (action === 'expire') {
+      update = { subscriptionStatus: 'expired' };
+      logMsg = `[Admin] Expired ${user.email} immediately`;
+
+    } else {
+      return res.status(400).json({ error: 'action must be set_plan | reset_trial | expire' });
+    }
+
+    await User.findByIdAndUpdate(userId, update);
+    console.log(logMsg);
+    const updated = await User.findById(userId).select('email plan subscriptionStatus subscriptionEndDate trialEndsAt videosPerDayPerChannel maxChannels longformEnabled').lean();
+    res.json({ success: true, user: updated });
+  } catch (err) {
+    console.error('[Admin] Subscription override error:', err.message);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // POST /api/admin/run-pipeline — manually trigger daily generation + scheduled posting (admin only)
 app.post('/api/admin/run-pipeline', requireAdmin, async (req, res) => {
   try {
@@ -8148,23 +8280,38 @@ function registerCronJobs() {
     }
   }, { timezone: 'UTC' });
 
-  // Trial expiry check — 1 AM UTC daily
+  // Trial + past_due expiry check — 1 AM UTC daily
   cron.schedule('0 1 * * *', async () => {
     console.log('[Trial] Running daily expiry check...');
     try {
       const now = new Date();
-      const expired = await User.find({
-        $or: [
-          { subscriptionStatus: 'trial', trialEndsAt: { $lt: now } },
-          { subscriptionStatus: 'active', subscriptionEndDate: { $lt: now } },
-        ],
-      }).select('email plan trialEndsAt subscriptionEndDate subscriptionStatus').lean();
 
-      for (const u of expired) {
+      // Only expire trial users — never expire paid plans via this cron
+      const expiredTrials = await User.find({
+        subscriptionStatus: 'trial',
+        trialEndsAt: { $lt: now },
+      }).select('email trialEndsAt').lean();
+
+      for (const u of expiredTrials) {
+        const daysLeft = Math.ceil((new Date(u.trialEndsAt) - now) / 86400000);
         await User.findByIdAndUpdate(u._id, { subscriptionStatus: 'expired' });
-        console.log(`[Trial] Expired: ${u.email} (was ${u.subscriptionStatus})`);
+        console.log(`[Trial] User ${u.email} trial expired (was ${daysLeft}d ago)`);
       }
-      if (expired.length > 0) console.log(`[Trial] ${expired.length} subscription(s) expired and stopped`);
+      if (expiredTrials.length > 0) console.log(`[Trial] ${expiredTrials.length} trial(s) expired`);
+
+      // Expire past_due users whose 3-day grace period is over
+      const graceExpiry = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+      const pastDueExpired = await User.find({
+        subscriptionStatus: 'past_due',
+        pastDueSince: { $lt: graceExpiry },
+      }).select('email pastDueSince').lean();
+
+      for (const u of pastDueExpired) {
+        await User.findByIdAndUpdate(u._id, { subscriptionStatus: 'expired' });
+        console.log(`[Trial] User ${u.email} past_due grace period expired — marking expired`);
+      }
+      if (pastDueExpired.length > 0) console.log(`[Trial] ${pastDueExpired.length} past_due account(s) expired after grace period`);
+
     } catch (e) { console.error('[Trial] Expiry cron error:', e.message); }
   }, { timezone: 'UTC' });
 
