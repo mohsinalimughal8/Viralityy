@@ -5963,52 +5963,95 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   };
 
   // Upload custom thumbnail after the video is live — non-fatal on any error.
+  // Retries once after 10 s (YouTube sometimes needs time to process a new upload before accepting thumbnails).
   const doThumbUpload = async (videoId, accessToken) => {
-    const { thumbPath, userId } = options;
-    console.log(`[DIAG] doThumbUpload — videoId=${videoId}, thumbPath=${thumbPath}, exists=${thumbPath ? fs.existsSync(thumbPath) : false}`);
-    if (!thumbPath || !fs.existsSync(thumbPath)) {
-      console.log(`[DIAG] Thumbnail skipped — thumbPath missing or file not found`);
+    const { thumbPath, userId, slotId } = options;
+    console.log(`[Thumbnail] doThumbUpload — youtubeVideoId=${videoId}, thumbPath=${thumbPath}`);
+
+    if (!thumbPath) {
+      console.log(`[Thumbnail] Skipped — no thumbPath provided`);
       return;
     }
-    try {
-      const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => ({ allowed: true }));
-      console.log(`[DIAG] Thumbnail quota check:`, JSON.stringify(thumbQC));
-      if (!thumbQC.allowed) { console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload'); return; }
-      oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
+    if (!fs.existsSync(thumbPath)) {
+      console.error(`[Thumbnail] SKIP — file not found at ${thumbPath} (was it deleted before upload?)`);
+      return;
+    }
+
+    const thumbSizeBytes = fs.statSync(thumbPath).size;
+    const thumbMime      = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    console.log(`[Thumbnail] File confirmed: ${thumbPath} | size=${thumbSizeBytes} bytes (${(thumbSizeBytes/1024/1024).toFixed(2)} MB) | mime=${thumbMime}`);
+
+    if (thumbSizeBytes === 0) {
+      console.error(`[Thumbnail] SKIP — file is 0 bytes`);
+      fs.unlink(thumbPath, () => {});
+      return;
+    }
+
+    const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => ({ allowed: true }));
+    if (!thumbQC.allowed) {
+      console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload');
+      fs.unlink(thumbPath, () => {});
+      return;
+    }
+
+    const attemptSet = async (token, attempt) => {
+      oauth2.setCredentials({ access_token: token, refresh_token: channel.refreshToken });
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
-      const thumbMime = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      const thumbSizeBytes = fs.statSync(thumbPath).size;
-      console.log(`[DIAG] Calling yt.thumbnails.set — videoId=${videoId}, mime=${thumbMime}, fileSize=${thumbSizeBytes} bytes (${(thumbSizeBytes/1024/1024).toFixed(2)} MB)`);
-      const thumbSetResult = await yt.thumbnails.set({
+      console.log(`[Thumbnail] thumbnails.set attempt ${attempt} — youtubeVideoId=${videoId}, size=${thumbSizeBytes} bytes`);
+      const result = await yt.thumbnails.set({
         videoId,
         media: { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
       });
-      console.log(`[DIAG] thumbnails.set HTTP status: ${thumbSetResult?.status}`);
-      console.log(`[DIAG] thumbnails.set response data:`, JSON.stringify(thumbSetResult?.data || {}).slice(0, 800));
-      logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
-      logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
-      console.log(`[Thumbnail] ✓ Uploaded for video ${videoId}`);
-      // Mark channel as thumbnail-capable after first confirmed success
-      if (userId && channel?.channelId) {
-        User.findOneAndUpdate(
-          { _id: userId, 'youtubeChannels.channelId': channel.channelId },
-          { $set: { 'youtubeChannels.$.thumbnailsEnabled': true } }
-        ).catch(() => {});
+      console.log(`[Thumbnail] thumbnails.set attempt ${attempt} HTTP ${result?.status}:`, JSON.stringify(result?.data || {}).slice(0, 800));
+      return result;
+    };
+
+    let succeeded = false;
+    try {
+      let lastErr;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const result = await attemptSet(accessToken, attempt);
+          console.log(`[Thumbnail] Successfully set thumbnail for video ${videoId} (attempt ${attempt})`);
+          logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
+          logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
+          if (userId && channel?.channelId) {
+            User.findOneAndUpdate(
+              { _id: userId, 'youtubeChannels.channelId': channel.channelId },
+              { $set: { 'youtubeChannels.$.thumbnailsEnabled': true } }
+            ).catch(() => {});
+          }
+          if (slotId) {
+            agentCol('calendar_slots').updateOne(
+              { _id: require('mongodb').ObjectId.isValid(slotId) ? new (require('mongodb').ObjectId)(slotId) : slotId },
+              { $set: { thumbnailUploaded: true } }
+            ).catch(() => {});
+          }
+          succeeded = true;
+          break;
+        } catch (e) {
+          lastErr = e;
+          const fullErr = e?.response?.data || e?.message;
+          console.error(`[Thumbnail] thumbnails.set attempt ${attempt} FAILED — youtubeVideoId=${videoId}`);
+          console.error(`[Thumbnail] Full YouTube API error response:`, JSON.stringify(fullErr));
+          if (attempt === 1) {
+            console.log(`[Thumbnail] Waiting 10 s before retry (YouTube may still be processing the upload)…`);
+            await new Promise(r => setTimeout(r, 10000));
+          }
+        }
       }
-    } catch (e) {
-      console.warn(`[Thumbnail] Upload failed (non-fatal): ${e.message}`);
-      console.log(`[DIAG] thumbnails.set full error:`, e?.response?.data || e?.message);
-      logAPIUsage('youtube', 'thumbnail_upload', options.userId || null, 0, 0, false).catch(() => {});
-      // Detect thumbnail-ineligibility errors and persist the flag
-      const errData = e?.response?.data;
-      const reason  = errData?.error?.errors?.[0]?.reason || '';
-      const isThumbnailDisabled = reason === 'forbidden' || /thumbnail.*not.*enabl|custom.*thumbnail/i.test(e.message);
-      if (isThumbnailDisabled && userId && channel?.channelId) {
-        User.findOneAndUpdate(
-          { _id: userId, 'youtubeChannels.channelId': channel.channelId },
-          { $set: { 'youtubeChannels.$.thumbnailsEnabled': false } }
-        ).catch(() => {});
-        console.log(`[ThumbnailCheck] Marked ${channel.channelId} thumbnailsEnabled=false (ineligibility error)`);
+      if (!succeeded && lastErr) {
+        logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, false).catch(() => {});
+        const errData = lastErr?.response?.data;
+        const reason  = errData?.error?.errors?.[0]?.reason || '';
+        const isThumbnailDisabled = reason === 'forbidden' || /thumbnail.*not.*enabl|custom.*thumbnail/i.test(lastErr.message);
+        if (isThumbnailDisabled && userId && channel?.channelId) {
+          User.findOneAndUpdate(
+            { _id: userId, 'youtubeChannels.channelId': channel.channelId },
+            { $set: { 'youtubeChannels.$.thumbnailsEnabled': false } }
+          ).catch(() => {});
+          console.log(`[ThumbnailCheck] Marked ${channel.channelId} thumbnailsEnabled=false (ineligibility confirmed after 2 attempts)`);
+        }
       }
     } finally {
       fs.unlink(thumbPath, () => {});
@@ -6109,8 +6152,8 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
 
     const { imageBytes, mimeType } = await callImagenAPI(prompt, isShort ? '9:16' : '16:9');
 
-    const thumbExt  = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' : 'png';
-    const thumbPath = `/tmp/vly_thumb_${slotId}.${thumbExt}`;
+    // Always jpg — Imagen is called with outputMimeType:'image/jpeg'
+    const thumbPath = `/tmp/thumbnail_${slotId}.jpg`;
     fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
     const sizeBytes = fs.statSync(thumbPath).size;
     console.log(`[Thumbnail] Saved: ${thumbPath} (${sizeBytes} bytes, ${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
@@ -6296,7 +6339,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     const description = script.slice(0, 4800) || slotDoc.title;
     const ytId = await pipelineUploadToYouTube(outPath, slotDoc.title, description, channel, isShort, {
       thumbPath,
-      userId: String(slotDoc.userId),
+      userId:  String(slotDoc.userId),
+      slotId:  String(slotId),
     });
 
     await setStatus({
@@ -7904,6 +7948,133 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error('[TestThumb] Fatal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/retry-thumbnails
+// Finds the last 5 posted slots that have a youtubeVideoId but no thumbnailUploaded flag, regenerates
+// a thumbnail via Imagen 4, and calls thumbnails.set() on each. Returns per-slot results.
+app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
+  const fs       = require('fs');
+  const { google } = require('googleapis');
+  const { ObjectId } = require('mongodb');
+  const slotsCol = agentCol('calendar_slots');
+  const limit    = parseInt(req.query.limit || '5', 10);
+
+  try {
+    const slots = await slotsCol
+      .find({ posted: true, youtubeVideoId: { $exists: true, $ne: null }, thumbnailUploaded: { $ne: true } })
+      .sort({ postedAt: -1 })
+      .limit(limit)
+      .toArray();
+
+    console.log(`[RetryThumb] Found ${slots.length} posted slot(s) without confirmed thumbnail upload`);
+    const results = [];
+
+    for (const slot of slots) {
+      const slotResult = {
+        slotId:         String(slot._id),
+        youtubeVideoId: slot.youtubeVideoId,
+        title:          slot.title,
+        postedAt:       slot.postedAt,
+        thumbGenerated: false,
+        thumbUploaded:  false,
+        error:          null,
+      };
+
+      try {
+        const user = await User.findById(slot.userId).lean();
+        if (!user) { slotResult.error = 'User not found'; results.push(slotResult); continue; }
+
+        const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slot.channelId)
+                     || user.youtubeChannels?.[0];
+        if (!channel) { slotResult.error = 'No YouTube channel found for user'; results.push(slotResult); continue; }
+
+        if (channel.thumbnailsEnabled === false) {
+          slotResult.error = 'Channel thumbnailsEnabled=false — skipped to avoid API waste';
+          results.push(slotResult);
+          continue;
+        }
+
+        console.log(`[RetryThumb] Generating thumbnail for "${slot.title}" (videoId=${slot.youtubeVideoId})`);
+        const thumbPath = await generateThumbnail(
+          slot.title, slot.nicheName || '', slot.type || 'Short', `retry_${String(slot._id)}`
+        );
+        if (!thumbPath) { slotResult.error = 'Imagen 4 thumbnail generation failed'; results.push(slotResult); continue; }
+        slotResult.thumbGenerated = true;
+
+        const thumbStat = fs.statSync(thumbPath);
+        const thumbMime = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+        console.log(`[RetryThumb] Generated: ${thumbPath} | ${thumbStat.size} bytes | ${thumbMime}`);
+
+        const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+        let accessToken = channel.accessToken;
+
+        const doSet = async (token) => {
+          oauth2.setCredentials({ access_token: token, refresh_token: channel.refreshToken });
+          const yt = google.youtube({ version: 'v3', auth: oauth2 });
+          return yt.thumbnails.set({
+            videoId: slot.youtubeVideoId,
+            media:   { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
+          });
+        };
+
+        let uploaded = false;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            console.log(`[RetryThumb] thumbnails.set attempt ${attempt} — videoId=${slot.youtubeVideoId}`);
+            let setRes;
+            try {
+              setRes = await doSet(accessToken);
+            } catch (e401) {
+              if ((e401.code === 401 || e401.status === 401 || /invalid_grant|token/i.test(e401.message)) && attempt === 1) {
+                console.log(`[RetryThumb] 401 — refreshing token`);
+                accessToken = await pipelineRefreshToken(channel);
+                setRes = await doSet(accessToken);
+              } else {
+                throw e401;
+              }
+            }
+            console.log(`[RetryThumb] thumbnails.set SUCCESS — HTTP ${setRes?.status}:`, JSON.stringify(setRes?.data || {}).slice(0, 400));
+            console.log(`[Thumbnail] Successfully set thumbnail for video ${slot.youtubeVideoId} (retry endpoint, attempt ${attempt})`);
+            await slotsCol.updateOne({ _id: slot._id }, { $set: { thumbnailUploaded: true } });
+            slotResult.thumbUploaded = true;
+            uploaded = true;
+            break;
+          } catch (e) {
+            const fullErr = e?.response?.data || e?.message;
+            console.error(`[RetryThumb] attempt ${attempt} FAILED — videoId=${slot.youtubeVideoId}:`, JSON.stringify(fullErr));
+            slotResult.error = JSON.stringify(fullErr);
+            if (attempt === 1) {
+              console.log(`[RetryThumb] Waiting 10 s before retry…`);
+              await new Promise(r => setTimeout(r, 10000));
+            }
+          }
+        }
+
+        fs.unlink(thumbPath, () => {});
+        if (!uploaded && channel.channelId) {
+          const reason = slotResult.error || '';
+          if (/forbidden|thumbnail.*not.*enabl|custom.*thumbnail/i.test(reason)) {
+            User.findOneAndUpdate(
+              { _id: user._id, 'youtubeChannels.channelId': channel.channelId },
+              { $set: { 'youtubeChannels.$.thumbnailsEnabled': false } }
+            ).catch(() => {});
+            console.log(`[RetryThumb] Marked ${channel.channelId} thumbnailsEnabled=false`);
+          }
+        }
+      } catch (err) {
+        console.error(`[RetryThumb] Fatal error for slot ${slot._id}:`, err.message);
+        slotResult.error = err.message;
+      }
+
+      results.push(slotResult);
+    }
+
+    res.json({ success: true, processed: results.length, results });
+  } catch (err) {
+    console.error('[RetryThumb] Fatal:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
