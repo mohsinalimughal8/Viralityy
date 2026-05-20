@@ -10,3 +10,6 @@ npm-debug.log*
 
 # Local Netlify folder
 .netlify
+
+# Render deployment env (contains secrets — never commit)
+.env.render
