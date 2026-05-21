@@ -1514,8 +1514,23 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       </div>
     </div>
 
+    <!-- Partial data note (shown when analytics unavailable) -->
+    <div class="health-partial-note" id="health-partial-note" style="display:none">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      Score based on posting consistency only — YouTube Analytics unavailable. Connect analytics or try refreshing.
+    </div>
+
     <!-- Per-metric cards -->
     <div class="health-metrics" id="health-metrics"></div>
+
+    <!-- Metric breakdown (expandable) -->
+    <div class="health-breakdown" id="health-breakdown" style="display:none">
+      <button class="health-breakdown-toggle" onclick="toggleHealthBreakdown(this)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        Score breakdown
+      </button>
+      <div class="health-breakdown-body" id="health-breakdown-body"></div>
+    </div>
 
     <!-- AI tip -->
     <div class="health-tip" id="health-tip" style="display:none">
@@ -1903,6 +1918,22 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .hm-bar{height:5px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;margin-bottom:.5rem}
 .hm-fill{height:100%;border-radius:3px;transition:width .5s ease}
 .hm-explanation{font-size:.7rem;color:var(--text3);line-height:1.4}
+.health-metric-card.insufficient{opacity:.7;border-style:dashed}
+.hm-score.insufficient{font-size:.78rem;font-weight:500;color:var(--text3);font-family:inherit;letter-spacing:0}
+.hm-source-badge{font-size:.6rem;color:var(--text3);padding:2px 6px;background:rgba(255,255,255,.05);border-radius:4px;margin-left:auto}
+.health-breakdown{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:1.1rem;overflow:hidden}
+.health-breakdown-toggle{width:100%;background:none;border:none;padding:.65rem 1rem;text-align:left;cursor:pointer;font-size:.72rem;color:var(--text3);display:flex;align-items:center;gap:6px}
+.health-breakdown-toggle:hover{color:var(--text2)}
+.health-breakdown-body{padding:0 1rem .75rem;display:none}
+.health-breakdown-body.open{display:block}
+.hb-row{display:flex;align-items:center;gap:8px;padding:.35rem 0;border-bottom:1px solid var(--border)}
+.hb-row:last-child{border:none}
+.hb-label{font-size:.72rem;color:var(--text2);width:140px;flex-shrink:0}
+.hb-score{font-size:.72rem;font-weight:600;width:42px;flex-shrink:0}
+.hb-bar-wrap{flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden}
+.hb-bar-fill{height:100%;border-radius:2px}
+.hb-source{font-size:.6rem;color:var(--text3);margin-left:auto;flex-shrink:0}
+.health-partial-note{font-size:.7rem;color:var(--text3);background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:6px;padding:.45rem .8rem;margin-bottom:.8rem;display:flex;align-items:center;gap:6px}
 .health-tip{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(236,72,153,.05));border:1px solid rgba(99,102,241,.2);border-radius:var(--radius);padding:1rem 1.25rem}
 .health-tip-head{display:flex;align-items:center;gap:8px;margin-bottom:.6rem}
 .health-tip-icon{width:28px;height:28px;border-radius:7px;background:rgba(99,102,241,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0}
@@ -5440,14 +5471,14 @@ function _renderHealthScore(data) {
   const score   = data.score || 0;
   const color   = _healthColor(score);
   const metrics = data.metrics || {};
+  const colorMap = { green: '#10b981', amber: '#f59e0b', red: '#ef4444' };
 
   // Ring animation
-  const circumference = 2 * Math.PI * 60; // ~377
-  const offset        = circumference - (score / 100) * circumference;
-  const ringEl        = document.getElementById('health-ring');
-  const colorMap      = { green: '#10b981', amber: '#f59e0b', red: '#ef4444' };
+  const circumference = 2 * Math.PI * 60;
+  const offset = circumference - (score / 100) * circumference;
+  const ringEl = document.getElementById('health-ring');
   if (ringEl) {
-    ringEl.style.stroke          = colorMap[color];
+    ringEl.style.stroke = colorMap[color];
     ringEl.style.strokeDashoffset = offset;
   }
 
@@ -5463,37 +5494,69 @@ function _renderHealthScore(data) {
   const trendEl = document.getElementById('health-trend');
   if (trendEl) {
     const trendMap = { up: '↑ Improving this week', down: '↓ Declining this week', stable: '→ Stable this week' };
-    trendEl.textContent  = trendMap[data.trend] || '';
-    trendEl.className    = `health-trend ${data.trend || 'stable'}`;
+    trendEl.textContent = trendMap[data.trend] || '';
+    trendEl.className   = `health-trend ${data.trend || 'stable'}`;
   }
 
   const cachedEl = document.getElementById('health-cached-at');
   if (cachedEl && data.cachedAt) {
     const age = Math.round((Date.now() - new Date(data.cachedAt).getTime()) / 60000);
-    cachedEl.textContent = data.fromCache ? `Refreshed ${age < 2 ? 'just now' : age + 'm ago'} · Updates daily` : 'Just calculated';
+    cachedEl.textContent = data.fromCache ? `Refreshed ${age < 2 ? 'just now' : age + 'm ago'} · Updates every 6h` : 'Just calculated';
   }
+
+  // Partial data note
+  const partialEl = document.getElementById('health-partial-note');
+  if (partialEl) partialEl.style.display = data.analyticsAvailable === false ? 'flex' : 'none';
 
   // Metric cards
   const metricsEl = document.getElementById('health-metrics');
   if (metricsEl) {
     const mKeys = ['growth', 'ctr', 'retention', 'consistency'];
+    const sourceLabel = { api: 'Live', mongodb: 'Estimated', insufficient: 'No data' };
     metricsEl.innerHTML = mKeys.map(k => {
-      const m  = metrics[k];
+      const m = metrics[k];
       if (!m) return '';
-      const c  = _healthColor(m.score);
+      const isInsufficient = m.score === null || m.score === undefined;
+      const c  = isInsufficient ? '' : _healthColor(m.score);
+      const scoreDisplay = isInsufficient
+        ? '<span class="hm-score insufficient">Insufficient data</span>'
+        : `<span class="hm-score ${c}">${m.score}</span>`;
+      const valueDisplay = isInsufficient ? '' : `<span class="hm-value">/ 100 · ${m.value}</span>`;
+      const barWidth = isInsufficient ? 0 : m.score;
       return `
-        <div class="health-metric-card">
+        <div class="health-metric-card${isInsufficient ? ' insufficient' : ''}">
           <div class="hm-top">
             <span class="hm-label">${m.label}</span>
-            <span class="hm-weight">${m.weight}% weight</span>
+            <span class="hm-source-badge">${sourceLabel[m.source] || ''}</span>
+            <span class="hm-weight">${m.weight}%</span>
           </div>
-          <div class="hm-score-row">
-            <span class="hm-score ${c}">${m.score}</span>
-            <span class="hm-value">/ 100 · ${m.value}</span>
-          </div>
-          <div class="hm-bar"><div class="hm-fill ${c}" style="width:${m.score}%"></div></div>
+          <div class="hm-score-row">${scoreDisplay}${valueDisplay}</div>
+          <div class="hm-bar"><div class="hm-fill ${c}" style="width:${barWidth}%"></div></div>
           <p class="hm-explanation">${m.explanation}</p>
         </div>`;
+    }).join('');
+  }
+
+  // Breakdown expandable
+  const breakdownEl     = document.getElementById('health-breakdown');
+  const breakdownBodyEl = document.getElementById('health-breakdown-body');
+  if (breakdownEl && breakdownBodyEl) {
+    breakdownEl.style.display = 'block';
+    const mKeys = ['growth', 'ctr', 'retention', 'consistency'];
+    const colorHex = { green: '#10b981', amber: '#f59e0b', red: '#ef4444', '': '#444' };
+    const sourceLabel = { api: 'Live analytics', mongodb: 'Estimated from history', insufficient: 'No data available' };
+    breakdownBodyEl.innerHTML = mKeys.map(k => {
+      const m = metrics[k];
+      if (!m) return '';
+      const isInsufficient = m.score === null || m.score === undefined;
+      const c   = isInsufficient ? '' : _healthColor(m.score);
+      const pct = isInsufficient ? 0 : m.score;
+      return `<div class="hb-row">
+        <span class="hb-label">${m.label} <span style="color:var(--text3);font-size:.6rem">(${m.weight}%)</span></span>
+        <span class="hb-score" style="color:${colorHex[c]}">${isInsufficient ? '—' : m.score}</span>
+        <div class="hb-bar-wrap"><div class="hb-bar-fill" style="width:${pct}%;background:${colorHex[c]}"></div></div>
+        <span class="hb-source">${sourceLabel[m.source] || ''}</span>
+      </div>`;
     }).join('');
   }
 
@@ -5508,6 +5571,14 @@ function _renderHealthScore(data) {
   } else if (tipEl) {
     tipEl.style.display = 'none';
   }
+}
+
+function toggleHealthBreakdown(btn) {
+  const body = document.getElementById('health-breakdown-body');
+  if (!body) return;
+  const open = body.classList.toggle('open');
+  const arrow = btn.querySelector('svg');
+  if (arrow) arrow.style.transform = open ? 'rotate(180deg)' : '';
 }
 </script>
 
