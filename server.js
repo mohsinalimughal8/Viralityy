@@ -5144,23 +5144,32 @@ app.post('/api/channels/:channelId/pause', requireAuth, async (req, res) => {
 // QUALITY SCORES
 // =============================================================================
 
-// GET /api/quality/scores — returns AI-generated quality scores for this user's videos today
+// GET /api/quality/scores — returns AI-generated quality scores for this user's last 30 videos
 app.get('/api/quality/scores', requireAuth, async (req, res) => {
   try {
     const today  = new Date().toISOString().slice(0, 10);
     const col    = agentCol('quality_scores');
-    const scores = await col
-      .find({ userId: req.user.id, $or: [{ scheduledDate: today }, { date: today }] })
-      .sort({ scoredAt: -1 })
-      .toArray();
-    scores.forEach(s => { s._id = s._id.toString(); });
 
-    const total  = scores.length;
-    const avg    = total ? Math.round(scores.reduce((a, s) => a + (s.scores?.overall || 0), 0) / total) : null;
-    const passed = scores.filter(s => (s.scores?.overall || 0) >= 60).length;
+    // Return today's scores for the per-slot breakdown; also compute a rolling 30-video average
+    const [todayScores, recentScores] = await Promise.all([
+      col.find({ userId: req.user.id, $or: [{ scheduledDate: today }, { date: today }] })
+         .sort({ scoredAt: -1 }).toArray(),
+      col.find({ userId: req.user.id })
+         .sort({ scoredAt: -1 }).limit(30).toArray(),
+    ]);
+    todayScores.forEach(s => { s._id = s._id.toString(); });
+
+    const total  = todayScores.length;
+    const passed = todayScores.filter(s => (s.scores?.overall || 0) >= 60).length;
     const failed = total - passed;
 
-    res.json({ success: true, scores, stats: { total, avg, passed, failed }, today });
+    // Rolling average uses up to the last 30 scored videos — not just today
+    const rollingTotal = recentScores.length;
+    const avg = rollingTotal
+      ? Math.round(recentScores.reduce((a, s) => a + (s.scores?.overall || 0), 0) / rollingTotal)
+      : null;
+
+    res.json({ success: true, scores: todayScores, stats: { total, avg, passed, failed, rollingTotal }, today });
   } catch (err) {
     console.error('[QualityScores] GET error:', err.message);
     res.status(500).json({ error: 'Failed to load quality scores' });

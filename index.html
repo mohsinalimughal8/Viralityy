@@ -2910,44 +2910,54 @@ async function initOverview() {
     apiCall('/api/quality/scores').catch(() => null),
   ]);
 
-  // Build a merged ytAnalytics-shaped object from /api/dashboard/stats so the
-  // rest of the function can use the same field names as before.
+  // Debug log — helps diagnose blank stat cards if they reappear
+  console.log('[Dashboard] /api/dashboard/stats response:', JSON.stringify(dashStats));
+  console.log('[Dashboard] /api/quality/scores response:', JSON.stringify(qualData?.stats));
+
   const ytAnalytics = dashStats;
+  const ytStats     = dashStats?.success ? (dashStats.stats || {}) : {};
+  const queueCount  = preview?.queue?.length || preview?.videos?.length || 0;
+  const alertCount  = (alertData?.alerts || []).filter(a => !a.read).length;
 
-  // ── Stat cards ──
-  const ytStats    = dashStats?.stats || {};
-  const queueCount = preview?.queue?.length || preview?.videos?.length || 0;
-  const alertCount = (alertData?.alerts || []).filter(a => !a.read).length;
+  // ── Stat cards — each guarded independently so one failure doesn't blank the rest ──
 
-  // Total views — YouTube channel lifetime total
-  if (ytStats.totalViews > 0) {
-    setEl('ov-views', _fmtViews(ytStats.totalViews));
-    setEl('ov-views-sub', dashStats.channelName || 'Channel lifetime');
-  }
+  // Total views — show when backend confirmed success and returned a value
+  try {
+    if (dashStats?.success && ytStats.totalViews != null) {
+      setEl('ov-views', _fmtViews(ytStats.totalViews));
+      setEl('ov-views-sub', dashStats.channelName || 'Channel lifetime');
+    }
+  } catch(e) { console.warn('[Dashboard] views card error:', e); }
 
   // Subscribers
-  if (ytStats.totalSubs > 0) {
-    setEl('ov-subs', _fmtViews(ytStats.totalSubs));
-    setEl('ov-subs-sub', 'Total subscribers');
-  }
+  try {
+    if (dashStats?.success && ytStats.totalSubs != null) {
+      setEl('ov-subs', _fmtViews(ytStats.totalSubs));
+      setEl('ov-subs-sub', 'Total subscribers');
+    }
+  } catch(e) { console.warn('[Dashboard] subs card error:', e); }
 
   // Videos posted — authoritative count from calendar_slots (posted: true) via server
-  const postedCount = calData?.videosPosted ?? ytStats.videosPosted ?? 0;
-  setEl('ov-posted', postedCount || '—');
+  try {
+    const postedCount = calData?.videosPosted ?? ytStats.videosPosted ?? 0;
+    setEl('ov-posted', postedCount != null ? String(postedCount) : '—');
+  } catch(e) { console.warn('[Dashboard] posted card error:', e); }
 
-  // Avg quality score
-  const avgQ = qualData?.stats?.avg;
-  if (avgQ != null) {
-    setEl('ov-quality', avgQ + '%');
-  }
+  // Avg quality score — rolling average of last 30 scored videos; "Pending" until first score
+  try {
+    const avgQ = qualData?.stats?.avg;
+    setEl('ov-quality', avgQ != null ? avgQ + '%' : 'Pending');
+  } catch(e) { console.warn('[Dashboard] quality card error:', e); }
 
   // Preview queue
-  setEl('ov-queue', queueCount || '0');
-  const qSubEl = document.getElementById('ov-queue-sub');
-  if (qSubEl) {
-    qSubEl.textContent   = queueCount > 0 ? queueCount + ' awaiting review' : 'All clear';
-    qSubEl.style.color   = queueCount > 0 ? 'var(--amber)' : '';
-  }
+  try {
+    setEl('ov-queue', String(queueCount));
+    const qSubEl = document.getElementById('ov-queue-sub');
+    if (qSubEl) {
+      qSubEl.textContent = queueCount > 0 ? queueCount + ' awaiting review' : 'All clear';
+      qSubEl.style.color = queueCount > 0 ? 'var(--amber)' : '';
+    }
+  } catch(e) { console.warn('[Dashboard] queue card error:', e); }
 
   // ── Sidebar badges ──
   const badgePreview = document.getElementById('badge-preview');
@@ -2971,50 +2981,55 @@ async function initOverview() {
   }
 
   // ── Top video card ──
-  const topVideoEl = document.getElementById('top-video-card');
-  if (topVideoEl) {
-    const topVid = ytAnalytics?.topVideo || (ytAnalytics?.topVideos || [])[0];
-    if (topVid) {
-      const eng = topVid.viewCount ? ((topVid.likeCount / topVid.viewCount) * 100).toFixed(1) : 0;
-      topVideoEl.innerHTML = `
-        <p style="font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:.35rem;line-height:1.4">${topVid.title || 'Untitled'}</p>
-        <div style="display:flex;gap:12px;margin-top:.4rem">
-          <span style="font-size:.72rem;color:var(--green)">${_fmtViews(topVid.viewCount)} views</span>
-          <span style="font-size:.72rem;color:var(--text3)">${eng}% engagement</span>
-        </div>`;
-    } else {
-      topVideoEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No video data yet — posts after your first video goes live.</p>';
+  try {
+    const topVideoEl = document.getElementById('top-video-card');
+    if (topVideoEl) {
+      const topVid = ytAnalytics?.topVideo || (ytAnalytics?.topVideos || [])[0];
+      if (topVid) {
+        const eng = topVid.viewCount ? ((topVid.likeCount / topVid.viewCount) * 100).toFixed(1) : 0;
+        topVideoEl.innerHTML = `
+          <p style="font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:.35rem;line-height:1.4">${topVid.title || 'Untitled'}</p>
+          <div style="display:flex;gap:12px;margin-top:.4rem">
+            <span style="font-size:.72rem;color:var(--green)">${_fmtViews(topVid.viewCount)} views</span>
+            <span style="font-size:.72rem;color:var(--text3)">${eng}% engagement</span>
+          </div>`;
+      } else {
+        topVideoEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No video data yet — posts after your first video goes live.</p>';
+      }
     }
-  }
+  } catch(e) { console.warn('[Dashboard] top video card error:', e); }
 
   // ── Content calendar — next 7 upcoming slots ──
-  const calEl = document.getElementById('overview-calendar');
-  if (calEl) {
-    const today    = new Date().toISOString().slice(0, 10);
-    const upcoming = slots
-      .filter(s => s.status !== 'posted' && s.status !== 'skipped' && (s.date || '') >= today)
-      .sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1)
-      .slice(0, 7);
+  try {
+    const calEl = document.getElementById('overview-calendar');
+    if (calEl) {
+      const calSlots = calData?.slots || [];
+      const today    = new Date().toISOString().slice(0, 10);
+      const upcoming = calSlots
+        .filter(s => s.status !== 'posted' && s.status !== 'skipped' && (s.date || '') >= today)
+        .sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1)
+        .slice(0, 7);
 
-    if (!slots.length) {
-      calEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No calendar yet. <a onclick="dashPage('planner',document.querySelector('[onclick*=planner]'))" style="color:#a5b4fc;cursor:pointer">Generate your content calendar →</a></p>`;
-    } else if (!upcoming.length) {
-      calEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">All slots posted or skipped. <a onclick="dashPage('planner',document.querySelector('[onclick*=planner]'))" style="color:#a5b4fc;cursor:pointer">Regenerate calendar →</a></p>`;
-    } else {
-      calEl.innerHTML = upcoming.map(s => {
-        const dateStr = s.date ? formatDate(s.date + 'T00:00:00') : `Day ${s.day}`;
-        const typeCol = s.type === 'Long-form' ? 'var(--amber)' : 'var(--purple)';
-        const badge   = `<span style="font-size:.62rem;background:${s.type==='Long-form'?'rgba(245,158,11,.12)':'rgba(99,102,241,.12)'};color:${typeCol};border-radius:4px;padding:1px 6px;border:1px solid ${s.type==='Long-form'?'rgba(245,158,11,.2)':'rgba(99,102,241,.2)'}">${s.type === 'Long-form' ? 'Long' : 'Short'}</span>`;
-        const statusDot = s.status === 'posted' ? '🟢' : s.status === 'processing' ? '🟡' : s.status === 'failed' ? '🔴' : s.status === 'missed' ? '⚫' : '⚪';
-        return `<div style="display:flex;align-items:center;gap:.65rem;padding:.5rem 0;border-bottom:1px solid var(--border)">
-          <span style="font-size:.68rem;color:var(--text3);min-width:64px;flex-shrink:0">${dateStr}</span>
-          ${badge}
-          <span style="font-size:.76rem;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.title || 'Untitled'}</span>
-          <span style="font-size:.75rem">${statusDot}</span>
-        </div>`;
-      }).join('');
+      if (!calSlots.length) {
+        calEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">No calendar yet. <a onclick="dashPage('planner',document.querySelector('[onclick*=planner]'))" style="color:#a5b4fc;cursor:pointer">Generate your content calendar →</a></p>`;
+      } else if (!upcoming.length) {
+        calEl.innerHTML = `<p style="font-size:.78rem;color:var(--text3);padding:.5rem 0">All slots posted or skipped. <a onclick="dashPage('planner',document.querySelector('[onclick*=planner]'))" style="color:#a5b4fc;cursor:pointer">Regenerate calendar →</a></p>`;
+      } else {
+        calEl.innerHTML = upcoming.map(s => {
+          const dateStr = s.date ? formatDate(s.date + 'T00:00:00') : `Day ${s.day}`;
+          const typeCol = s.type === 'Long-form' ? 'var(--amber)' : 'var(--purple)';
+          const badge   = `<span style="font-size:.62rem;background:${s.type==='Long-form'?'rgba(245,158,11,.12)':'rgba(99,102,241,.12)'};color:${typeCol};border-radius:4px;padding:1px 6px;border:1px solid ${s.type==='Long-form'?'rgba(245,158,11,.2)':'rgba(99,102,241,.2)'}">${s.type === 'Long-form' ? 'Long' : 'Short'}</span>`;
+          const statusDot = s.status === 'posted' ? '🟢' : s.status === 'processing' ? '🟡' : s.status === 'failed' ? '🔴' : s.status === 'missed' ? '⚫' : '⚪';
+          return `<div style="display:flex;align-items:center;gap:.65rem;padding:.5rem 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:.68rem;color:var(--text3);min-width:64px;flex-shrink:0">${dateStr}</span>
+            ${badge}
+            <span style="font-size:.76rem;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.title || 'Untitled'}</span>
+            <span style="font-size:.75rem">${statusDot}</span>
+          </div>`;
+        }).join('');
+      }
     }
-  }
+  } catch(e) { console.warn('[Dashboard] calendar section error:', e); }
 
   // Auto-refresh every 30 minutes without page reload
   if (_dashRefreshTimer) clearInterval(_dashRefreshTimer);
