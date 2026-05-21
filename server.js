@@ -21,6 +21,179 @@ const { exec, spawn } = require('child_process');
 const axios           = require('axios');
 const jwt            = require('jsonwebtoken');
 const bcrypt         = require('bcryptjs');
+const { Resend }     = require('resend');
+const resend         = new Resend(process.env.RESEND_API_KEY);
+const EMAIL_FROM     = 'noreply@viralityy.com';
+
+// =============================================================================
+// EMAIL — reusable sendEmail helper + HTML templates
+// =============================================================================
+async function sendEmail(to, subject, html) {
+  try {
+    const { data, error } = await resend.emails.send({ from: EMAIL_FROM, to, subject, html });
+    if (error) throw error;
+    console.log(`[EMAIL] Sent to ${to} — subject: ${subject}`);
+    return data;
+  } catch (err) {
+    console.log(`[EMAIL FAIL] ${to} — error: ${err.message || String(err)}`);
+  }
+}
+
+function emailWrap(bodyHtml) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Viralityy</title>
+<style>
+  body{margin:0;padding:0;background:#0f0f0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e0e0e0}
+  .wrap{max-width:580px;margin:0 auto;padding:32px 16px}
+  .logo{font-size:26px;font-weight:800;color:#a855f7;letter-spacing:-0.5px;margin-bottom:28px}
+  .card{background:#1a1a1a;border-radius:12px;padding:28px 32px;margin-bottom:16px}
+  h2{margin:0 0 16px;font-size:20px;color:#fff}
+  p{margin:0 0 12px;line-height:1.6;color:#ccc;font-size:15px}
+  .highlight{color:#fff;font-weight:600}
+  .divider{border:none;border-top:1px solid #2a2a2a;margin:20px 0}
+  .cta{display:inline-block;margin-top:20px;padding:14px 28px;background:#a855f7;color:#fff;font-size:15px;font-weight:700;text-decoration:none;border-radius:8px}
+  .meta{background:#111;border-radius:8px;padding:16px 20px;margin:16px 0}
+  .meta-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #222;font-size:14px;color:#aaa}
+  .meta-row:last-child{border-bottom:none}
+  .meta-row .val{color:#e0e0e0;font-weight:500}
+  .footer{text-align:center;padding:24px 0 8px;font-size:12px;color:#555}
+  .footer a{color:#666;text-decoration:none}
+  .footer a:hover{color:#a855f7}
+  .tag{display:inline-block;background:#1f1230;color:#c084fc;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}
+</style></head>
+<body>
+<div class="wrap">
+  <div class="logo">Viralityy</div>
+  ${bodyHtml}
+  <div class="footer">
+    <a href="https://viralityy.com">viralityy.com</a> &nbsp;·&nbsp;
+    <a href="https://viralityy.com/unsubscribe">Unsubscribe</a> &nbsp;·&nbsp;
+    <a href="https://viralityy.com/privacy">Privacy Policy</a>
+  </div>
+</div>
+</body></html>`;
+}
+
+function emailPostSuccess({ title, youtubeLink, channelName, postedAt, hasThumbnail }) {
+  const timeStr = new Date(postedAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
+  return emailWrap(`
+    <div class="card">
+      <div class="tag">✅ Video Live</div>
+      <h2 style="margin-top:16px">Your video is live on YouTube!</h2>
+      <p>Great news — Viralityy just posted a new video to your channel.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Title</span><span class="val">${title}</span></div>
+        <div class="meta-row"><span>Channel</span><span class="val">${channelName}</span></div>
+        <div class="meta-row"><span>Posted</span><span class="val">${timeStr}</span></div>
+        <div class="meta-row"><span>Thumbnail</span><span class="val">${hasThumbnail ? '✓ Custom thumbnail uploaded' : 'Default'}</span></div>
+      </div>
+      <a class="cta" href="${youtubeLink}" target="_blank">Watch on YouTube →</a>
+    </div>
+  `);
+}
+
+function emailPostFailure({ title, channelName, failureReason, failStep }) {
+  const stepLabels = { script_generation: 'Script generation', thumbnail: 'Thumbnail creation', tts: 'Voiceover (TTS)', pexels_fetch: 'Footage fetch', youtube_upload: 'YouTube upload', ffmpeg: 'Video assembly', unknown: 'Processing' };
+  const stepLabel = stepLabels[failStep] || failStep || 'Processing';
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#2a1010;color:#f87171">⚠️ Post Failed</div>
+      <h2 style="margin-top:16px">A video failed to post</h2>
+      <p>Viralityy encountered an issue while processing one of your scheduled videos. Don't worry — we'll retry tomorrow.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Title</span><span class="val">${title}</span></div>
+        <div class="meta-row"><span>Channel</span><span class="val">${channelName}</span></div>
+        <div class="meta-row"><span>Failed step</span><span class="val">${stepLabel}</span></div>
+        <div class="meta-row"><span>Reason</span><span class="val" style="max-width:280px;word-break:break-word">${(failureReason || 'Unknown error').slice(0, 120)}</span></div>
+      </div>
+      <hr class="divider">
+      <p style="font-size:13px;color:#888">The pipeline will automatically retry this slot tomorrow. If errors persist, check your channel's OAuth connection.</p>
+      <a class="cta" href="https://viralityy.com" target="_blank">Go to Dashboard →</a>
+    </div>
+  `);
+}
+
+function emailTrialExpiry({ userName, videosPosted, trialEndsAt }) {
+  const endStr = new Date(trialEndsAt).toLocaleString('en-US', { dateStyle: 'long', timeZone: 'UTC' });
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#1a1200;color:#fbbf24">⏰ Trial Ending Soon</div>
+      <h2 style="margin-top:16px">Your trial ends tomorrow</h2>
+      <p>Hi ${userName || 'there'}, your Viralityy free trial expires on <span class="highlight">${endStr}</span>.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Videos posted</span><span class="val">${videosPosted}</span></div>
+        <div class="meta-row"><span>Trial ends</span><span class="val">${endStr}</span></div>
+      </div>
+      <p>Upgrade now to keep your channel growing automatically — no interruptions.</p>
+      <a class="cta" href="https://viralityy.com/#pricing" target="_blank">Upgrade Now →</a>
+      <p style="margin-top:16px;font-size:13px;color:#888">After your trial expires your channel will stop posting. Upgrade anytime to continue.</p>
+    </div>
+  `);
+}
+
+function emailWeeklyDigest({ userName, videosThisWeek, totalViews, topVideo, nextWeekTitles }) {
+  const topVideoHtml = topVideo
+    ? `<div class="meta-row"><span>Top video</span><span class="val">${topVideo.title} · ${(topVideo.views || 0).toLocaleString()} views</span></div>`
+    : '';
+  const nextTitlesHtml = (nextWeekTitles || []).slice(0, 3).map(t => `<li style="margin-bottom:6px;color:#ccc;font-size:14px">${t}</li>`).join('');
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#0f1a2a;color:#60a5fa">📊 Weekly Report</div>
+      <h2 style="margin-top:16px">Your Viralityy weekly report</h2>
+      <p>Here's how your channel performed this week, ${userName || 'Creator'}.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Videos posted</span><span class="val">${videosThisWeek}</span></div>
+        <div class="meta-row"><span>Total views gained</span><span class="val">${(totalViews || 0).toLocaleString()}</span></div>
+        ${topVideoHtml}
+      </div>
+      ${nextTitlesHtml ? `<hr class="divider"><p style="font-size:13px;color:#888;margin-bottom:8px">Coming up next week:</p><ul style="padding-left:18px;margin:0">${nextTitlesHtml}</ul>` : ''}
+      <a class="cta" href="https://viralityy.com" target="_blank">View Full Dashboard →</a>
+    </div>
+  `);
+}
+
+function emailSubConfirm({ userName, plan, videosPerDay, maxChannels, billingDate }) {
+  const planNames = { starter: 'Starter', shorts_pro: 'Shorts Pro', growth: 'Growth', agency: 'Agency' };
+  const planLabel = planNames[plan] || plan;
+  const dateStr   = billingDate ? new Date(billingDate).toLocaleDateString('en-US', { dateStyle: 'long' }) : 'N/A';
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#0f1f0f;color:#4ade80">🎉 Subscription Active</div>
+      <h2 style="margin-top:16px">Welcome to Viralityy ${planLabel}!</h2>
+      <p>Hi ${userName || 'there'}, your subscription is now active. Viralityy will start posting videos to your channel automatically.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Plan</span><span class="val">${planLabel}</span></div>
+        <div class="meta-row"><span>Videos per day</span><span class="val">${videosPerDay}</span></div>
+        <div class="meta-row"><span>Channels</span><span class="val">Up to ${maxChannels}</span></div>
+        <div class="meta-row"><span>Next billing</span><span class="val">${dateStr}</span></div>
+      </div>
+      <hr class="divider">
+      <p style="font-size:13px;color:#888"><span class="highlight">Getting started:</span> Connect your YouTube channel → Generate a content calendar → Your videos will post automatically on schedule.</p>
+      <a class="cta" href="https://viralityy.com" target="_blank">Go to Dashboard →</a>
+    </div>
+  `);
+}
+
+function emailSubCancelled({ userName, accessEndsAt }) {
+  const dateStr = accessEndsAt ? new Date(accessEndsAt).toLocaleDateString('en-US', { dateStyle: 'long' }) : 'the end of your billing period';
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#1a1010;color:#f87171">😢 Subscription Cancelled</div>
+      <h2 style="margin-top:16px">Your subscription has been cancelled</h2>
+      <p>Hi ${userName || 'there'}, your Viralityy subscription has been cancelled.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Access ends</span><span class="val">${dateStr}</span></div>
+        <div class="meta-row"><span>Auto-posting</span><span class="val">Will stop on access end date</span></div>
+      </div>
+      <hr class="divider">
+      <p>Your channels and content calendar are saved. You can resubscribe anytime to continue growing.</p>
+      <a class="cta" href="https://viralityy.com/#pricing" target="_blank">Resubscribe →</a>
+      <p style="margin-top:16px;font-size:13px;color:#888">All your data — channels, calendar, analytics — will remain available. Nothing will be deleted.</p>
+    </div>
+  `);
+}
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -1698,6 +1871,16 @@ app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) =
             longformEnabled:        limits.longformEnabled,
           });
           console.log(`${PADDLE_LOG_PREFIX} ${eventType} ✓ — user ${userId} → ${plan} (renews ${endDate.toISOString().slice(0,10)})`);
+          const _subUser = await User.findById(userId).lean().catch(() => null);
+          if (_subUser?.email) {
+            sendEmail(_subUser.email, `🎉 Welcome to Viralityy ${({ starter: 'Starter', shorts_pro: 'Shorts Pro', growth: 'Growth', agency: 'Agency' }[plan] || plan)}!`, emailSubConfirm({
+              userName:     _subUser.name,
+              plan,
+              videosPerDay: limits.videosPerDayPerChannel,
+              maxChannels:  limits.maxChannels,
+              billingDate:  endDate,
+            }));
+          }
         } else {
           console.warn(`${PADDLE_LOG_PREFIX} ${eventType} — no userId in customData`);
         }
@@ -1745,6 +1928,12 @@ app.post('/api/paddle/webhook', express.raw({ type: '*/*' }), async (req, res) =
           if (endDate) update.subscriptionEndDate = endDate;
           await User.findByIdAndUpdate(user._id, update);
           console.log(`${PADDLE_LOG_PREFIX} subscription.canceled ✓ — user ${user.email} (access until ${endDate?.toISOString().slice(0,10) || 'unknown'})`);
+          if (user.email) {
+            sendEmail(user.email, '😢 Your Viralityy subscription has been cancelled', emailSubCancelled({
+              userName:     user.name,
+              accessEndsAt: endDate || user.subscriptionEndDate,
+            }));
+          }
         }
         break;
       }
@@ -6699,6 +6888,16 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     PIPELINE_STATUS.lastCompletedAt = new Date().toISOString();
     PIPELINE_STATUS.todayStats.posted++;
     console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
+    if (user.email) {
+      const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId) || user.youtubeChannels?.[0];
+      sendEmail(user.email, '✅ Your video is live on YouTube!', emailPostSuccess({
+        title:       slotDoc.title,
+        youtubeLink: `https://youtu.be/${ytId}`,
+        channelName: channel?.channelName || 'Your Channel',
+        postedAt:    new Date().toISOString(),
+        hasThumbnail: !!(thumbPath),
+      }));
+    }
     return ytId;
   } catch (err) {
     // Attach the current pipeline step so the caller (runScheduledPosting) can write it to MongoDB
@@ -7494,6 +7693,15 @@ async function runScheduledPosting() {
           failureReason: { step: _failStep, error: err.message, stack: (err.stack || '').slice(0, 200), timestamp: _failTs },
         }}
       ).catch(() => {});
+      if (user.email) {
+        const _ch = (user.youtubeChannels || []).find(c => c.channelId === fresh.channelId) || user.youtubeChannels?.[0];
+        sendEmail(user.email, '⚠️ A video failed to post on Viralityy', emailPostFailure({
+          title:         fresh.title,
+          channelName:   _ch?.channelName || 'Your Channel',
+          failureReason: err.message,
+          failStep:      _failStep,
+        }));
+      }
     }
   }
 }
@@ -9061,6 +9269,50 @@ Return valid JSON with exactly these fields:
 });
 
 // =============================================================================
+// GET /api/admin/test-email — send preview of any email type to ADMIN_EMAIL
+// Usage: /api/admin/test-email?secret=VRL-ADM-X7K9-2025&type=success|failure|trial|digest|confirm|cancelled
+// =============================================================================
+app.get('/api/admin/test-email', async (req, res) => {
+  if (req.query.secret !== 'VRL-ADM-X7K9-2025') return res.status(403).json({ error: 'Forbidden' });
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
+  const type = req.query.type || 'success';
+
+  const testData = {
+    success: {
+      subject: '✅ Your video is live on YouTube!',
+      html:    emailPostSuccess({ title: 'Top 5 AI Tools You Must Know in 2025', youtubeLink: 'https://youtu.be/dQw4w9WgXcQ', channelName: 'My AI Channel', postedAt: new Date().toISOString(), hasThumbnail: true }),
+    },
+    failure: {
+      subject: '⚠️ A video failed to post on Viralityy',
+      html:    emailPostFailure({ title: 'How to Make Money Online', channelName: 'My Channel', failureReason: 'YouTube API returned 403: quotaExceeded', failStep: 'youtube_upload' }),
+    },
+    trial: {
+      subject: '⏰ Your Viralityy trial ends tomorrow',
+      html:    emailTrialExpiry({ userName: 'Test User', videosPosted: 12, trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    },
+    digest: {
+      subject: '📊 Your Viralityy weekly report',
+      html:    emailWeeklyDigest({ userName: 'Test User', videosThisWeek: 14, totalViews: 42300, topVideo: { title: 'Best Investing Tips 2025', views: 18500 }, nextWeekTitles: ['How AI Will Change Jobs', 'Secret Money Habits', '10 Skills That Pay You Forever'] }),
+    },
+    confirm: {
+      subject: '🎉 Welcome to Viralityy Growth!',
+      html:    emailSubConfirm({ userName: 'Test User', plan: 'growth', videosPerDay: 10, maxChannels: 2, billingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }),
+    },
+    cancelled: {
+      subject: '😢 Your Viralityy subscription has been cancelled',
+      html:    emailSubCancelled({ userName: 'Test User', accessEndsAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000) }),
+    },
+  };
+
+  const email = testData[type];
+  if (!email) return res.status(400).json({ error: `Unknown type. Valid: ${Object.keys(testData).join(', ')}` });
+
+  await sendEmail(adminEmail, `[TEST] ${email.subject}`, email.html);
+  res.json({ success: true, type, sentTo: adminEmail });
+});
+
+// =============================================================================
 // CRON REGISTRATION — called once after MongoDB is connected
 // All cron jobs live here so they can safely access the database.
 // =============================================================================
@@ -9178,6 +9430,67 @@ function registerCronJobs() {
       console.log('[Hooks] Weekly hook score update starting...');
       await updateHookScores().catch(e => console.error('[Hooks] Weekly update error:', e.message));
     }
+
+    // Weekly digest emails — Monday 4AM UTC = 9AM PKT
+    console.log('[Digest] Sending weekly digest emails...');
+    try {
+      const weekStart = new Date();
+      weekStart.setUTCDate(weekStart.getUTCDate() - 7);
+      const weekStartStr = weekStart.toISOString().slice(0, 10);
+      const digestUsers  = await User.find({ $or: [{ subscriptionStatus: 'active' }, { subscriptionStatus: 'trial' }] }).lean();
+      const slotsCol     = agentCol('calendar_slots');
+      for (const u of digestUsers) {
+        if (!u.email) continue;
+        try {
+          const weekSlots = await slotsCol.find({
+            userId: String(u._id),
+            posted: true,
+            date:   { $gte: weekStartStr },
+          }).toArray().catch(() => []);
+
+          const videosThisWeek = weekSlots.length;
+          let totalViews = 0, topVideo = null;
+          if (weekSlots.length > 0 && u.youtubeChannels?.[0]?.accessToken) {
+            try {
+              const { google } = require('googleapis');
+              const ch = u.youtubeChannels[0];
+              const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+              oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
+              const yt = google.youtube({ version: 'v3', auth: oauth2 });
+              const ids = weekSlots.filter(s => s.youtubeVideoId).map(s => s.youtubeVideoId).slice(0, 50);
+              if (ids.length) {
+                const statsRes = await yt.videos.list({ part: ['statistics'], id: ids }).catch(() => null);
+                const statsMap = {};
+                for (const item of (statsRes?.data?.items || [])) statsMap[item.id] = item.statistics;
+                let topViews = 0;
+                for (const s of weekSlots) {
+                  const st = statsMap[s.youtubeVideoId] || {};
+                  const v  = parseInt(st.viewCount || 0);
+                  totalViews += v;
+                  if (v > topViews) { topViews = v; topVideo = { title: s.title, views: v }; }
+                }
+              }
+            } catch (_) {}
+          }
+
+          const nextSlots = await slotsCol.find({
+            userId: String(u._id), status: 'scheduled', posted: false,
+          }).sort({ date: 1, scheduledPostTime: 1 }).limit(3).toArray().catch(() => []);
+          const nextWeekTitles = nextSlots.map(s => s.title);
+
+          await sendEmail(u.email, '📊 Your Viralityy weekly report', emailWeeklyDigest({
+            userName: u.name,
+            videosThisWeek,
+            totalViews,
+            topVideo,
+            nextWeekTitles,
+          }));
+        } catch (ue) {
+          console.warn(`[Digest] Failed for ${u.email}:`, ue.message);
+        }
+      }
+      console.log(`[Digest] Sent to ${digestUsers.length} user(s)`);
+    } catch (e) { console.error('[Digest] Weekly cron failed:', e.message); }
   }, { timezone: 'UTC' });
 
   // Monthly footage reset — 1st of each month at 00:05 UTC
@@ -9210,6 +9523,31 @@ function registerCronJobs() {
         console.log(`[Trial] User ${u.email} trial expired (was ${daysLeft}d ago)`);
       }
       if (expiredTrials.length > 0) console.log(`[Trial] ${expiredTrials.length} trial(s) expired`);
+
+      // 24-hour trial expiry warning email
+      const in24h  = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const in25h  = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+      const warningTrials = await User.find({
+        subscriptionStatus: 'trial',
+        trialEndsAt: { $gte: in24h, $lt: in25h },
+        trialWarningSent: { $ne: true },
+      }).lean();
+      for (const u of warningTrials) {
+        if (!u.email) continue;
+        try {
+          const slotsCol    = agentCol('calendar_slots');
+          const videosPosted = await slotsCol.countDocuments({ userId: String(u._id), posted: true }).catch(() => 0);
+          await sendEmail(u.email, '⏰ Your Viralityy trial ends tomorrow', emailTrialExpiry({
+            userName:    u.name,
+            videosPosted,
+            trialEndsAt: u.trialEndsAt,
+          }));
+          await User.findByIdAndUpdate(u._id, { trialWarningSent: true });
+          console.log(`[Trial] Warning email sent to ${u.email}`);
+        } catch (we) {
+          console.warn(`[Trial] Warning email failed for ${u.email}:`, we.message);
+        }
+      }
 
       // Expire past_due users whose 3-day grace period is over
       const graceExpiry = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
