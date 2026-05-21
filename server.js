@@ -569,6 +569,11 @@ app.get('/health', async (req, res) => {
       slotsCol.countDocuments({ date: today, status: 'skipped' }),
       slotsCol.countDocuments({ date: today, status: 'pending' }),
     ]);
+    // Recent failures and skips — last 5 of each for instant diagnostics
+    const [recentFailed, recentSkipped] = await Promise.all([
+      slotsCol.find({ status: 'failed' }).sort({ failedAt: -1 }).limit(5).project({ _id: 1, title: 1, channelId: 1, failedAt: 1, failureReason: 1, pipelineError: 1 }).toArray(),
+      slotsCol.find({ status: 'skipped' }).sort({ skippedAt: -1 }).limit(5).project({ _id: 1, title: 1, channelId: 1, skippedAt: 1, skipReason: 1, pipelineStatus: 1 }).toArray(),
+    ]);
     pipeline = {
       todaysSlotsGenerated: gen > 0,
       totalSlotsToday:  gen,
@@ -583,6 +588,23 @@ app.get('/health', async (req, res) => {
       cronJobsRegistered,
       lastPipelineError: PIPELINE_STATUS.lastError || null,
       todayStats:      PIPELINE_STATUS.todayStats,
+      recentIssues: {
+        recentFailures: recentFailed.map(s => ({
+          slotId:    String(s._id),
+          title:     s.title || null,
+          channelId: s.channelId || null,
+          step:      s.failureReason?.step  || 'unknown',
+          error:     s.failureReason?.error || s.pipelineError || 'unknown',
+          timestamp: s.failedAt || s.failureReason?.timestamp || null,
+        })),
+        recentSkips: recentSkipped.map(s => ({
+          slotId:    String(s._id),
+          title:     s.title || null,
+          channelId: s.channelId || null,
+          reason:    s.skipReason || s.pipelineStatus || 'unknown',
+          timestamp: s.skippedAt || null,
+        })),
+      },
     };
   } catch { /* pipeline stays { error: 'unavailable' } */ }
 
@@ -3134,7 +3156,7 @@ app.post('/api/content/:id/skip', requireAuth, async (req, res) => {
     const col = await agentCol('content_calendars');
     await col.updateOne(
       { userId: req.user.id, status: 'active' },
-      { $set: { 'slots.$[s].status': 'skipped', 'slots.$[s].skippedAt': new Date().toISOString() } },
+      { $set: { 'slots.$[s].status': 'skipped', 'slots.$[s].skipReason': 'user_skipped', 'slots.$[s].skippedAt': new Date().toISOString() } },
       { arrayFilters: [{ 's.day': day }] }
     );
     res.json({ success: true, message: 'Content skipped' });
@@ -4429,7 +4451,7 @@ app.post('/api/agents/preview/skip', requireAuth, async (req, res) => {
     try { query = { _id: new ObjectId(videoId) }; } catch { query = { _id: videoId }; }
     await db.collection('pipeline_queue').updateOne(
       { ...query, userId: req.user.id },
-      { $set: { status: 'skipped', skippedAt: new Date().toISOString() } }
+      { $set: { status: 'skipped', skipReason: 'user_skipped', skippedAt: new Date().toISOString() } }
     );
     res.json({ success: true, message: 'Video skipped and removed from queue' });
   } catch (err) {
@@ -6490,6 +6512,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
     return ytId;
   } catch (err) {
+    // Attach the current pipeline step so the caller (runScheduledPosting) can write it to MongoDB
+    if (!err.pipelineStep) err.pipelineStep = psEntry.step;
     PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
     PIPELINE_STATUS.lastError = { message: err.message, slotId: String(slotId), title: slotDoc.title, at: new Date().toISOString() };
     PIPELINE_STATUS.todayStats.failed++;
@@ -6637,8 +6661,10 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
   ).catch(() => {});
 
+  let failedStep = 'pre_flight';
   try {
     // 1/3 Script
+    failedStep = 'script_generation';
     console.log(`[Pipeline] 1/3 Script — "${slot.title}" (${nicheName})`);
     const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type);
     const script     = scriptData.script;
@@ -6670,6 +6696,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     ).catch(() => {});
 
     // 2/3 Voiceover — validate API and capture word-timestamp captions; discard audio (regenerated at posting time)
+    failedStep = 'tts';
     console.log(`[Pipeline] 2/3 Voiceover — "${slot.title}"`);
     const voResult = await pipelineGenerateVoiceover(script, String(calendar.userId));
     require('fs').unlink(voResult.audioPath, () => {});
@@ -6685,6 +6712,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     await new Promise(r => setTimeout(r, 60000));
 
     // 3/3 Footage — fetch clip URLs and save to MongoDB (no /tmp files here)
+    failedStep = 'pexels_fetch';
     console.log(`[Pipeline] 3/3 Footage — "${slot.title}"`);
     const footageClips = await pipelineFetchMultipleFootage(slot.title, script, nicheName, String(calendar.userId));
     console.log(`[Pipeline] 3/3 Done — ${footageClips.length} clip(s): ${footageClips.map(c => c.query).join(' | ')}`);
@@ -6707,6 +6735,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     console.log(`[Pipeline] ✓ Data cached for "${slot.title}" — assembly deferred to post time`);
     return null; // no assembled file — runAssembleAndUpload handles it at posting time
   } catch (err) {
+    if (!err.pipelineStep) err.pipelineStep = failedStep;
     if (audioPath) require('fs').unlink(audioPath, () => {});
     throw err;
   }
@@ -6851,13 +6880,18 @@ async function runProductionPipelineWithRetry(calendar, slot, user, col, maxRetr
       }
     }
   }
+  const _failTs    = new Date().toISOString();
+  const _failStep  = lastErr.pipelineStep || 'unknown';
+  const _slotLabel = `${slot.day}_${slot.videoIndex || 1}`;
+  console.error(`[PIPELINE FAIL] slotId=${_slotLabel} step=${_failStep} error=${lastErr.message}`);
   await col.updateOne(
     { _id: calendar._id },
     { $set: {
       [`slots.$[s].status`]:         'failed',
       [`slots.$[s].pipelineStatus`]: 'failed',
       [`slots.$[s].pipelineError`]:  lastErr.message.slice(0, 500),
-      [`slots.$[s].failedAt`]:       new Date().toISOString(),
+      [`slots.$[s].failedAt`]:       _failTs,
+      [`slots.$[s].failureReason`]:  { step: _failStep, error: lastErr.message, stack: (lastErr.stack || '').slice(0, 200), timestamp: _failTs },
     }},
     { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
   ).catch(() => {});
@@ -7200,19 +7234,55 @@ async function runScheduledPosting() {
 
     const user = await User.findById(fresh.userId).catch(() => null);
     if (!user) {
-      console.error(`[PostingCron] User ${fresh.userId} not found — marking failed`);
-      await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'failed', pipelineError: 'User not found', failedAt: nowIso } }).catch(() => {});
+      console.error(`[PIPELINE FAIL] slotId=${String(fresh._id)} step=pre_flight error=User not found`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: {
+        status: 'failed', pipelineError: 'User not found', failedAt: nowIso,
+        failureReason: { step: 'pre_flight', error: 'User not found', stack: '', timestamp: nowIso },
+      }}).catch(() => {});
       continue;
     }
     if (user.blocked) {
-      console.warn(`[PostingCron] User ${user.email} is blocked — skipping slot "${fresh.title}"`);
-      await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'skipped', pipelineStatus: 'user-blocked', pipelineError: 'User account suspended' } }).catch(() => {});
+      console.log(`[PIPELINE SKIP] slotId=${String(fresh._id)} reason=subscription_expired`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: {
+        status: 'skipped', pipelineStatus: 'user-blocked', pipelineError: 'User account suspended',
+        skipReason: 'subscription_expired', skippedAt: nowIso,
+      }}).catch(() => {});
       continue;
     }
     const subBlock = getPipelineBlock(user);
     if (subBlock.blocked) {
-      console.log(`[Pipeline] Blocked user ${user.email} — subscription status: ${subBlock.reason}`);
-      await slotsCol.updateOne({ _id: fresh._id }, { $set: { status: 'skipped', pipelineStatus: `subscription-${subBlock.reason}`, pipelineError: `Subscription blocked: ${subBlock.reason}` } }).catch(() => {});
+      console.log(`[PIPELINE SKIP] slotId=${String(fresh._id)} reason=subscription_expired`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: {
+        status: 'skipped', pipelineStatus: `subscription-${subBlock.reason}`,
+        pipelineError: `Subscription blocked: ${subBlock.reason}`,
+        skipReason: 'subscription_expired', skippedAt: nowIso,
+      }}).catch(() => {});
+      continue;
+    }
+
+    // Channel + OAuth pre-checks — skip rather than fail so quota / script spend is never wasted
+    const _ch = (user.youtubeChannels || []).find(c => c.channelId === fresh.channelId) || user.youtubeChannels?.[0];
+    if (!_ch) {
+      console.log(`[PIPELINE SKIP] slotId=${String(fresh._id)} reason=channel_not_found`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: {
+        status: 'skipped', skipReason: 'channel_not_found', skippedAt: nowIso,
+        pipelineError: 'No YouTube channel connected',
+      }}).catch(() => {});
+      continue;
+    }
+    if (!_ch.accessToken) {
+      console.log(`[PIPELINE SKIP] slotId=${String(fresh._id)} reason=oauth_invalid`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: {
+        status: 'skipped', skipReason: 'oauth_invalid', skippedAt: nowIso,
+        pipelineError: 'Channel OAuth access token missing — reconnect channel',
+      }}).catch(() => {});
+      continue;
+    }
+    if (user.autoPost === false) {
+      console.log(`[PIPELINE SKIP] slotId=${String(fresh._id)} reason=autopost_disabled`);
+      await slotsCol.updateOne({ _id: fresh._id }, { $set: {
+        status: 'skipped', skipReason: 'autopost_disabled', skippedAt: nowIso,
+      }}).catch(() => {});
       continue;
     }
 
@@ -7221,10 +7291,16 @@ async function runScheduledPosting() {
       await runJITPipelineForSlot(fresh, user, slotsCol);
       setImmediate(() => maybePreGenerateTomorrow(String(fresh.userId)).catch(() => {}));
     } catch (err) {
-      console.error(`[PostingCron] ✗ Pipeline failed for "${fresh.title}": ${err.message}`);
+      const _jitStepMap = { '1/5': 'script_generation', '2/5': 'thumbnail', '3/5': 'tts', '4/5': 'pexels_fetch', '5/5': 'youtube_upload' };
+      const _failStep   = _jitStepMap[err.pipelineStep] || (err.message.includes('upload') ? 'youtube_upload' : err.message.includes('assemble') || err.message.includes('ffmpeg') ? 'ffmpeg' : 'unknown');
+      const _failTs     = new Date().toISOString();
+      console.error(`[PIPELINE FAIL] slotId=${String(fresh._id)} step=${_failStep} error=${err.message}`);
       await slotsCol.updateOne(
         { _id: fresh._id },
-        { $set: { status: 'failed', pipelineError: err.message.slice(0, 500), failedAt: new Date().toISOString() } }
+        { $set: {
+          status: 'failed', pipelineError: err.message.slice(0, 500), failedAt: _failTs,
+          failureReason: { step: _failStep, error: err.message, stack: (err.stack || '').slice(0, 200), timestamp: _failTs },
+        }}
       ).catch(() => {});
     }
   }
@@ -8289,6 +8365,67 @@ app.post('/api/admin/channels/:channelId/thumbnail-enabled', requireAdmin, async
     const ch = (result.youtubeChannels || []).find(c => c.channelId === channelId);
     res.json({ success: true, channelId, channelName: ch?.channelName, thumbnailsEnabled: enabled });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/slots-report — last 7 days of slots grouped by status with failure/skip reasons
+// Access: requireAdmin (?secret=VRL-ADM-X7K9-2025 bypass works in browser)
+app.get('/api/admin/slots-report', requireAdmin, async (req, res) => {
+  try {
+    const slotsCol = agentCol('calendar_slots');
+    const cutoff   = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const allSlots = await slotsCol
+      .find({ date: { $gte: cutoff } })
+      .sort({ date: -1, scheduledPostTime: 1 })
+      .project({ _id: 1, title: 1, channelId: 1, userId: 1, date: 1, status: 1, postedAt: 1, failedAt: 1, skippedAt: 1, failureReason: 1, skipReason: 1, pipelineError: 1, pipelineStatus: 1 })
+      .toArray();
+
+    // Group by status
+    const byStatus = { posted: [], failed: [], skipped: [], pending: [], scheduled: [], processing: [], other: [] };
+    for (const s of allSlots) {
+      const bucket = byStatus[s.status] || byStatus.other;
+      bucket.push({
+        slotId:        String(s._id),
+        title:         s.title || null,
+        channelId:     s.channelId || null,
+        userId:        String(s.userId || ''),
+        date:          s.date,
+        ...(s.status === 'failed'  && { step: s.failureReason?.step || 'unknown', error: s.failureReason?.error || s.pipelineError || 'unknown', stack: s.failureReason?.stack || null, failedAt: s.failedAt }),
+        ...(s.status === 'skipped' && { reason: s.skipReason || s.pipelineStatus || 'unknown', skippedAt: s.skippedAt }),
+        ...(s.status === 'posted'  && { postedAt: s.postedAt }),
+      });
+    }
+
+    // Summary counts per day
+    const dayCounts = {};
+    for (const s of allSlots) {
+      if (!dayCounts[s.date]) dayCounts[s.date] = { posted: 0, failed: 0, skipped: 0, pending: 0, scheduled: 0, processing: 0, other: 0 };
+      dayCounts[s.date][s.status] = (dayCounts[s.date][s.status] || 0) + 1;
+    }
+
+    res.json({
+      success: true,
+      periodDays: 7,
+      cutoffDate: cutoff,
+      totalSlots: allSlots.length,
+      summary: {
+        posted:     byStatus.posted.length,
+        failed:     byStatus.failed.length,
+        skipped:    byStatus.skipped.length,
+        pending:    byStatus.pending.length,
+        scheduled:  byStatus.scheduled.length,
+        processing: byStatus.processing.length,
+        other:      byStatus.other.length,
+      },
+      byDay: Object.entries(dayCounts)
+        .sort(([a], [b]) => b.localeCompare(a))
+        .map(([date, counts]) => ({ date, ...counts })),
+      slots: byStatus,
+    });
+  } catch (err) {
+    console.error('[Admin] slots-report error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
