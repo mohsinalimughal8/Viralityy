@@ -3800,10 +3800,13 @@ app.get('/api/scripts', requireAuth, async (req, res) => {
       const openai    = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       const nicheName = calendar.nicheName || '';
 
+      // Fetch competitor + past-video context once, reuse for all slots in this request
+      const scriptCtx = await fetchScriptContext(req.user.id, calendar.channelId || '');
+
       for (const slot of missing) {
         try {
           console.log(`[Scripts] Generating structured script for "${slot.title}" (day ${slot.day})…`);
-          const structured = await generateStructuredScript(slot.title, nicheName, slot.type, openai);
+          const structured = await generateStructuredScript(slot.title, nicheName, slot.type, openai, scriptCtx);
           const doc = {
             userId:            req.user.id,
             calendarId:        calendar._id.toString(),
@@ -3818,6 +3821,7 @@ app.get('/api/scripts', requireAuth, async (req, res) => {
             cta:               structured.cta               || '',
             estimatedDuration: structured.estimatedDuration || (slot.type === 'Long-form' ? '5:00' : '0:55'),
             fullScript:        structured.fullScript         || '',
+            scriptContext:     structured.scriptContext      || null,
             generatedAt:       new Date().toISOString(),
           };
           const ins = await scriptsCol.insertOne(doc);
@@ -5229,23 +5233,83 @@ app.get('/api/quality/scores', requireAuth, async (req, res) => {
 // AUTO-POSTING PIPELINE
 // =============================================================================
 
+// Fetches competitor channels and past posted videos to enrich the script generation prompt.
+// Non-fatal — returns empty arrays on any DB failure so the pipeline never blocks.
+async function fetchScriptContext(userId, channelId) {
+  try {
+    const [competitors, pastSlots] = await Promise.all([
+      agentCol('competitor_channels')
+        .find({ userId: String(userId), active: true })
+        .sort({ addedAt: -1 })
+        .limit(5)
+        .project({ channelName: 1, avgViews: 1, uploadFrequencyDays: 1, subscriberCount: 1 })
+        .toArray()
+        .catch(() => []),
+      agentCol('calendar_slots')
+        .find({ userId: String(userId), status: 'posted', ...(channelId ? { channelId } : {}) })
+        .sort({ postedAt: -1 })
+        .limit(10)
+        .project({ title: 1, hookTemplate: 1, postedAt: 1 })
+        .toArray()
+        .catch(() => []),
+    ]);
+    return { competitors: competitors || [], pastSlots: pastSlots || [] };
+  } catch {
+    return { competitors: [], pastSlots: [] };
+  }
+}
+
 // Step 1 — Generate video script via OpenAI
 // Step 1 — Generate viral-optimised script via OpenAI
-// Returns { title, script, hook, loopEnding, captions, hashtags, wordCount }
+// Returns { title, script, hook, loopEnding, captions, hashtags, wordCount, scriptContext }
 // Shorts: structured JSON with hook rules, 130-150 word target, caption segments, hashtags
 // Long-form: plain text wrapped in the same shape for a consistent call site
-async function pipelineGenerateScript(title, nicheName, type, hookTemplate) {
+async function pipelineGenerateScript(title, nicheName, type, hookTemplate, userId = null, channelId = null) {
   const { OpenAI } = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+  // Fetch competitor + past-video context (non-fatal)
+  const { competitors, pastSlots } = userId
+    ? await fetchScriptContext(userId, channelId)
+    : { competitors: [], pastSlots: [] };
+
   const hookInstruction = hookTemplate
-    ? `\nOPENING HOOK (mandatory): Your script MUST start with this exact opening hook (replace [TOPIC] with the video topic): "${hookTemplate}". Do not modify or rewrite this hook. Begin the script with it verbatim.`
+    ? `\nOPENING HOOK (mandatory first line): Your script MUST begin with this exact hook verbatim (replace [TOPIC] with the video topic): "${hookTemplate}". Do NOT modify, paraphrase, or skip this hook under any circumstances.`
     : '';
 
+  // Build competitor context block
+  const competitorLines = competitors.map(c => {
+    const avgK = c.avgViews ? `~${Math.round(c.avgViews / 1000)}K avg views` : null;
+    const freq  = c.uploadFrequencyDays ? `posts every ${c.uploadFrequencyDays}d` : null;
+    const meta  = [avgK, freq].filter(Boolean).join(', ');
+    return `• ${c.channelName}${meta ? ` — ${meta}` : ''}`;
+  });
+  const competitorBlock = competitorLines.length > 0
+    ? `TOP PERFORMING COMPETITORS IN THIS NICHE:\n${competitorLines.join('\n')}\nStudy their style and topics — do NOT copy directly, but innovate on what works.\n\n`
+    : '';
+
+  // Build past-videos block
+  const pastVideoLines = pastSlots.map(s =>
+    `• "${s.title}"${s.hookTemplate ? ` (hook style: "${s.hookTemplate.slice(0, 60)}")` : ''}`
+  );
+  const pastVideosBlock = pastVideoLines.length > 0
+    ? `PREVIOUSLY POSTED VIDEOS ON THIS CHANNEL (avoid repeating these angles or hooks):\n${pastVideoLines.join('\n')}\n\n`
+    : '';
+
+  const scriptContext = {
+    competitorsUsed: competitors.map(c => c.channelName),
+    pastVideosUsed:  pastSlots.length,
+    hookUsed:        hookTemplate || null,
+    promptLength:    0, // filled in after prompt is built
+  };
+
   if (type === 'Long-form') {
+    const longPrompt = `Write a 3–5 minute YouTube script for: "${title}".\nNiche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.\nStart with a strong hook. End with a clear call-to-action.${hookInstruction}\n\n${competitorBlock}${pastVideosBlock}`;
+    scriptContext.promptLength = longPrompt.length;
+    console.log(`[AI SCRIPT] channel=${channelId||'?'} hook=${hookTemplate?'yes':'none'} competitors=${competitors.length} pastVideos=${pastSlots.length} promptChars=${longPrompt.length}`);
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: `Write a 3–5 minute YouTube script for: "${title}".\nNiche: ${nicheName}. Natural spoken language only — no stage directions, no emojis, no markdown.\nStart with a strong hook. End with a clear call-to-action.${hookInstruction}` }],
+      messages: [{ role: 'user', content: longPrompt }],
       temperature: 0.8,
     });
     const inTok  = completion.usage?.prompt_tokens    || 0;
@@ -5253,14 +5317,15 @@ async function pipelineGenerateScript(title, nicheName, type, hookTemplate) {
     logAPIUsage('openai', 'script_longform', null, inTok + outTok,
       inTok * API_COSTS.openai_input + outTok * API_COSTS.openai_output, true);
     const script = completion.choices[0].message.content.trim();
-    return { title, script, hook: '', loopEnding: '', captions: [], hashtags: [], wordCount: script.split(/\s+/).length };
+    return { title, script, hook: '', loopEnding: '', captions: [], hashtags: [], wordCount: script.split(/\s+/).length, scriptContext };
   }
 
   // ── Shorts: viral-optimised structured JSON ──
   const prompt = `You are a viral YouTube Shorts script writer for a "${nicheName}" channel.
 Write a viral-optimised Shorts script for the video: "${title}"
 ${hookInstruction}
-STRICT RULES:
+
+${competitorBlock}${pastVideosBlock}STRICT RULES:
 1. HOOK (first 3 seconds): ${hookTemplate ? `Use the mandatory hook above verbatim (replace [TOPIC] with the video topic). Do NOT modify it.` : `Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.`}
 2. LENGTH: Script must be EXACTLY 130-150 words total. This is a hard requirement — do NOT write fewer than 130 words under any circumstances. Count every word. 130-150 words at natural speaking pace produces a 55-65 second video.
 3. STRUCTURE: Hook (5 sec) → 5 value-packed points with examples (40 sec) → powerful call-to-action + Loop ending (10 sec). The LAST sentence MUST echo or reference the hook to create a rewatch loop.
@@ -5282,6 +5347,9 @@ Return valid JSON only — no prose, no markdown:
     {"text": "most people fail", "start": 1.6, "end": 3.0}
   ]
 }`;
+
+  scriptContext.promptLength = prompt.length;
+  console.log(`[AI SCRIPT] channel=${channelId||'?'} hook=${hookTemplate?'yes':'none'} competitors=${competitors.length} pastVideos=${pastSlots.length} promptChars=${prompt.length}`);
 
   let best = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -5319,19 +5387,34 @@ Return valid JSON only — no prose, no markdown:
     captions:   Array.isArray(best.captions)  ? best.captions.slice(0, 200)  : [],
     hashtags:   Array.isArray(best.hashtags)  ? best.hashtags.slice(0, 5)    : [],
     wordCount:  best.wordCount  || 0,
+    scriptContext,
   };
 }
 
 // Structured script generator — returns JSON with hook / mainPoints / cta / estimatedDuration / fullScript
-async function generateStructuredScript(title, nicheName, type, openai) {
+// context: { competitors: [], pastSlots: [] } — optional enrichment data from fetchScriptContext
+async function generateStructuredScript(title, nicheName, type, openai, context = {}) {
   const isLong = type === 'Long-form';
-  const res = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [{
-      role: 'user',
-      content: `You are a YouTube ${isLong ? 'long-form' : 'Shorts'} script strategist for a "${nicheName}" channel.
-Write a structured script plan for the video titled: "${title}"
+  const { competitors = [], pastSlots = [] } = context;
 
+  const competitorLines = competitors.map(c => {
+    const avgK = c.avgViews ? `~${Math.round(c.avgViews / 1000)}K avg views` : null;
+    const freq  = c.uploadFrequencyDays ? `posts every ${c.uploadFrequencyDays}d` : null;
+    const meta  = [avgK, freq].filter(Boolean).join(', ');
+    return `• ${c.channelName}${meta ? ` — ${meta}` : ''}`;
+  });
+  const competitorBlock = competitorLines.length > 0
+    ? `\nTOP PERFORMING COMPETITORS IN THIS NICHE:\n${competitorLines.join('\n')}\nStudy their approach but innovate — do not copy.\n`
+    : '';
+
+  const pastVideoLines = pastSlots.map(s => `• "${s.title}"`);
+  const pastVideosBlock = pastVideoLines.length > 0
+    ? `\nPREVIOUSLY POSTED VIDEOS (avoid repeating these angles):\n${pastVideoLines.join('\n')}\n`
+    : '';
+
+  const promptContent = `You are a YouTube ${isLong ? 'long-form' : 'Shorts'} script strategist for a "${nicheName}" channel.
+Write a structured script plan for the video titled: "${title}"
+${competitorBlock}${pastVideosBlock}
 Return valid JSON with exactly these fields:
 {
   "hook": "Opening 1-2 sentences for the first 3 seconds — must immediately grab attention",
@@ -5339,12 +5422,24 @@ Return valid JSON with exactly these fields:
   "cta": "Call-to-action at the end (1-2 sentences)",
   "estimatedDuration": "${isLong ? '4:30' : '0:52'}",
   "fullScript": "Complete natural spoken script (${isLong ? '3-5 minutes' : '45-60 seconds'}), no stage directions"
-}`,
-    }],
+}`;
+  console.log(`[AI SCRIPT] channel=briefs hook=none competitors=${competitors.length} pastVideos=${pastSlots.length} promptChars=${promptContent.length}`);
+  const res = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: promptContent }],
     temperature: 0.78,
     response_format: { type: 'json_object' },
   });
-  return JSON.parse(res.choices[0].message.content);
+  const parsed = JSON.parse(res.choices[0].message.content);
+  return {
+    ...parsed,
+    scriptContext: {
+      competitorsUsed: competitors.map(c => c.channelName),
+      pastVideosUsed:  pastSlots.length,
+      hookUsed:        null,
+      promptLength:    promptContent.length,
+    },
+  };
 }
 
 // Quality scorer — uses OpenAI JSON mode to score a script on 4 dimensions (0-100 each)
@@ -6378,12 +6473,13 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       ).catch(() => {});
     }
 
-    const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null);
+    const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '');
     const script     = scriptData.script;
     await setStatus({
       scriptText: script, scriptCaptions: scriptData.captions,
       cachedScript: script.slice(0, 2000), pipelineStatus: 'script-done',
       hookId, hookCategory, hookTemplate: selectedHook?.template || null,
+      scriptContext: scriptData.scriptContext || null,
     });
     PIPELINE_STATUS.todayStats.generated++;
     console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
@@ -6666,7 +6762,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     // 1/3 Script
     failedStep = 'script_generation';
     console.log(`[Pipeline] 1/3 Script — "${slot.title}" (${nicheName})`);
-    const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type);
+    const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type, null, String(calendar.userId), slot.channelId || calendar.channelId || '');
     const script     = scriptData.script;
     console.log(`[Pipeline] 1/3 Done — ${scriptData.wordCount} words, ${scriptData.captions.length} captions`);
 
@@ -6677,7 +6773,9 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
         slotDay: slot.day, videoIndex: slot.videoIndex || 1,
         title: scriptData.title, hook: scriptData.hook, loopEnding: scriptData.loopEnding,
         captions: scriptData.captions, hashtags: scriptData.hashtags,
-        wordCount: scriptData.wordCount, fullScript: script, updatedAt: new Date().toISOString(),
+        wordCount: scriptData.wordCount, fullScript: script,
+        scriptContext: scriptData.scriptContext || null,
+        updatedAt: new Date().toISOString(),
       }},
       { upsert: true }
     ).catch(() => {});
@@ -6691,6 +6789,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
         [`slots.$[s].scriptHashtags`]: scriptData.hashtags,
         [`slots.$[s].cachedScript`]:   script.slice(0, 2000),
         [`slots.$[s].pipelineStatus`]: 'script-done',
+        [`slots.$[s].scriptContext`]:  scriptData.scriptContext || null,
       }},
       { arrayFilters: [{ 's.day': slot.day, 's.videoIndex': slot.videoIndex || 1 }] }
     ).catch(() => {});

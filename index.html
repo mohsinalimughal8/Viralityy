@@ -3696,12 +3696,20 @@ async function initResearch() {
       const typeColor = s.type === 'Long-form' ? 'rgba(245,158,11,.15)' : 'rgba(99,102,241,.12)';
       const typeTxt   = s.type === 'Long-form' ? '#fbbf24' : 'var(--purple)';
       const hookCat   = s.hookCategory || null;
-      const hookTpl   = s.hookTemplate || null;
+      const hookTpl   = s.hookTemplate || s.scriptContext?.hookUsed || null;
       const hookBadge = hookCat
         ? `<span class="hook-badge" onclick="event.stopPropagation();toggleHookText('sht-${i}')" title="Click to see the hook template">✦ ${hookCat}</span>`
-        : '';
+        : (hookTpl ? `<span class="hook-badge" onclick="event.stopPropagation();toggleHookText('sht-${i}')" title="Click to see hook">✦ Hook</span>` : '');
       const hookReveal = hookTpl
         ? `<div id="sht-${i}" class="hook-text-reveal">${hookTpl}</div>`
+        : '';
+      const ctxCompetitors = (s.scriptContext?.competitorsUsed || []).length;
+      const ctxPastVideos  = s.scriptContext?.pastVideosUsed || 0;
+      const competitorBadge = ctxCompetitors > 0
+        ? `<span style="font-size:.6rem;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(20,184,166,.12);color:#2dd4bf;border:1px solid rgba(20,184,166,.25)">↗ ${ctxCompetitors} competitor${ctxCompetitors !== 1 ? 's' : ''}</span>`
+        : '';
+      const pastVideosBadge = ctxPastVideos > 0
+        ? `<span style="font-size:.6rem;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(245,158,11,.1);color:#fcd34d;border:1px solid rgba(245,158,11,.2)">↺ ${ctxPastVideos} past topic${ctxPastVideos !== 1 ? 's' : ''}</span>`
         : '';
       return `
         <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
@@ -3714,6 +3722,7 @@ async function initResearch() {
               </div>
               <p style="font-size:.68rem;color:var(--text3)">${s.scheduledDate||'TBD'} · ${s.type||'Short'} · ${s.estimatedDuration||'—'}</p>
               ${hookReveal}
+              ${(competitorBadge || pastVideosBadge) ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">${competitorBadge}${pastVideosBadge}</div>` : ''}
             </div>
             <svg id="schev-${i}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0;transition:transform .2s;color:var(--text3)"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
