@@ -66,14 +66,34 @@ const API_COSTS = {
 };
 
 const YOUTUBE_QUOTA_COSTS = {
-  upload:    1600,
-  search:     100,
-  channels:     1,
-  analytics:   10,
-  captions:    50,
-  default:      1,
+  upload:     1600,
+  search:      100,
+  channels:      1,
+  analytics:    10,
+  thumbnails:   50,
+  default:       1,
 };
 const YOUTUBE_DAILY_LIMIT = 9000; // 1000-unit safety buffer below the 10,000 hard cap
+
+// Static audit map — one entry per logical YouTube API call site in this codebase.
+// Guarded = pre-call checkYoutubeQuota + post-call logYoutubeQuota.
+const QUOTA_AUDIT_MAP = [
+  { endpoint: 'youtubeAnalytics.reports.query', cost: 10,   guarded: true,  location: 'fetchChannelAnalyticsHours' },
+  { endpoint: 'search.list (REST)',             cost: 100,  guarded: true,  location: 'fetchNichePublishHours' },
+  { endpoint: 'channels.list (REST)',           cost: 1,    guarded: true,  location: 'GET /api/channels — stats refresh' },
+  { endpoint: 'channels.list (OAuth)',          cost: 1,    guarded: true,  location: 'POST /api/channels/:id/check-thumbnail-eligibility' },
+  { endpoint: 'channels.list (OAuth async)',    cost: 1,    guarded: true,  location: 'POST /api/channels/confirm — setImmediate eligibility check' },
+  { endpoint: 'search.list + channels.list',   cost: 101,  guarded: true,  location: 'POST /api/research/niche — competitor suggestions' },
+  { endpoint: 'search.list × 3 + channels.list', cost: 301, guarded: true, location: 'POST /api/competitors/add' },
+  { endpoint: 'channels.list + videos.list',   cost: 2,    guarded: true,  location: 'fetchLiveAnalytics' },
+  { endpoint: 'videos.insert',                 cost: 1600, guarded: true,  location: 'pipelineUploadToYouTube — video upload' },
+  { endpoint: 'videos.list + thumbnails.set',  cost: 51,   guarded: true,  location: 'pipelineUploadToYouTube — doThumbUpload' },
+  { endpoint: 'videos.list',                   cost: 1,    guarded: true,  location: 'analyzeChannelPerformance' },
+  { endpoint: 'videos.list',                   cost: 1,    guarded: true,  location: 'fetchYesterdayPerformance (daily gen context)' },
+  { endpoint: 'search.list (REST)',             cost: 100,  guarded: true,  location: 'scoutNicheVideos' },
+  { endpoint: 'thumbnails.set + videos.list',  cost: 51,   guarded: true,  location: 'GET /api/admin/test-thumbnail-upload' },
+  { endpoint: 'videos.list + thumbnails.set',  cost: 51,   guarded: true,  location: 'GET /api/admin/retry-thumbnails (per slot)' },
+];
 
 // ─── In-memory pipeline status — reset on restart, updated by runJITPipelineForSlot ───
 const PIPELINE_STATUS = {
@@ -1186,6 +1206,12 @@ app.post('/api/channels/:channelId/check-thumbnail-eligibility', requireAuth, as
     if (!ch) return res.status(404).json({ error: 'Channel not found' });
     if (!ch.accessToken) return res.json({ thumbnailsEnabled: null, reason: 'no_token' });
 
+    const eligQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.channels, req.user.id).catch(() => ({ allowed: true }));
+    if (!eligQC.allowed) {
+      console.warn(`[Quota] check-thumbnail-eligibility blocked for ${req.user.id}: ${eligQC.reason}`);
+      return res.json({ thumbnailsEnabled: null, reason: 'quota_limited' });
+    }
+
     const { google } = require('googleapis');
     const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
     oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
@@ -1201,7 +1227,7 @@ app.post('/api/channels/:channelId/check-thumbnail-eligibility', requireAuth, as
       { $set: { 'youtubeChannels.$.thumbnailsEnabled': eligible } }
     ).catch(() => {});
 
-    logYoutubeQuota('channels', YOUTUBE_QUOTA_COSTS.channels, req.user.id).catch(() => {});
+    logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, req.user.id).catch(() => {});
     res.json({ thumbnailsEnabled: eligible, longUploadsStatus: status.longUploadsStatus });
   } catch (err) {
     console.warn('[ThumbnailCheck] Error:', err.message);
@@ -1297,11 +1323,17 @@ app.post('/api/channels/confirm', requireAuth, async (req, res) => {
         const freshUser = await User.findById(user._id);
         const ch = (freshUser?.youtubeChannels || []).find(c => c.channelId === channelId);
         if (!ch?.accessToken) return;
+        const asyncQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.channels, String(user._id)).catch(() => ({ allowed: true }));
+        if (!asyncQC.allowed) {
+          console.warn(`[Quota] async channels.list skipped for ${channelId}: ${asyncQC.reason}`);
+          return;
+        }
         const { google } = require('googleapis');
         const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
         oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
         const yt = google.youtube({ version: 'v3', auth: oauth2 });
         const ytRes = await yt.channels.list({ part: ['status'], mine: true });
+        logYoutubeQuota('channels.list', YOUTUBE_QUOTA_COSTS.channels, String(user._id)).catch(() => {});
         const status = ytRes.data.items?.[0]?.status || {};
         const eligible = ['allowed', 'eligible'].includes(status.longUploadsStatus);
         await User.findOneAndUpdate(
@@ -6265,7 +6297,8 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       return;
     }
 
-    const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => ({ allowed: true }));
+    // 50 (thumbnails.set) + 1 (videos.list readiness check) = 51 units per attempt
+    const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.thumbnails + YOUTUBE_QUOTA_COSTS.default, userId).catch(() => ({ allowed: true }));
     if (!thumbQC.allowed) {
       console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload');
       fs.unlink(thumbPath, () => {});
@@ -6285,6 +6318,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
 
       const statusRes = await yt.videos.list({ part: ['status'], id: [videoId] }).catch(() => null);
+      logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, userId).catch(() => {});
       const uploadStatus = statusRes?.data?.items?.[0]?.status?.uploadStatus;
       console.log(`[Thumbnail] attempt ${attempt} — video uploadStatus=${uploadStatus || 'unknown'}`);
       if (uploadStatus && uploadStatus !== 'processed' && uploadStatus !== 'uploaded') {
@@ -6311,7 +6345,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
         try {
           const result = await attemptSet(accessToken, attempt);
           console.log(`[Thumbnail] Successfully set thumbnail for video ${videoId} (attempt ${attempt})`);
-          logYoutubeQuota('thumbnail', YOUTUBE_QUOTA_COSTS.captions, userId).catch(() => {});
+          logYoutubeQuota('thumbnails.set', YOUTUBE_QUOTA_COSTS.thumbnails, userId).catch(() => {});
           logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
           if (userId && channel?.channelId) {
             User.findOneAndUpdate(
@@ -7776,6 +7810,64 @@ app.get('/api/admin/youtube-quota', requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/admin/quota-audit — static call-site map + live quota usage + projected daily spend
+app.get('/api/admin/quota-audit', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const quotaCol = agentCol('youtubeQuota');
+
+    const [totalDocs, byActionDocs] = await Promise.all([
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: null, used: { $sum: '$units' } } },
+      ]).toArray(),
+      quotaCol.aggregate([
+        { $match: { date: today } },
+        { $group: { _id: '$action', units: { $sum: '$units' }, calls: { $sum: 1 } } },
+        { $sort: { units: -1 } },
+      ]).toArray(),
+    ]);
+
+    const usedToday   = totalDocs[0]?.used || 0;
+    const remaining   = Math.max(0, YOUTUBE_DAILY_LIMIT - usedToday);
+    const activeUsers = await User.countDocuments({ 'youtubeChannels.0': { $exists: true } }).catch(() => 0);
+
+    // Projected daily spend: one full pipeline per active user per day
+    // = upload (1600) + thumbnails.set+videos.list (51) + analytics (10) + channels.list + videos.list for live analytics (2)
+    const projectedPerUser = YOUTUBE_QUOTA_COSTS.upload + YOUTUBE_QUOTA_COSTS.thumbnails + YOUTUBE_QUOTA_COSTS.default + YOUTUBE_QUOTA_COSTS.analytics + 2;
+    const projectedDaily   = projectedPerUser * Math.max(activeUsers, 1);
+
+    res.json({
+      success: true,
+      summary: {
+        totalCallSites:   QUOTA_AUDIT_MAP.length,
+        guardedCallSites: QUOTA_AUDIT_MAP.filter(e => e.guarded).length,
+        unguardedCallSites: QUOTA_AUDIT_MAP.filter(e => !e.guarded).length,
+      },
+      callSites: QUOTA_AUDIT_MAP,
+      liveQuota: {
+        usedToday,
+        remaining,
+        dailyLimit:  YOUTUBE_DAILY_LIMIT,
+        hardLimit:   10000,
+        percentUsed: parseFloat(((usedToday / 10000) * 100).toFixed(2)),
+        byAction:    byActionDocs.map(r => ({ action: r._id, units: r.units, calls: r.calls })),
+        resetsAt:    new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1)).toISOString(),
+      },
+      projection: {
+        activeUsers,
+        projectedPerUserPerDay: projectedPerUser,
+        projectedDailyTotal:    projectedDaily,
+        safeUserCapacity:       Math.floor(YOUTUBE_DAILY_LIMIT / projectedPerUser),
+        status: projectedDaily <= YOUTUBE_DAILY_LIMIT ? 'ok' : 'over_capacity',
+      },
+    });
+  } catch (err) {
+    console.error('[Admin] quota-audit error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/users — all real users sorted by videos posted desc
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
@@ -8283,6 +8375,12 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
     console.log(`[TestThumb] Generated: ${thumbPath}, size=${thumbStat.size} bytes (${(thumbStat.size/1024/1024).toFixed(2)} MB), mime=${thumbMime}`);
 
     // Step 2: Upload via thumbnails.set — try with current token, refresh once on 401
+    const testThumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.thumbnails, String(user._id)).catch(() => ({ allowed: true }));
+    if (!testThumbQC.allowed) {
+      fs.unlink(thumbPath, () => {});
+      return res.status(429).json({ error: `YouTube quota insufficient for thumbnail test: ${testThumbQC.reason}`, quotaLimited: true });
+    }
+
     const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
     let accessToken = channel.accessToken;
 
@@ -8313,6 +8411,7 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
       }
       uploadResult = { httpStatus: setRes?.status, data: setRes?.data };
       console.log(`[TestThumb] thumbnails.set SUCCESS — HTTP ${setRes?.status}:`, JSON.stringify(setRes?.data || {}).slice(0, 600));
+      logYoutubeQuota('thumbnails.set', YOUTUBE_QUOTA_COSTS.thumbnails, String(user._id)).catch(() => {});
 
       // Confirm channel is thumbnail-eligible
       await User.findOneAndUpdate(
@@ -8407,6 +8506,16 @@ app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
         const thumbMime = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
         console.log(`[RetryThumb] Generated: ${thumbPath} | ${thumbStat.size} bytes | ${thumbMime}`);
 
+        // Quota guard: 1 (videos.list) + 50 (thumbnails.set) per attempt
+        const retryQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.thumbnails + YOUTUBE_QUOTA_COSTS.default, String(slot.userId)).catch(() => ({ allowed: true }));
+        if (!retryQC.allowed) {
+          console.warn(`[Quota] retry-thumbnails blocked for slot ${slot._id}: ${retryQC.reason}`);
+          slotResult.error = `quota_limited: ${retryQC.reason}`;
+          results.push(slotResult);
+          fs.unlink(thumbPath, () => {});
+          continue;
+        }
+
         const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
         let accessToken = channel.accessToken;
 
@@ -8415,6 +8524,7 @@ app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
           const yt = google.youtube({ version: 'v3', auth: oauth2 });
 
           const statusRes = await yt.videos.list({ part: ['status'], id: [slot.youtubeVideoId] }).catch(() => null);
+          logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, String(slot.userId)).catch(() => {});
           const uploadStatus = statusRes?.data?.items?.[0]?.status?.uploadStatus;
           console.log(`[RetryThumb] attempt ${attempt} — video uploadStatus=${uploadStatus || 'unknown'}`);
           if (uploadStatus && uploadStatus !== 'processed' && uploadStatus !== 'uploaded') {
@@ -8449,6 +8559,7 @@ app.get('/api/admin/retry-thumbnails', requireAdmin, async (req, res) => {
               }
             }
             console.log(`[RetryThumb] thumbnails.set SUCCESS — HTTP ${setRes?.status}:`, JSON.stringify(setRes?.data || {}).slice(0, 400));
+            logYoutubeQuota('thumbnails.set', YOUTUBE_QUOTA_COSTS.thumbnails, String(slot.userId)).catch(() => {});
             await slotsCol.updateOne(
               { _id: slot._id },
               { $set: { thumbnailUploaded: true, thumbnailStatus: 'success', thumbnailAppliedAt: new Date() } }
@@ -9174,6 +9285,14 @@ app.listen(PORT, () => {
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   // Startup slot check is triggered from the MongoDB .then() callback above,
   // so it is guaranteed to run only after the database connection is ready.
+
+  // ── Quota audit startup summary ───────────────────────────────────────────
+  const totalCalls   = QUOTA_AUDIT_MAP.length;
+  const guardedCalls = QUOTA_AUDIT_MAP.filter(e => e.guarded).length;
+  console.log(`[QUOTA AUDIT] Found ${totalCalls} YouTube API call sites — ${guardedCalls} guarded, ${totalCalls - guardedCalls} unguarded`);
+  QUOTA_AUDIT_MAP.forEach(e => {
+    console.log(`[QUOTA AUDIT]  ${e.guarded ? '✓' : '✗'} ${e.endpoint.padEnd(40)} ${String(e.cost).padStart(4)} units  [${e.location}]`);
+  });
 });
 
 module.exports = app;
