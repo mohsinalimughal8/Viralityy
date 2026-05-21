@@ -2894,6 +2894,20 @@ async function finishOnboarding(skipped) {
 }
 
 // ════════════════════════════════════════════
+// SIDEBAR BADGES — update preview + competitors counts
+// ════════════════════════════════════════════
+async function updateSidebarBadges() {
+  try {
+    const data = await apiCall('/api/badges').catch(() => null);
+    if (!data?.success) return;
+    const bp = document.getElementById('badge-preview');
+    const bc = document.getElementById('badge-competitors');
+    if (bp) bp.textContent = data.previewCount ?? 0;
+    if (bc) bc.textContent = data.competitorsCount ?? 0;
+  } catch (e) { /* non-critical — badges stay at last value */ }
+}
+
+// ════════════════════════════════════════════
 // OVERVIEW — live stats from /api/agents/status
 // ════════════════════════════════════════════
 async function initOverview() {
@@ -2960,10 +2974,7 @@ async function initOverview() {
   } catch(e) { console.warn('[Dashboard] queue card error:', e); }
 
   // ── Sidebar badges ──
-  const badgePreview = document.getElementById('badge-preview');
-  const badgeComp    = document.getElementById('badge-competitors');
-  if (badgePreview) badgePreview.textContent = queueCount;
-  if (badgeComp)    badgeComp.textContent    = alertCount;
+  updateSidebarBadges();
 
   // ── Activity feed — agent statuses ──
   const actList = document.getElementById('activity-list');
@@ -3393,6 +3404,7 @@ async function initPreview() {
   if (apToggle) apToggle.checked = CURRENT_USER?.autoPost !== false;
   if (_countdownTimer) clearInterval(_countdownTimer);
   _countdownTimer = setInterval(tickCountdowns, 30000);
+  updateSidebarBadges();
 }
 
 function _fmtPostTime(isoStr) {
@@ -4129,6 +4141,7 @@ async function initCompetitors() {
     if (chEl)    chEl.innerHTML    = '<p style="font-size:.78rem;color:var(--text3)">Could not load competitors — refresh to try again</p>';
     if (alertEl) alertEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">Could not load alerts</p>';
   }
+  updateSidebarBadges();
 }
 
 // ════════════════════════════════════════════

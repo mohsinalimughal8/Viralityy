@@ -3381,6 +3381,29 @@ app.get('/api/agents/competitor/videos', requireAuth, async (req, res) => {
 } // end FEATURE_COMPETITOR_WATCHER
 
 // =============================================================================
+// SIDEBAR BADGES — lightweight counts for nav badge indicators
+// =============================================================================
+
+// GET /api/badges — returns previewCount and competitorsCount for sidebar badges
+app.get('/api/badges', requireAuth, async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const [calendarDoc, pipeCount, compCount] = await Promise.all([
+      agentCol('content_calendars').findOne({ userId: req.user.id, status: 'active' }),
+      agentCol('pipeline_queue').countDocuments({ userId: req.user.id, status: { $in: ['pending', 'queued', 'preview'] } }),
+      agentCol('competitor_channels').countDocuments({ userId: req.user.id }),
+    ]);
+    const todayPending = (calendarDoc?.slots || []).filter(s =>
+      (s.date || s.scheduledDate || '') === today && !s.posted && s.status !== 'posted'
+    ).length;
+    res.json({ success: true, previewCount: todayPending + pipeCount, competitorsCount: compCount });
+  } catch (err) {
+    console.error('[Badges] GET /api/badges error:', err);
+    res.status(500).json({ error: 'Failed to fetch badge counts' });
+  }
+});
+
+// =============================================================================
 // COMPETITORS — direct YouTube API routes (no Python dependency)
 // =============================================================================
 
