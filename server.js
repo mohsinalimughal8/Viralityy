@@ -3391,12 +3391,12 @@ app.get('/api/badges', requireAuth, async (req, res) => {
     const [calendarDoc, pipeCount, compCount] = await Promise.all([
       agentCol('content_calendars').findOne({ userId: req.user.id, status: 'active' }),
       agentCol('pipeline_queue').countDocuments({ userId: req.user.id, status: { $in: ['pending', 'queued', 'preview'] } }),
-      agentCol('competitor_channels').countDocuments({ userId: req.user.id }),
+      agentCol('competitor_channels').countDocuments({ userId: req.user.id, active: true }),
     ]);
-    const todayPending = (calendarDoc?.slots || []).filter(s =>
-      (s.date || s.scheduledDate || '') === today && !s.posted && s.status !== 'posted'
+    const calPending = (calendarDoc?.slots || []).filter(s =>
+      !s.posted && ['planned', 'pending', 'approved'].includes(s.status)
     ).length;
-    res.json({ success: true, previewCount: todayPending + pipeCount, competitorsCount: compCount });
+    res.json({ success: true, previewCount: calPending + pipeCount, competitorsCount: compCount });
   } catch (err) {
     console.error('[Badges] GET /api/badges error:', err);
     res.status(500).json({ error: 'Failed to fetch badge counts' });

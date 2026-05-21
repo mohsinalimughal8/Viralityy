@@ -3513,6 +3513,7 @@ async function approveVideo(slotId, source) {
     toast('Approved ✓', 'success');
     liveQueue = liveQueue.filter(q => (q.slotId || String(q._id || q.id)) !== slotId);
     renderQueue();
+    updateSidebarBadges();
   } else {
     toast(data?.error || 'Failed to approve', 'error');
   }
@@ -3528,6 +3529,7 @@ async function skipVideo(slotId, source) {
     toast('Skipped', 'info');
     liveQueue = liveQueue.filter(q => (q.slotId || String(q._id || q.id)) !== slotId);
     renderQueue();
+    updateSidebarBadges();
   }
 }
 
@@ -4717,6 +4719,7 @@ async function handleAutoPostToggle(checked) {
     ? 'Auto-post enabled — videos post automatically at scheduled time'
     : 'Auto-post disabled — all videos require manual approval',
     'info');
+  updateSidebarBadges();
 }
 
 // ════════════════════════════════════════════
