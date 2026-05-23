@@ -2515,6 +2515,31 @@ const getDb = () => mongoose.connection.db;
 const agentCol = (name) => getDb().collection(name);
 
 // =============================================================================
+// ACTIVITY LOG — fire-and-forget event tracking with MongoDB + Render log
+// =============================================================================
+async function logActivity(eventType, severity, message, metadata = {}) {
+  try {
+    const col = agentCol('activity_log');
+    const doc = {
+      eventType,
+      severity,   // 'info' | 'warning' | 'error' | 'success'
+      message,
+      metadata,
+      channelId:  metadata.channelId  || null,
+      userId:     metadata.userId     ? String(metadata.userId) : null,
+      slotId:     metadata.slotId     ? String(metadata.slotId) : null,
+      timestamp:  new Date(),
+    };
+    await col.insertOne(doc);
+    // Ensure TTL + query indices exist (no-op after first creation)
+    col.createIndex({ timestamp: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }).catch(() => {});
+    col.createIndex({ channelId: 1, timestamp: -1 }).catch(() => {});
+    col.createIndex({ severity:  1, timestamp: -1 }).catch(() => {});
+    col.createIndex({ eventType: 1, timestamp: -1 }).catch(() => {});
+  } catch (_) { /* never throw — diagnostics must never break the pipeline */ }
+}
+
+// =============================================================================
 // VIRAL HOOKS LIBRARY — 100+ proven hook templates, performance-tracked & auto-updated
 // =============================================================================
 
@@ -5986,32 +6011,127 @@ function deriveFootageQueries(title, script, nicheName = '', excludeQueries = ne
   return chosen.slice(0, 8);
 }
 
-// Step 3 — Fetch 8 unique portrait clips from Pexels, excluding previously used video IDs.
-// Tracks used IDs per channel in MongoDB with 60-day expiry to prevent repetition across videos.
-async function pipelineFetchMultipleFootage(title, script, nicheName = '', userId = null, channelId = null) {
+// ─── Internal: fetch N clips from Pexels for given queries, excluding known IDs ───────────────
+async function _fetchPexelsClips(queries, count, channelId, userId, excludeIds, pickedIds) {
   const apiKey = process.env.PEXELS_API_KEY;
-  if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
+  if (!apiKey) return [];
+  const clips = [];
+  for (const query of queries) {
+    if (clips.length >= count) break;
+    let found = false;
+    for (let page = 1; page <= 3 && !found; page++) {
+      try {
+        const params = new URLSearchParams({
+          query: query.slice(0, 100), per_page: '80', orientation: 'portrait', page: String(page),
+        });
+        const res  = await fetch(`https://api.pexels.com/videos/search?${params}`, { headers: { Authorization: apiKey } });
+        const data = await res.json();
+        logAPIUsage('pexels', 'video_search', userId, 1, 0, true);
+        const eligible = (data.videos || []).filter(v =>
+          v.duration >= 5 && !excludeIds.has(String(v.id)) && !pickedIds.has(String(v.id))
+        );
+        if (!eligible.length) { console.warn(`[PEXELS] p${page} all excluded for "${query}"`); continue; }
+        const pick = eligible[Math.floor(Math.random() * Math.min(eligible.length, 20))];
+        const file = (pick.video_files || []).find(f => f.quality === 'hd') || (pick.video_files || [])[0];
+        if (!file?.link) continue;
+        pickedIds.add(String(pick.id));
+        clips.push({ id: String(pick.id), url: file.link, duration: pick.duration, query, source: 'pexels' });
+        console.log(`[PEXELS] "${query}" p${page}: id=${pick.id} pool=${eligible.length} dur=${pick.duration}s`);
+        found = true;
+      } catch (e) {
+        logAPIUsage('pexels', 'video_search', userId, 1, 0, false);
+        console.warn(`[PEXELS] Error "${query}" p${page}:`, e.message);
+      }
+    }
+    if (!found) console.warn(`[PEXELS] No clip for "${query}" after 3 pages`);
+  }
+  return clips;
+}
 
-  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
-  const pexelsCol    = agentCol('pexels_usage');
-  const usedIds      = new Set();
+// ─── Internal: fetch N clips from Pixabay for given queries, excluding known IDs ─────────────
+async function _fetchPixabayClips(queries, count, channelId, userId, excludeIds, pickedIds) {
+  const apiKey = process.env.PIXABAY_API_KEY;
+  if (!apiKey) { console.warn('[PIXABAY] PIXABAY_API_KEY not set — skipping Pixabay source'); return []; }
+  const clips = [];
+  for (const query of queries) {
+    if (clips.length >= count) break;
+    try {
+      const params = new URLSearchParams({
+        key: apiKey, q: query.slice(0, 100), video_type: 'all',
+        per_page: '80', safesearch: 'true',
+      });
+      const res  = await fetch(`https://pixabay.com/api/videos/?${params}`);
+      const data = await res.json();
+      logAPIUsage('pixabay', 'video_search', userId, 1, 0, true);
+      const hits = (data.hits || []).filter(v => {
+        const dur = v.duration || 0;
+        const vid = String(v.id);
+        const url = v.videos?.large?.url || v.videos?.medium?.url || v.videos?.small?.url;
+        return dur >= 4 && dur <= 15 && url && !excludeIds.has(vid) && !pickedIds.has(vid);
+      });
+      if (!hits.length) { console.warn(`[PIXABAY] All results excluded for "${query}"`); continue; }
+      const pick = hits[Math.floor(Math.random() * Math.min(hits.length, 20))];
+      const url  = pick.videos?.large?.url || pick.videos?.medium?.url || pick.videos?.small?.url;
+      if (!url) continue;
+      pickedIds.add(String(pick.id));
+      clips.push({ id: String(pick.id), url, duration: pick.duration, query, source: 'pixabay' });
+      console.log(`[PIXABAY] "${query}": id=${pick.id} pool=${hits.length} dur=${pick.duration}s`);
+    } catch (e) {
+      logAPIUsage('pixabay', 'video_search', userId, 1, 0, false);
+      console.warn(`[PIXABAY] Error "${query}":`, e.message);
+    }
+  }
+  return clips;
+}
+
+// Step 3 — Fetch 8 unique clips: 4 from Pexels + 4 from Pixabay.
+// Cross-channel global deduplication: clips used > 3 times across all users in 7 days are excluded.
+// Per-channel deduplication: clips used on this channel in the last 60 days are excluded.
+async function pipelineFetchMultipleFootage(title, script, nicheName = '', userId = null, channelId = null) {
+  if (!process.env.PEXELS_API_KEY && !process.env.PIXABAY_API_KEY) {
+    throw new Error('Neither PEXELS_API_KEY nor PIXABAY_API_KEY is configured');
+  }
+
+  const now           = new Date();
+  const sixtyDaysAgo  = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+  const sevenDaysAgo  = new Date(now.getTime() -  7 * 24 * 60 * 60 * 1000);
+  const pexelsCol     = agentCol('pexels_usage');
+  const pixabayCol    = agentCol('pixabay_usage');
+  const globalCol     = agentCol('global_asset_usage');
+  const excludeIds    = new Set();  // per-channel + global
+  const pickedIds     = new Set();  // dedup within this batch
   const usedQueriesOnDay = new Set();
 
+  // ── 1. Global deduplication: exclude clips used > 3 times in last 7 days ──────
+  try {
+    const overused = await globalCol.aggregate([
+      { $match: { usedAt: { $gte: sevenDaysAgo } } },
+      { $group: { _id: '$assetId', count: { $sum: 1 } } },
+      { $match: { count: { $gt: 3 } } },
+    ]).toArray();
+    for (const d of overused) excludeIds.add(String(d._id));
+    if (overused.length > 0) console.log(`[STOCK] global_excluded=${overused.length} clips overused in last 7d`);
+  } catch (e) { console.warn('[STOCK] Global exclusion load failed (non-fatal):', e.message); }
+
+  // ── 2. Per-channel deduplication: exclude clips used in last 60 days ──────────
   if (userId) {
-    // Load per-channel used IDs from pexels_usage (last 60 days)
     const chId = channelId || null;
-    const usageQuery = chId
+    const chQuery = chId
       ? { channelId: chId, usedAt: { $gte: sixtyDaysAgo } }
       : { userId: String(userId), usedAt: { $gte: sixtyDaysAgo } };
-    const usageDocs = await pexelsCol.find(usageQuery, { projection: { videoId: 1 } }).toArray().catch(() => []);
-    for (const d of usageDocs) usedIds.add(String(d.videoId));
+    const [pexDocs, pixDocs] = await Promise.all([
+      pexelsCol.find(chQuery,  { projection: { videoId: 1 } }).toArray().catch(() => []),
+      pixabayCol.find(chQuery, { projection: { videoId: 1 } }).toArray().catch(() => []),
+    ]);
+    for (const d of pexDocs)  excludeIds.add(String(d.videoId));
+    for (const d of pixDocs)  excludeIds.add(String(d.videoId));
 
-    // Also load legacy usedFootageIds from User doc
+    // Legacy usedFootageIds on User doc
     const userDoc = await User.findById(userId).select('usedFootageIds').lean().catch(() => null);
-    if (userDoc?.usedFootageIds) for (const id of userDoc.usedFootageIds) usedIds.add(String(id));
+    if (userDoc?.usedFootageIds) for (const id of userDoc.usedFootageIds) excludeIds.add(String(id));
 
-    // Load today's queries to avoid same-day repeats
-    const today  = new Date().toISOString().slice(0, 10);
+    // Today's queries to avoid same-day query repeats
+    const today  = now.toISOString().slice(0, 10);
     const calCol = agentCol('content_calendars');
     const cals   = await calCol.find(
       { userId, 'slots.date': today },
@@ -6024,78 +6144,62 @@ async function pipelineFetchMultipleFootage(title, script, nicheName = '', userI
         }
       }
     }
-    console.log(`[PEXELS] channel=${chId || userId} excluded=${usedIds.size} usedQueries=${usedQueriesOnDay.size}`);
+    console.log(`[STOCK] channel=${chId || userId} channel_excluded=${pexDocs.length + pixDocs.length} global_excluded=${excludeIds.size - pexDocs.length - pixDocs.length}`);
   }
 
-  const queries  = deriveFootageQueries(title, script, nicheName, usedQueriesOnDay);
-  const clips    = [];
-  const pickedIds = new Set();
+  // ── 3. Derive 8 queries, split first 4 to Pexels, last 4 to Pixabay ──────────
+  const allQueries    = deriveFootageQueries(title, script, nicheName, usedQueriesOnDay);
+  const pexelsQueries = allQueries.slice(0, 4);
+  const pixabayQueries = allQueries.slice(4);
+  console.log(`[STOCK] pexels_queries=[${pexelsQueries.join(' | ')}]`);
+  console.log(`[STOCK] pixabay_queries=[${pixabayQueries.join(' | ')}]`);
 
-  console.log(`[PEXELS] queries=[${queries.join(' | ')}]`);
+  // ── 4. Fetch 4 clips from each source (with fallback to the other) ────────────
+  let pexelsClips  = await _fetchPexelsClips(pexelsQueries,  4, channelId, userId, excludeIds, pickedIds);
+  let pixabayClips = await _fetchPixabayClips(pixabayQueries, 4, channelId, userId, excludeIds, pickedIds);
 
-  for (const query of queries) {
-    let found = false;
-    for (let page = 1; page <= 3 && !found; page++) {
-      try {
-        const params = new URLSearchParams({
-          query:       query.slice(0, 100),
-          per_page:    '80',   // wide pool — was 15, now 80 for variety
-          orientation: 'portrait',
-          page:        String(page),
-        });
-        const res  = await fetch(`https://api.pexels.com/videos/search?${params}`, {
-          headers: { Authorization: apiKey },
-        });
-        const data = await res.json();
-        logAPIUsage('pexels', 'video_search', userId, 1, 0, true);
-
-        const eligible = (data.videos || []).filter(v =>
-          v.duration >= 5 &&
-          !usedIds.has(String(v.id)) &&
-          !pickedIds.has(String(v.id))
-        );
-
-        if (!eligible.length) {
-          console.warn(`[PEXELS] All p${page} results excluded for "${query}" — trying next page`);
-          continue;
-        }
-
-        // Randomise selection so repeated queries to the same pool surface different clips
-        const pick  = eligible[Math.floor(Math.random() * Math.min(eligible.length, 20))];
-        const file  = (pick.video_files || []).find(f => f.quality === 'hd') || (pick.video_files || [])[0];
-        if (!file?.link) continue;
-
-        pickedIds.add(String(pick.id));
-        clips.push({ id: String(pick.id), url: file.link, duration: pick.duration, query });
-        console.log(`[PEXELS] "${query}" p${page}: id=${pick.id} poolSize=${eligible.length} dur=${pick.duration}s`);
-        found = true;
-      } catch (e) {
-        logAPIUsage('pexels', 'video_search', userId, 1, 0, false);
-        console.warn(`[PEXELS] Failed for "${query}" p${page}:`, e.message);
-      }
-    }
-    if (!found) console.warn(`[PEXELS] No unused clip found for "${query}" after 3 pages`);
+  // Fallback: if one source came up short, fill the gap from the other
+  const pexelsShort  = 4 - pexelsClips.length;
+  const pixabayShort = 4 - pixabayClips.length;
+  if (pexelsShort > 0 && pixabayQueries.length > 0) {
+    const extra = await _fetchPexelsClips(pixabayQueries, pexelsShort, channelId, userId, excludeIds, pickedIds);
+    pexelsClips = pexelsClips.concat(extra);
+  }
+  if (pixabayShort > 0 && pexelsQueries.length > 0) {
+    const extra = await _fetchPixabayClips(pexelsQueries, pixabayShort, channelId, userId, excludeIds, pickedIds);
+    pixabayClips = pixabayClips.concat(extra);
   }
 
-  if (!clips.length) throw new Error('No Pexels footage clips fetched');
+  const clips = [...pexelsClips, ...pixabayClips];
+  if (!clips.length) throw new Error('No footage clips fetched from Pexels or Pixabay');
 
-  const selectedIds = clips.map(c => c.id);
-  console.log(`[PEXELS] selected=[${selectedIds.join(',')}]`);
+  console.log(`[STOCK] channel=${channelId || userId} pexels=${pexelsClips.length} pixabay=${pixabayClips.length} total=${clips.length}`);
 
-  // Persist used IDs to pexels_usage collection for cross-video deduplication
-  if (userId && selectedIds.length > 0) {
-    const now = new Date();
+  // ── 5. Persist used IDs to per-channel collections + global tracker ───────────
+  if (userId) {
     const chId = channelId || null;
-    const docs = selectedIds.map(videoId => ({
-      userId:    String(userId),
-      channelId: chId,
-      videoId,
-      usedAt:    now,
-    }));
-    pexelsCol.insertMany(docs).catch(e => console.warn('[PEXELS] Failed to save usage:', e.message));
-    // Ensure TTL index exists (no-op if already created)
-    pexelsCol.createIndex({ usedAt: 1 }, { expireAfterSeconds: 60 * 24 * 60 * 60 }).catch(() => {});
+    const pexIds = pexelsClips.map(c => c.id).filter(Boolean);
+    const pixIds = pixabayClips.map(c => c.id).filter(Boolean);
+
+    if (pexIds.length) {
+      pexelsCol.insertMany(pexIds.map(videoId => ({ userId: String(userId), channelId: chId, videoId, usedAt: now })))
+        .catch(e => console.warn('[STOCK] pexels_usage write failed:', e.message));
+      pexelsCol.createIndex({ usedAt: 1 }, { expireAfterSeconds: 60 * 24 * 60 * 60 }).catch(() => {});
+    }
+    if (pixIds.length) {
+      pixabayCol.insertMany(pixIds.map(videoId => ({ userId: String(userId), channelId: chId, videoId, usedAt: now })))
+        .catch(e => console.warn('[STOCK] pixabay_usage write failed:', e.message));
+      pixabayCol.createIndex({ usedAt: 1 }, { expireAfterSeconds: 60 * 24 * 60 * 60 }).catch(() => {});
+    }
+
+    // Global asset usage — increment/insert for each selected clip
+    const globalDocs = clips.map(c => ({ assetId: String(c.id), source: c.source, usedAt: now }));
+    globalCol.insertMany(globalDocs).catch(e => console.warn('[STOCK] global_asset_usage write failed:', e.message));
+    globalCol.createIndex({ usedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }).catch(() => {});
+    globalCol.createIndex({ assetId: 1, usedAt: -1 }).catch(() => {});
   }
+
+  logActivity('pexels_fetched', 'info', `Fetched ${clips.length} clips (pexels=${pexelsClips.length} pixabay=${pixabayClips.length})`, { channelId, userId });
 
   return clips;
 }
@@ -6787,6 +6891,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       return null;
     }
 
+    logActivity('pipeline_start', 'info', `Pipeline started for "${slotDoc.title}"`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), scheduledPostTime: slotDoc.scheduledPostTime });
+
     // 1/5 Script
     psUpdate('1/5'); console.log(`[JIT] 1/5 Script — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'generating-script' });
@@ -6813,6 +6919,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     });
     PIPELINE_STATUS.todayStats.generated++;
     console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
+    logActivity('script_generated', 'success', `Script OK — ${scriptData.wordCount} words`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), wordCount: scriptData.wordCount });
 
     // 2/5 Thumbnail — skipped only when channel is CONFIRMED ineligible (thumbnailsEnabled === false).
     // Missing or null thumbnailsEnabled is treated as eligible (optimistic attempt).
@@ -6847,6 +6954,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     const captions = voResult.captions.length > 0 ? voResult.captions : scriptData.captions;
     await setStatus({ voiceoverGenerated: true, pipelineStatus: 'voiceover-done' });
     console.log(`[JIT] 3/5 Done`);
+    logActivity('tts_generated', 'success', `TTS OK — ${captions.length} captions`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId) });
 
     // 4/5 Footage
     psUpdate('4/5'); console.log(`[JIT] 4/5 Footage — "${slotDoc.title}"`);
@@ -6860,6 +6968,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       pipelineStatus:   'footage-done',
     });
     console.log(`[JIT] 4/5 Done — ${footageClips.length} clips`);
+    logActivity('footage_fetched', footageClips.length > 0 ? 'success' : 'warning', `Footage: ${footageClips.length} clips (pexels+pixabay)`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), clipCount: footageClips.length });
 
     // 5/5 Assemble + Upload
     // (Quota pre-checked at pipeline start — pre-flight check above catches exhaustion before any paid calls)
@@ -6875,6 +6984,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath} (style: font=${channel.styleConfig?.captionFont||'clean'} color=${channel.styleConfig?.colorScheme||'white-yellow'} music=${channel.styleConfig?.musicGenre||'ambient'})`);
     await setStatus({ pipelineStatus: 'assembling' });
     await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort, channel.styleConfig || null);
+    logActivity('video_assembled', 'success', `Video assembled: "${slotDoc.title}"`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId) });
 
     // ── Hold until the exact scheduled post time — never upload early.
     // The cron starts the pipeline up to 35 min before scheduledPostTime so the
@@ -6937,6 +7047,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     PIPELINE_STATUS.lastCompletedAt = new Date().toISOString();
     PIPELINE_STATUS.todayStats.posted++;
     console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
+    logActivity('video_posted', 'success', `Posted "${slotDoc.title}" → https://youtu.be/${ytId}`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), youtubeVideoId: ytId });
     if (user.email) {
       const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId) || user.youtubeChannels?.[0];
       sendEmail(user.email, '✅ Your video is live on YouTube!', emailPostSuccess({
@@ -6954,6 +7065,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
     PIPELINE_STATUS.lastError = { message: err.message, slotId: String(slotId), title: slotDoc.title, at: new Date().toISOString() };
     PIPELINE_STATUS.todayStats.failed++;
+    logActivity('pipeline_error', 'error', `Pipeline failed for "${slotDoc.title}": ${err.message}`, { slotId: String(slotId), channelId: slotDoc.channelId, userId: String(slotDoc.userId), step: err.pipelineStep, errorMessage: err.message });
     if (audioPath) { require('fs').unlink(audioPath, () => {}); }
     if (thumbPath) { require('fs').unlink(thumbPath, () => {}); }
     require('fs').unlink(outPath, () => {});
@@ -9493,8 +9605,9 @@ function registerCronJobs() {
   // Posting cron — every 5 minutes: upload pre-assembled videos that are due
   cron.schedule('*/5 * * * *', async () => {
     console.log('[PostingCron] Cron fired at', new Date().toISOString(), '— checking for due slots');
+    logActivity('cron_fired', 'info', 'PostingCron fired — checking for due slots', {});
     try { await runScheduledPosting(); }
-    catch (err) { console.error('[PostingCron] Error:', err.message); }
+    catch (err) { console.error('[PostingCron] Error:', err.message); logActivity('cron_error', 'error', `PostingCron error: ${err.message}`, { errorMessage: err.message }); }
   });
 
   // Daily generation — 00:01 UTC
@@ -9700,6 +9813,197 @@ function registerCronJobs() {
 // =============================================================================
 // HEALTH CHECK — defined early above (line ~115), kept here as reference comment only
 // app.get('/health', ...) — already registered at startup
+
+// =============================================================================
+// GET /api/admin/stock-usage — per-channel Pexels + Pixabay usage stats
+// =============================================================================
+app.get('/api/admin/stock-usage', requireAdmin, async (req, res) => {
+  try {
+    const pexelsCol   = agentCol('pexels_usage');
+    const pixabayCol  = agentCol('pixabay_usage');
+    const globalCol   = agentCol('global_asset_usage');
+    const since30     = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [pexelsByChannel, pixabayByChannel, top10global] = await Promise.all([
+      pexelsCol.aggregate([
+        { $match: { usedAt: { $gte: since30 } } },
+        { $group: { _id: '$channelId', count: { $sum: 1 }, clips: { $addToSet: '$clipId' } } },
+        { $project: { channelId: '$_id', totalUsed: '$count', uniqueClips: { $size: '$clips' }, _id: 0 } },
+        { $sort: { totalUsed: -1 } },
+      ]).toArray(),
+      pixabayCol.aggregate([
+        { $match: { usedAt: { $gte: since30 } } },
+        { $group: { _id: '$channelId', count: { $sum: 1 }, clips: { $addToSet: '$clipId' } } },
+        { $project: { channelId: '$_id', totalUsed: '$count', uniqueClips: { $size: '$clips' }, _id: 0 } },
+        { $sort: { totalUsed: -1 } },
+      ]).toArray(),
+      globalCol.aggregate([
+        { $sort: { count: -1 } },
+        { $limit: 10 },
+        { $project: { clipId: 1, source: 1, count: 1, lastUsed: 1, _id: 0 } },
+      ]).toArray(),
+    ]);
+
+    res.json({ pexelsByChannel, pixabayByChannel, top10GlobalAssets: top10global, since: since30.toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// GET /api/admin/activity — query activity log
+// Params: severity, eventType, channelId, since (ISO), limit (default 100)
+// =============================================================================
+app.get('/api/admin/activity', requireAdmin, async (req, res) => {
+  try {
+    const col = agentCol('activity_log');
+    const filter = {};
+    if (req.query.severity)  filter.severity  = req.query.severity;
+    if (req.query.eventType) filter.eventType = req.query.eventType;
+    if (req.query.channelId) filter.channelId = req.query.channelId;
+    if (req.query.since)     filter.timestamp = { $gte: new Date(req.query.since) };
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const events = await col.find(filter).sort({ timestamp: -1 }).limit(limit).toArray();
+    res.json({ count: events.length, events });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// GET /api/admin/activity/live — last 50 events from the past 10 minutes
+// =============================================================================
+app.get('/api/admin/activity/live', requireAdmin, async (req, res) => {
+  try {
+    const col    = agentCol('activity_log');
+    const since  = new Date(Date.now() - 10 * 60 * 1000);
+    const events = await col.find({ timestamp: { $gte: since } }).sort({ timestamp: -1 }).limit(50).toArray();
+    res.json({ count: events.length, events });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// GET /admin/activity — real-time activity dashboard (HTML, no framework)
+// Must be BEFORE the app.get('*') catchall.
+// =============================================================================
+app.get('/admin/activity', (req, res) => {
+  if (req.query.secret !== 'VRL-ADM-X7K9-2025') {
+    return res.status(403).send('<h1>403 Forbidden</h1><p>Pass ?secret=VRL-ADM-X7K9-2025</p>');
+  }
+  const secret = 'VRL-ADM-X7K9-2025';
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Viralityy — Activity Log</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0f;color:#e0e0e0;font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:13px}
+header{background:#111;border-bottom:1px solid #222;padding:14px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:18px;font-weight:700;color:#a855f7;letter-spacing:-0.5px}
+header span{color:#555;font-size:12px}
+#status{margin-left:auto;font-size:11px;color:#555}
+#status.live{color:#22c55e}
+.filters{padding:10px 20px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid #1a1a1a}
+.filter-btn{background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;transition:all 0.15s}
+.filter-btn:hover{border-color:#555}
+.filter-btn.active{background:#a855f720;border-color:#a855f7;color:#a855f7}
+#events{padding:12px 20px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;max-height:calc(100vh - 130px)}
+.event{display:grid;grid-template-columns:160px 70px 160px 1fr;gap:10px;align-items:start;padding:7px 10px;border-radius:5px;border-left:3px solid transparent;background:#111;font-size:12px}
+.event.success{border-left-color:#22c55e}
+.event.info{border-left-color:#3b82f6}
+.event.warning{border-left-color:#f59e0b}
+.event.error{border-left-color:#ef4444}
+.event .ts{color:#555;white-space:nowrap}
+.event .sev{font-weight:700;text-transform:uppercase;font-size:10px;padding:1px 5px;border-radius:3px;width:fit-content}
+.sev.success{background:#22c55e18;color:#22c55e}
+.sev.info{background:#3b82f618;color:#3b82f6}
+.sev.warning{background:#f59e0b18;color:#f59e0b}
+.sev.error{background:#ef444418;color:#ef4444}
+.event .type{color:#a855f7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.event .msg{color:#ccc;word-break:break-word}
+.event .meta{grid-column:1/-1;color:#555;font-size:11px;padding-top:2px}
+#empty{text-align:center;color:#333;padding:60px 20px;font-size:14px;display:none}
+.new-badge{animation:fade 2s forwards}
+@keyframes fade{0%{background:#a855f715}100%{background:#111}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Viralityy Activity</h1>
+  <span id="count">— events</span>
+  <span id="status">connecting…</span>
+</header>
+<div class="filters">
+  <button class="filter-btn active" data-sev="">All</button>
+  <button class="filter-btn" data-sev="success">Success</button>
+  <button class="filter-btn" data-sev="info">Info</button>
+  <button class="filter-btn" data-sev="warning">Warning</button>
+  <button class="filter-btn" data-sev="error">Error</button>
+</div>
+<div id="events"><div id="empty">No events yet — waiting for activity…</div></div>
+<script>
+const SECRET = '${secret}';
+let filterSev = '';
+let allEvents = [];
+
+function fmt(ts){ return new Date(ts).toLocaleTimeString('en-GB',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})+' '+new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderEvents(){
+  const container = document.getElementById('events');
+  const empty = document.getElementById('empty');
+  const list = filterSev ? allEvents.filter(e=>e.severity===filterSev) : allEvents;
+  document.getElementById('count').textContent = list.length + ' events';
+  if(!list.length){ empty.style.display='block'; container.innerHTML=''; container.appendChild(empty); return; }
+  empty.style.display='none';
+  container.innerHTML = list.map((e,i) => {
+    const meta = Object.entries(e.metadata||{}).filter(([k])=>!['slotId','channelId','userId'].includes(k)).map(([k,v])=>k+'='+esc(v)).join(' · ');
+    const ch = e.channelId ? ' ch:'+esc(e.channelId.slice(-6)) : '';
+    return \`<div class="event \${esc(e.severity)}\${i<3?' new-badge':''}">
+      <span class="ts">\${fmt(e.timestamp)}</span>
+      <span class="sev \${esc(e.severity)}">\${esc(e.severity)}</span>
+      <span class="type">\${esc(e.eventType)}\${ch}</span>
+      <span class="msg">\${esc(e.message)}</span>
+      \${meta?'<span class="meta">'+meta+'</span>':''}
+    </div>\`;
+  }).join('');
+}
+
+async function fetchEvents(){
+  try{
+    const r = await fetch('/api/admin/activity?secret='+SECRET+'&limit=100');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d = await r.json();
+    allEvents = d.events || [];
+    renderEvents();
+    document.getElementById('status').textContent = 'live · updated '+new Date().toLocaleTimeString();
+    document.getElementById('status').className = 'live';
+  } catch(err){
+    document.getElementById('status').textContent = 'error: '+err.message;
+    document.getElementById('status').className = '';
+  }
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    filterSev = btn.dataset.sev;
+    renderEvents();
+  });
+});
+
+fetchEvents();
+setInterval(fetchEvents, 10000);
+</script>
+</body>
+</html>`);
+});
 
 // =============================================================================
 // SERVE STATIC FRONTEND
