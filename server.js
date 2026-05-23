@@ -5633,31 +5633,44 @@ Return valid JSON only — no prose, no markdown:
 
   let best = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    // Attempt 1: temp 0.85, strict 120-180 words
+    // Attempt 2: temp 0.9 for more variation, still 120-180
+    // Attempt 3: temp 0.9, relaxed 100-200 words
+    const temperature = attempt === 1 ? 0.85 : 0.9;
+    const minWords    = attempt === 3 ? 100 : 120;
+    const maxWords    = attempt === 3 ? 200 : 180;
     try {
       const res = await openai.chat.completions.create({
         model:           'gpt-4o-mini',
         messages:        [{ role: 'user', content: prompt }],
-        temperature:     0.85,
+        temperature,
         response_format: { type: 'json_object' },
       });
       const parsed    = JSON.parse(res.choices[0].message.content);
       const wordCount = (parsed.script || '').split(/\s+/).filter(Boolean).length;
       const inTok2    = res.usage?.prompt_tokens    || 0;
       const outTok2   = res.usage?.completion_tokens || 0;
-      const ok = wordCount >= 120 && wordCount <= 180;
+      const ok = wordCount >= minWords && wordCount <= maxWords;
       logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
         inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, ok);
-      console.log(`[Script] Attempt ${attempt}/3 — ${wordCount} words (target: 130-150)`);
+      console.log(`[Script] attempt=${attempt} words=${wordCount} temperature=${temperature} target=${minWords}-${maxWords}`);
       if (ok) { best = { ...parsed, wordCount }; break; }
-      if (wordCount < 120) console.warn(`[Script] ${wordCount} words is too short (< 120) — regenerating`);
-      else console.warn(`[Script] ${wordCount} words exceeds 180 — regenerating`);
+      if (wordCount < minWords) console.warn(`[Script] ${wordCount} words too short (< ${minWords}) — retrying`);
+      else console.warn(`[Script] ${wordCount} words too long (> ${maxWords}) — retrying`);
+      // On last attempt, accept any non-empty script rather than failing
+      if (attempt === 3 && wordCount > 0) { best = { ...parsed, wordCount }; break; }
     } catch (err) {
       logAPIUsage('openai', 'script_short', null, 0, 0, false);
-      console.warn(`[Script] Attempt ${attempt}/3 failed: ${err.message}`);
+      console.warn(`[Script] attempt=${attempt} failed: ${err.message}`);
     }
   }
-  // Accept best effort if all 3 attempts are out of range
-  if (!best) throw new Error('Script generation failed to produce a 120-180 word script after 3 attempts');
+  // Absolute fallback — generate a minimal usable script rather than failing the slot entirely
+  if (!best) {
+    console.warn(`[Script] All 3 attempts failed — using hardcoded fallback script for "${title}"`);
+    const fallbackScript = `${title}. Here's what you need to know. Most people overlook this completely. First, understanding the basics changes everything. Second, consistency beats perfection every time. Third, small daily actions compound into massive results. The research is clear on this. Studies show that people who apply these principles see real change within weeks. So start today, not tomorrow. Your future self will thank you. Remember: ${title.split(' ').slice(0, 4).join(' ')} is the key to lasting transformation. Take action now.`;
+    best = { title, script: fallbackScript, hook: title, loopEnding: '', captions: [], hashtags: [], wordCount: fallbackScript.split(/\s+/).length };
+    console.log(`[Script] fallback wordCount=${best.wordCount}`);
+  }
 
   return {
     title:      best.title      || title,
@@ -5974,21 +5987,33 @@ function deriveFootageQueries(title, script, nicheName = '', excludeQueries = ne
 }
 
 // Step 3 — Fetch 8 unique portrait clips from Pexels, excluding previously used video IDs.
-// Paginates up to 3 pages per query until 8 unused clips are found.
-async function pipelineFetchMultipleFootage(title, script, nicheName = '', userId = null) {
+// Tracks used IDs per channel in MongoDB with 60-day expiry to prevent repetition across videos.
+async function pipelineFetchMultipleFootage(title, script, nicheName = '', userId = null, channelId = null) {
   const apiKey = process.env.PEXELS_API_KEY;
   if (!apiKey) throw new Error('PEXELS_API_KEY not configured');
 
-  // Load previously used footage IDs and today's queries from MongoDB
-  const usedIds = new Set();
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+  const pexelsCol    = agentCol('pexels_usage');
+  const usedIds      = new Set();
   const usedQueriesOnDay = new Set();
+
   if (userId) {
+    // Load per-channel used IDs from pexels_usage (last 60 days)
+    const chId = channelId || null;
+    const usageQuery = chId
+      ? { channelId: chId, usedAt: { $gte: sixtyDaysAgo } }
+      : { userId: String(userId), usedAt: { $gte: sixtyDaysAgo } };
+    const usageDocs = await pexelsCol.find(usageQuery, { projection: { videoId: 1 } }).toArray().catch(() => []);
+    for (const d of usageDocs) usedIds.add(String(d.videoId));
+
+    // Also load legacy usedFootageIds from User doc
     const userDoc = await User.findById(userId).select('usedFootageIds').lean().catch(() => null);
     if (userDoc?.usedFootageIds) for (const id of userDoc.usedFootageIds) usedIds.add(String(id));
 
-    const today = new Date().toISOString().slice(0, 10);
+    // Load today's queries to avoid same-day repeats
+    const today  = new Date().toISOString().slice(0, 10);
     const calCol = agentCol('content_calendars');
-    const cals = await calCol.find(
+    const cals   = await calCol.find(
       { userId, 'slots.date': today },
       { projection: { 'slots.date': 1, 'slots.footageQueries': 1 } }
     ).toArray().catch(() => []);
@@ -5999,58 +6024,79 @@ async function pipelineFetchMultipleFootage(title, script, nicheName = '', userI
         }
       }
     }
-    if (usedIds.size > 0 || usedQueriesOnDay.size > 0)
-      console.log(`[Footage] User ${userId}: ${usedIds.size} used IDs, ${usedQueriesOnDay.size} today's queries excluded`);
+    console.log(`[PEXELS] channel=${chId || userId} excluded=${usedIds.size} usedQueries=${usedQueriesOnDay.size}`);
   }
 
-  const queries = deriveFootageQueries(title, script, nicheName, usedQueriesOnDay);
-  const clips = [];
-  const pickedIds = new Set(); // avoid duplicates within this batch
+  const queries  = deriveFootageQueries(title, script, nicheName, usedQueriesOnDay);
+  const clips    = [];
+  const pickedIds = new Set();
+
+  console.log(`[PEXELS] queries=[${queries.join(' | ')}]`);
 
   for (const query of queries) {
     let found = false;
     for (let page = 1; page <= 3 && !found; page++) {
       try {
         const params = new URLSearchParams({
-          query: query.slice(0, 100),
-          per_page: '15',
+          query:       query.slice(0, 100),
+          per_page:    '80',   // wide pool — was 15, now 80 for variety
           orientation: 'portrait',
-          page: String(page),
+          page:        String(page),
         });
-        const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
+        const res  = await fetch(`https://api.pexels.com/videos/search?${params}`, {
           headers: { Authorization: apiKey },
         });
         const data = await res.json();
         logAPIUsage('pexels', 'video_search', userId, 1, 0, true);
 
-        const videos = (data.videos || []).filter(v =>
+        const eligible = (data.videos || []).filter(v =>
           v.duration >= 5 &&
           !usedIds.has(String(v.id)) &&
           !pickedIds.has(String(v.id))
         );
 
-        if (!videos.length) {
-          console.warn(`[Footage] All p${page} results used for "${query}" — trying next page`);
+        if (!eligible.length) {
+          console.warn(`[PEXELS] All p${page} results excluded for "${query}" — trying next page`);
           continue;
         }
 
-        const video = videos[0];
-        const file  = (video.video_files || []).find(f => f.quality === 'hd') || (video.video_files || [])[0];
+        // Randomise selection so repeated queries to the same pool surface different clips
+        const pick  = eligible[Math.floor(Math.random() * Math.min(eligible.length, 20))];
+        const file  = (pick.video_files || []).find(f => f.quality === 'hd') || (pick.video_files || [])[0];
         if (!file?.link) continue;
 
-        pickedIds.add(String(video.id));
-        clips.push({ id: String(video.id), url: file.link, duration: video.duration, query });
-        console.log(`[Footage] "${query}" p${page}: id=${video.id}, ${video.duration}s`);
+        pickedIds.add(String(pick.id));
+        clips.push({ id: String(pick.id), url: file.link, duration: pick.duration, query });
+        console.log(`[PEXELS] "${query}" p${page}: id=${pick.id} poolSize=${eligible.length} dur=${pick.duration}s`);
         found = true;
       } catch (e) {
         logAPIUsage('pexels', 'video_search', userId, 1, 0, false);
-        console.warn(`[Footage] Failed for "${query}" p${page}:`, e.message);
+        console.warn(`[PEXELS] Failed for "${query}" p${page}:`, e.message);
       }
     }
-    if (!found) console.warn(`[Footage] No unused clip found for "${query}" after 3 pages`);
+    if (!found) console.warn(`[PEXELS] No unused clip found for "${query}" after 3 pages`);
   }
 
   if (!clips.length) throw new Error('No Pexels footage clips fetched');
+
+  const selectedIds = clips.map(c => c.id);
+  console.log(`[PEXELS] selected=[${selectedIds.join(',')}]`);
+
+  // Persist used IDs to pexels_usage collection for cross-video deduplication
+  if (userId && selectedIds.length > 0) {
+    const now = new Date();
+    const chId = channelId || null;
+    const docs = selectedIds.map(videoId => ({
+      userId:    String(userId),
+      channelId: chId,
+      videoId,
+      usedAt:    now,
+    }));
+    pexelsCol.insertMany(docs).catch(e => console.warn('[PEXELS] Failed to save usage:', e.message));
+    // Ensure TTL index exists (no-op if already created)
+    pexelsCol.createIndex({ usedAt: 1 }, { expireAfterSeconds: 60 * 24 * 60 * 60 }).catch(() => {});
+  }
+
   return clips;
 }
 
@@ -6465,23 +6511,23 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   // Checks videos.list() before each attempt to confirm the video is accessible.
   const doThumbUpload = async (videoId, accessToken) => {
     const { thumbPath, userId, slotId } = options;
-    console.log(`[Thumbnail] doThumbUpload — youtubeVideoId=${videoId}, thumbPath=${thumbPath}`);
+    console.log(`[THUMB UPLOAD] slotId=${slotId} channelId=${channel.channelId} youtubeVideoId=${videoId} thumbPath=${thumbPath}`);
 
     if (!thumbPath) {
-      console.log(`[Thumbnail] Skipped — no thumbPath provided`);
+      console.log(`[THUMB UPLOAD] Skipped — no thumbPath (Imagen failed or thumbnail disabled)`);
       return;
     }
     if (!fs.existsSync(thumbPath)) {
-      console.error(`[Thumbnail] SKIP — file not found at ${thumbPath} (was it deleted before upload?)`);
+      console.error(`[THUMB UPLOAD] SKIP — file not found at ${thumbPath} (deleted before upload?)`);
       return;
     }
 
     const thumbSizeBytes = fs.statSync(thumbPath).size;
     const thumbMime      = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
-    console.log(`[Thumbnail] File confirmed: ${thumbPath} | size=${thumbSizeBytes} bytes (${(thumbSizeBytes/1024/1024).toFixed(2)} MB) | mime=${thumbMime}`);
+    console.log(`[THUMB UPLOAD] File confirmed: ${thumbPath} | size=${thumbSizeBytes} bytes (${(thumbSizeBytes/1024/1024).toFixed(2)} MB) | mime=${thumbMime}`);
 
     if (thumbSizeBytes === 0) {
-      console.error(`[Thumbnail] SKIP — file is 0 bytes`);
+      console.error(`[THUMB UPLOAD] SKIP — file is 0 bytes`);
       fs.unlink(thumbPath, () => {});
       return;
     }
@@ -6489,7 +6535,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
     // 50 (thumbnails.set) + 1 (videos.list readiness check) = 51 units per attempt
     const thumbQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.thumbnails + YOUTUBE_QUOTA_COSTS.default, userId).catch(() => ({ allowed: true }));
     if (!thumbQC.allowed) {
-      console.warn('[Thumbnail] Quota insufficient — skipping thumbnail upload');
+      console.warn('[THUMB UPLOAD] Quota insufficient — skipping thumbnail upload');
       fs.unlink(thumbPath, () => {});
       return;
     }
@@ -6506,20 +6552,21 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       oauth2.setCredentials({ access_token: token, refresh_token: channel.refreshToken });
       const yt = google.youtube({ version: 'v3', auth: oauth2 });
 
+      console.log(`[THUMB UPLOAD] attempt ${attempt} — checking video status for ${videoId}…`);
       const statusRes = await yt.videos.list({ part: ['status'], id: [videoId] }).catch(() => null);
       logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, userId).catch(() => {});
       const uploadStatus = statusRes?.data?.items?.[0]?.status?.uploadStatus;
-      console.log(`[Thumbnail] attempt ${attempt} — video uploadStatus=${uploadStatus || 'unknown'}`);
+      console.log(`[THUMB UPLOAD] attempt ${attempt} — videoStatus=${uploadStatus || 'unknown'} — ${uploadStatus === 'processed' || uploadStatus === 'uploaded' || !uploadStatus ? 'proceeding' : 'skipping (not ready)'}`);
       if (uploadStatus && uploadStatus !== 'processed' && uploadStatus !== 'uploaded') {
         throw new Error(`Video not ready — uploadStatus=${uploadStatus}`);
       }
 
-      console.log(`[Thumbnail] thumbnails.set attempt ${attempt} — youtubeVideoId=${videoId}, size=${thumbSizeBytes} bytes`);
+      console.log(`[THUMB UPLOAD] attempt ${attempt} — thumbnails.set youtubeVideoId=${videoId} size=${thumbSizeBytes} bytes`);
       const result = await yt.thumbnails.set({
         videoId,
         media: { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
       });
-      console.log(`[Thumbnail] thumbnails.set attempt ${attempt} HTTP ${result?.status}:`, JSON.stringify(result?.data || {}).slice(0, 800));
+      console.log(`[THUMB UPLOAD] attempt ${attempt} HTTP ${result?.status}:`, JSON.stringify(result?.data || {}).slice(0, 800));
       return result;
     };
 
@@ -6529,11 +6576,11 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
       let lastErr;
       for (let attempt = 1; attempt <= 3; attempt++) {
         const waitMs = backoffDelays[attempt - 1];
-        console.log(`[Thumbnail] Waiting ${waitMs / 1000}s before attempt ${attempt}…`);
+        console.log(`[THUMB UPLOAD] Waiting ${waitMs / 1000}s before attempt ${attempt}…`);
         await new Promise(r => setTimeout(r, waitMs));
         try {
           const result = await attemptSet(accessToken, attempt);
-          console.log(`[Thumbnail] Successfully set thumbnail for video ${videoId} (attempt ${attempt})`);
+          console.log(`[THUMB UPLOAD OK] thumbnail applied to videoId=${videoId} (attempt ${attempt})`);
           logYoutubeQuota('thumbnails.set', YOUTUBE_QUOTA_COSTS.thumbnails, userId).catch(() => {});
           logAPIUsage('youtube', 'thumbnail_upload', userId || null, 0, 0, true).catch(() => {});
           if (userId && channel?.channelId) {
@@ -6543,13 +6590,14 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
             ).catch(() => {});
           }
           saveSlotStatus({ thumbnailUploaded: true, thumbnailStatus: 'success', thumbnailAppliedAt: new Date() });
+          PIPELINE_STATUS.todayStats.thumbnails++;
           succeeded = true;
           break;
         } catch (e) {
           lastErr = e;
           const fullErr = e?.response?.data || e?.message;
-          console.error(`[Thumbnail] thumbnails.set attempt ${attempt} FAILED — youtubeVideoId=${videoId}`);
-          console.error(`[Thumbnail] Full YouTube API error response:`, JSON.stringify(fullErr));
+          console.error(`[THUMB UPLOAD FAIL] attempt ${attempt} — youtubeVideoId=${videoId} error=${JSON.stringify(fullErr).slice(0, 300)}`);
+          saveSlotStatus({ thumbnailStatus: `upload-failed-attempt-${attempt}`, thumbnailError: String(fullErr).slice(0, 200) });
         }
       }
       if (!succeeded && lastErr) {
@@ -6565,7 +6613,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
           console.log(`[ThumbnailCheck] Marked ${channel.channelId} thumbnailsEnabled=false (ineligibility confirmed after 3 attempts)`);
         }
         const errMsg = errData ? JSON.stringify(errData) : lastErr.message;
-        saveSlotStatus({ thumbnailStatus: 'failed', thumbnailError: errMsg });
+        saveSlotStatus({ thumbnailStatus: 'upload-failed', thumbnailError: errMsg.slice(0, 300) });
       }
     } finally {
       fs.unlink(thumbPath, () => {});
@@ -6605,7 +6653,7 @@ async function callImagenAPI(prompt, aspectRatio) {
   const apiKey = process.env.GOOGLE_IMAGEN_API_KEY || process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_IMAGEN_API_KEY not set');
 
-  const IMAGEN_MODEL = 'imagen-4.0-fast-generate-001';
+  const IMAGEN_MODEL = 'imagen-4.0-generate-001';
   const imagenUrl    = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_MODEL}:predict?key=${apiKey}`;
   const imagenBody   = {
     instances:  [{ prompt }],
@@ -6648,12 +6696,13 @@ async function callImagenAPI(prompt, aspectRatio) {
   return { imageBytes, mimeType, rawBody, httpStatus: res.status };
 }
 
-// Generate a YouTube thumbnail via Google Imagen 4 (imagen-4-0-generate-001).
+// Generate a YouTube thumbnail via Google Imagen 4 (imagen-4.0-generate-001).
 // Returns the local /tmp path on success, null on any failure (never throws).
 async function generateThumbnail(title, nicheName, videoType, slotId) {
   const fs = require('fs');
+  console.log(`[THUMB IMAGEN] slotId=${slotId} — calling Imagen 4 (imagen-4.0-generate-001)…`);
   if (!process.env.GOOGLE_IMAGEN_API_KEY && !process.env.GOOGLE_TTS_API_KEY) {
-    console.warn('[Thumbnail] GOOGLE_IMAGEN_API_KEY not set — skipping');
+    console.warn('[THUMB IMAGEN FAIL] GOOGLE_IMAGEN_API_KEY not set — skipping thumbnail');
     return null;
   }
   try {
@@ -6666,14 +6715,13 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
 
     const { imageBytes, mimeType } = await callImagenAPI(prompt, isShort ? '9:16' : '16:9');
 
-    // Always jpg — Imagen is called with outputMimeType:'image/jpeg'
     const thumbPath = `/tmp/thumbnail_${slotId}.jpg`;
     fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
     const sizeBytes = fs.statSync(thumbPath).size;
-    console.log(`[Thumbnail] Saved: ${thumbPath} (${sizeBytes} bytes, ${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`[THUMB IMAGEN OK] slotId=${slotId} path=${thumbPath} size=${sizeBytes} bytes (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
     if (sizeBytes < 1000) throw new Error(`Thumbnail suspiciously small: ${sizeBytes} bytes`);
     if (sizeBytes > 2 * 1024 * 1024) {
-      console.error(`[Thumbnail] File too large: ${(sizeBytes / 1024 / 1024).toFixed(2)} MB — YouTube max is 2 MB. Discarding.`);
+      console.error(`[THUMB IMAGEN FAIL] slotId=${slotId} file too large: ${(sizeBytes / 1024 / 1024).toFixed(2)} MB — YouTube max 2 MB`);
       fs.unlink(thumbPath, () => {});
       return null;
     }
@@ -6681,7 +6729,7 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
     logAPIUsage('imagen4', 'thumbnail', null, 0, 0.02, true).catch(() => {});
     return thumbPath;
   } catch (err) {
-    console.error(`[Thumbnail] Generation FAILED: ${err.message}`);
+    console.error(`[THUMB IMAGEN FAIL] slotId=${slotId} error=${err.message}`);
     logAPIUsage('imagen4', 'thumbnail', null, 0, 0, false).catch(() => {});
     return null;
   }
@@ -6766,25 +6814,26 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     PIPELINE_STATUS.todayStats.generated++;
     console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
 
-    // 2/5 Thumbnail — skipped when channel is confirmed ineligible (saves ~$0.02/video on Imagen 4)
+    // 2/5 Thumbnail — skipped only when channel is CONFIRMED ineligible (thumbnailsEnabled === false).
+    // Missing or null thumbnailsEnabled is treated as eligible (optimistic attempt).
     psUpdate('2/5');
+    console.log(`[THUMB START] slotId=${String(slotId)} channelId=${channel.channelId} thumbnailsEnabled=${channel.thumbnailsEnabled ?? 'unset (treating as true)'}`);
     if (channel.thumbnailsEnabled === false) {
-      // thumbnailsEnabled is explicitly false = YouTube confirmed this channel cannot use custom thumbnails.
-      // Calling Imagen 4 would waste $0.02 and produce a file that thumbnails.set() will reject.
-      console.log(`[Thumbnail] Skipping Imagen 4 — channel "${channel.channelName || channel.channelId}" not thumbnail eligible, saving ~$0.02`);
-      await setStatus({ pipelineStatus: 'thumbnail-skipped-ineligible' });
+      console.log(`[THUMB START] Skipping — channel not thumbnail eligible`);
+      await setStatus({ pipelineStatus: 'thumbnail-skipped-ineligible', thumbnailStatus: 'skipped-ineligible' });
     } else {
-      // thumbnailsEnabled is true (confirmed) or null/undefined (unknown — try optimistically)
       console.log(`[JIT] 2/5 Thumbnail — "${slotDoc.title}"`);
-      await setStatus({ pipelineStatus: 'generating-thumbnail' });
+      await setStatus({ pipelineStatus: 'generating-thumbnail', thumbnailStatus: 'generating' });
       thumbPath = await generateThumbnail(slotDoc.title, nicheName, slotDoc.type, String(slotId));
       if (thumbPath) {
-        await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done' });
-        PIPELINE_STATUS.todayStats.thumbnails++;
+        await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done', thumbnailStatus: 'imagen-ok' });
+        // todayStats.thumbnails is incremented in doThumbUpload on actual YouTube upload success
+        console.log(`[THUMB START] Imagen OK — thumbPath=${thumbPath}`);
       } else {
-        await setStatus({ pipelineStatus: 'thumbnail-skipped' });
+        await setStatus({ pipelineStatus: 'thumbnail-skipped', thumbnailStatus: 'imagen-failed' });
+        console.warn(`[THUMB IMAGEN FAIL] slotId=${String(slotId)} — generateThumbnail returned null`);
       }
-      console.log(`[JIT] 2/5 Done — ${thumbPath ? thumbPath : 'skipped'}`);
+      console.log(`[JIT] 2/5 Done — ${thumbPath ? thumbPath : 'skipped (imagen failed)'}`);
     }
 
     // 3/5 Voiceover
@@ -6802,7 +6851,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     // 4/5 Footage
     psUpdate('4/5'); console.log(`[JIT] 4/5 Footage — "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'fetching-footage' });
-    const footageClips = await pipelineFetchMultipleFootage(slotDoc.title, script, nicheName, String(slotDoc.userId));
+    const footageClips = await pipelineFetchMultipleFootage(slotDoc.title, script, nicheName, String(slotDoc.userId), slotDoc.channelId || null);
     await setStatus({
       footageUrls:      footageClips.map(c => c.url),
       footageQueries:   footageClips.map(c => c.query),
@@ -6829,23 +6878,23 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
     // ── Hold until the exact scheduled post time — never upload early.
     // The cron starts the pipeline up to 35 min before scheduledPostTime so the
-    // video is ready on time. Without this wait, a fast pipeline (< 35 min) uploads
-    // the video immediately after assembly, posting it early.
+    // video is ready on time. Without this wait, a fast pipeline posts immediately
+    // after assembly instead of at the scheduled time.
     const rawScheduled = slotDoc.scheduledPostTime || '';
     const scheduledTs  = rawScheduled
       ? new Date(rawScheduled.endsWith('Z') ? rawScheduled : rawScheduled + 'Z').getTime()
       : NaN;
     if (!isNaN(scheduledTs)) {
       const holdMs = scheduledTs - Date.now();
-      if (holdMs > 500 && holdMs < 40 * 60 * 1000) {
-        // Wait up to 40 min — sanity cap prevents an accidental infinite sleep
-        console.log(`[JIT] ⏳ "${slotDoc.title}" assembly done — holding ${Math.round(holdMs / 1000)}s until ${rawScheduled}`);
+      console.log(`[PIPELINE START] slotId=${String(slotId)} scheduledTime=${rawScheduled} now=${new Date().toISOString()} holdMs=${holdMs}`);
+      if (holdMs > 500) {
+        // Wait until exact scheduled time — no arbitrary cap (sleep is async, doesn't block the event loop)
+        console.log(`[HOLD] Slot ${String(slotId)} waiting ${Math.round(holdMs / 1000)}s until scheduledTime ${rawScheduled}`);
         await setStatus({ pipelineStatus: 'waiting-for-schedule' });
         await new Promise(r => setTimeout(r, holdMs));
-      } else if (holdMs <= 500) {
-        console.log(`[JIT] "${slotDoc.title}" — scheduledPostTime reached (${rawScheduled}), uploading now`);
       } else {
-        console.warn(`[JIT] "${slotDoc.title}" — holdMs=${holdMs} exceeds 40 min cap, uploading immediately`);
+        // Within 500ms of scheduledTime — upload now
+        console.log(`[PIPELINE UPLOAD] slotId=${String(slotId)} — uploading NOW at exact scheduled time ${rawScheduled}`);
       }
     }
 
@@ -7525,6 +7574,65 @@ async function maybePreGenerateTomorrow(userId) {
   }
 }
 
+// Background sweep — retries thumbnail upload for posted slots whose thumbnail failed in the last 24 hours.
+// Called via setImmediate after each successful video post so it runs in the background.
+async function retryFailedThumbnails(userId) {
+  const slotsCol  = agentCol('calendar_slots');
+  const since24h  = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const failedSlots = await slotsCol.find({
+    userId,
+    status:          'posted',
+    youtubeVideoId:  { $exists: true, $ne: null },
+    thumbnailStatus: { $in: ['imagen-failed', 'upload-failed', 'upload-failed-attempt-1', 'upload-failed-attempt-2', 'upload-failed-attempt-3', null, undefined] },
+    postedAt:        { $gte: since24h },
+  }).toArray().catch(() => []);
+
+  if (!failedSlots.length) return;
+  console.log(`[THUMB RETRY] userId=${userId} — ${failedSlots.length} slot(s) with missing thumbnails from last 24h`);
+
+  const user = await User.findById(userId).lean().catch(() => null);
+  if (!user) return;
+
+  for (const slot of failedSlots) {
+    // Skip slots where thumbnail was confirmed not to apply
+    if (slot.thumbnailStatus === 'skipped-ineligible') continue;
+    const channel = (user.youtubeChannels || []).find(c => c.channelId === slot.channelId) || user.youtubeChannels?.[0];
+    if (!channel?.accessToken || channel.thumbnailsEnabled === false) continue;
+
+    console.log(`[THUMB RETRY] slotId=${String(slot._id)} title="${slot.title}" videoId=${slot.youtubeVideoId} — regenerating thumbnail`);
+    const thumbPath = await generateThumbnail(slot.title, slot.nicheName || '', slot.type || 'Short', `retry_${String(slot._id)}`).catch(() => null);
+    if (!thumbPath) {
+      console.warn(`[THUMB RETRY] slotId=${String(slot._id)} — Imagen failed again, skipping`);
+      continue;
+    }
+
+    const { google } = require('googleapis');
+    const fs         = require('fs');
+    const oauth2     = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+    oauth2.setCredentials({ access_token: channel.accessToken, refresh_token: channel.refreshToken });
+    const yt = google.youtube({ version: 'v3', auth: oauth2 });
+
+    try {
+      const thumbMime  = thumbPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      const result     = await yt.thumbnails.set({
+        videoId: slot.youtubeVideoId,
+        media:   { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
+      });
+      console.log(`[THUMB RETRY] slotId=${String(slot._id)} — thumbnails.set HTTP ${result?.status} OK`);
+      await slotsCol.updateOne(
+        { _id: slot._id },
+        { $set: { thumbnailStatus: 'success', thumbnailUploaded: true, thumbnailAppliedAt: new Date(), thumbnailRetriedAt: new Date() } }
+      ).catch(() => {});
+      PIPELINE_STATUS.todayStats.thumbnails++;
+    } catch (e) {
+      console.error(`[THUMB RETRY] slotId=${String(slot._id)} — upload failed: ${e.message}`);
+      await slotsCol.updateOne({ _id: slot._id }, { $set: { thumbnailStatus: 'retry-failed', thumbnailError: e.message.slice(0, 200) } }).catch(() => {});
+    } finally {
+      fs.unlink(thumbPath, () => {});
+    }
+  }
+}
+
 // JIT posting cron — runs every 5 minutes.
 // Finds scheduled slots due within 35 min, runs the full pipeline, and uploads one at a time.
 async function runScheduledPosting() {
@@ -7559,30 +7667,26 @@ async function runScheduledPosting() {
     console.log(`[PostingCron] Converted pending slot "${s.title}" → scheduled at ${scheduledPostTime}`);
   }
 
-  // Auto-rescue: slots that missed their window get rescheduled to post soon (up to 3 retries).
-  // Instead of abandoning them as 'missed', bump scheduledPostTime forward so the pipeline still runs today.
+  // Safeguard: slots whose window has PASSED (> 5 min ago) are marked missed — never dumped immediately.
+  // This prevents past-due slots from posting out of order if they were somehow delayed.
   const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
   const overdueSlots = await slotsCol.find({
     status: 'scheduled', posted: false, date: today, scheduledPostTime: { $lt: fiveMinAgo },
   }).toArray().catch(() => []);
   for (const s of overdueSlots) {
-    if ((s.retryCount || 0) >= 3) {
-      await slotsCol.updateOne({ _id: s._id }, { $set: { status: 'missed', pipelineStatus: 'missed-window-max-retries' } }).catch(() => {});
-      console.log(`[PostingCron] Slot "${s.title}" exceeded max retries — marked missed`);
-    } else {
-      const rescheduleAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
-      await slotsCol.updateOne(
-        { _id: s._id },
-        { $set: { scheduledPostTime: rescheduleAt, pipelineStatus: 'auto-rescheduled' }, $inc: { retryCount: 1 } }
-      ).catch(() => {});
-      console.log(`[PostingCron] Auto-rescheduled "${s.title}" → ${rescheduleAt} (retry ${(s.retryCount || 0) + 1}/3)`);
-    }
+    await slotsCol.updateOne(
+      { _id: s._id },
+      { $set: { status: 'missed', pipelineStatus: 'missed-window', missedAt: nowIso } }
+    ).catch(() => {});
+    console.log(`[PostingCron] Slot "${s.title}" (scheduled ${s.scheduledPostTime}) missed its window — marked missed`);
   }
 
-  // Find scheduled slots whose scheduledPostTime is within the next 35 minutes.
-  // The 35-min window gives the JIT pipeline time to run; the actual YouTube upload
-  // is held inside runJITPipelineForSlot until scheduledPostTime is reached.
-  const in35min  = new Date(now.getTime() + 35 * 60 * 1000).toISOString();
+  // Find scheduled slots due within the NEXT 35 minutes ONLY.
+  // Lower bound: scheduledTime >= now (not in the past — those are caught above).
+  // Upper bound: scheduledTime <= now + 35 min (pipeline lead time).
+  // This is the ONLY window that triggers the pipeline — no other slots fire.
+  const nowMs   = now.getTime();
+  const in35min = new Date(nowMs + 35 * 60 * 1000).toISOString();
   const allTodayScheduled = await slotsCol.find({
     status: 'scheduled', posted: false, date: today,
   }).sort({ scheduledPostTime: 1 }).toArray().catch(e => {
@@ -7594,15 +7698,21 @@ async function runScheduledPosting() {
     const normTime = s.scheduledPostTime
       ? (s.scheduledPostTime.endsWith('Z') ? s.scheduledPostTime : s.scheduledPostTime + 'Z')
       : null;
-    const diffSec  = normTime ? Math.round((new Date(normTime) - now) / 1000) : null;
-    const isDue    = normTime ? new Date(normTime) <= new Date(in35min) : false;
+    const slotTs   = normTime ? new Date(normTime).getTime() : null;
+    const diffSec  = slotTs ? Math.round((slotTs - nowMs) / 1000) : null;
+    const isDue    = slotTs ? (slotTs >= nowMs - 5 * 60 * 1000 && slotTs <= nowMs + 35 * 60 * 1000) : false;
     console.log(`[PostingCron] Slot "${s.title}": scheduledTime=${s.scheduledPostTime}, now=${nowIso}, diffSec=${diffSec}, due=${isDue}`);
   });
 
+  // CRITICAL: only trigger pipeline for slots in window [now - 5min, now + 35min].
+  // Slots scheduled for later today (e.g. 09:00 checked at midnight) must NOT be due yet.
   const dueSlots = allTodayScheduled.filter(s => {
     if (!s.scheduledPostTime) return false;
     const normTime = s.scheduledPostTime.endsWith('Z') ? s.scheduledPostTime : s.scheduledPostTime + 'Z';
-    return new Date(normTime) <= new Date(in35min);
+    const slotTs   = new Date(normTime).getTime();
+    if (isNaN(slotTs)) return false;
+    // Window: started no more than 5 min ago AND starts within next 35 min
+    return slotTs >= nowMs - 5 * 60 * 1000 && slotTs <= nowMs + 35 * 60 * 1000;
   });
 
   if (!dueSlots.length) {
@@ -7681,6 +7791,8 @@ async function runScheduledPosting() {
       console.log(`[PostingCron] JIT pipeline starting for "${fresh.title}" (due ${fresh.scheduledPostTime})`);
       await runJITPipelineForSlot(fresh, user, slotsCol);
       setImmediate(() => maybePreGenerateTomorrow(String(fresh.userId)).catch(() => {}));
+      // Background sweep: retry any thumbnails that failed in the last 24 hours
+      setImmediate(() => retryFailedThumbnails(String(fresh.userId)).catch(() => {}));
     } catch (err) {
       const _jitStepMap = { '1/5': 'script_generation', '2/5': 'thumbnail', '3/5': 'tts', '4/5': 'pexels_fetch', '5/5': 'youtube_upload' };
       const _failStep   = _jitStepMap[err.pipelineStep] || (err.message.includes('upload') ? 'youtube_upload' : err.message.includes('assemble') || err.message.includes('ffmpeg') ? 'ffmpeg' : 'unknown');
