@@ -2693,6 +2693,10 @@ async function seedHooksLibrary() {
   } catch (e) { console.error('[Hooks] Seed failed:', e.message); }
 }
 
+// Hook selection — performance-weighted 70/20/10 split.
+//   70% top performers   (top tertile by avgViews48h / successRate)
+//   20% middle performers (middle tertile)
+//   10% experimental new (timesUsed < 3)
 async function selectHookForSlot(userId, channelId, nicheName) {
   try {
     const col      = agentCol('hooksLibrary');
@@ -2709,18 +2713,46 @@ async function selectHookForSlot(userId, channelId, nicheName) {
     const lastCategory   = recentSlots[0]?.hookCategory || null;
     const nicheCategory  = mapNicheToCategory(nicheName);
 
-    const query = { isActive: true };
-    if (nicheCategory !== 'default') query.nicheAffinities = { $in: [nicheCategory, 'default'] };
+    const baseQuery = { isActive: true };
+    if (nicheCategory !== 'default') baseQuery.nicheAffinities = { $in: [nicheCategory, 'default'] };
     if (recentHookIds.length) {
       try {
         const { ObjectId } = require('mongoose').Types;
-        query._id = { $nin: recentHookIds.map(id => { try { return new ObjectId(id); } catch { return id; } }) };
+        baseQuery._id = { $nin: recentHookIds.map(id => { try { return new ObjectId(id); } catch { return id; } }) };
       } catch {}
     }
-    if (lastCategory) query.category = { $ne: lastCategory };
+    const filteredQuery = { ...baseQuery };
+    if (lastCategory) filteredQuery.category = { $ne: lastCategory };
 
-    let candidates = await col.find(query).sort({ avgEngagementScore: -1 }).limit(5).toArray();
+    // 70/20/10 weighted draw — composite score = avgViews48h normalised + successRate
+    const roll = Math.random();
+    let bucket = 'top'; // 0-0.7
+    if (roll >= 0.9) bucket = 'experimental';
+    else if (roll >= 0.7) bucket = 'middle';
 
+    let candidates = [];
+    if (bucket === 'experimental') {
+      candidates = await col.find({ ...filteredQuery, $or: [{ totalUses: { $lt: 3 } }, { timesUsed: { $lt: 3 } }] })
+        .sort({ generatedAt: -1 }).limit(8).toArray();
+    } else {
+      const ranked = await col.find(filteredQuery).toArray();
+      const score = h => {
+        const succ = Number(h.successRate || 0) / 100;          // 0-1
+        const avg  = Math.min(1, Number(h.avgViews48h || 0) / 5000); // 0-1
+        const eng  = Number(h.avgEngagementScore || 0) / 100;   // legacy fallback
+        return (succ * 0.45) + (avg * 0.4) + (eng * 0.15);
+      };
+      ranked.sort((a, b) => score(b) - score(a));
+      const third = Math.max(1, Math.ceil(ranked.length / 3));
+      const slice = bucket === 'top'
+        ? ranked.slice(0, third)
+        : ranked.slice(third, 2 * third);
+      candidates = slice.slice(0, 8);
+    }
+
+    if (!candidates.length) {
+      candidates = await col.find(filteredQuery).sort({ avgViews48h: -1, avgEngagementScore: -1 }).limit(5).toArray();
+    }
     if (!candidates.length) {
       candidates = await col.find({ isActive: true }).sort({ avgEngagementScore: -1 }).limit(5).toArray();
     }
@@ -2878,6 +2910,487 @@ Return JSON array of exactly 20 objects:
 
     console.log(`[Hooks] Monthly rebuild: ${added} added, ${removed.deletedCount} removed, ${total} total active`);
   } catch (e) { console.error('[Hooks] Monthly rebuild failed:', e.message); }
+}
+
+// =============================================================================
+// VIRALITY ENGINE
+// A) Trend Scanner | B) Hook Performance | E) Hashtags | F) Retention | G) Winners | H) Virality Score
+// =============================================================================
+
+// ─── A) TREND SCANNER ─────────────────────────────────────────────────────────
+// Scans YouTube daily for the top-viewed Shorts in each active niche (last 24h).
+// Saves top 20 to the `trending_topics` collection per niche, plus extracted topic keywords.
+async function runTrendScanner() {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) { console.log('[Trends] Skipped — no YOUTUBE_API_KEY'); return; }
+  try {
+    // Collect distinct active niches across users (channel-level overrides + user-level)
+    const niches = new Set();
+    const users = await User.find({ subscriptionStatus: { $in: ['trial', 'active', 'past_due'] } })
+      .select('nicheName youtubeChannels').lean().catch(() => []);
+    for (const u of users) {
+      if (u.nicheName) niches.add(u.nicheName);
+      for (const ch of (u.youtubeChannels || [])) if (ch.nicheName) niches.add(ch.nicheName);
+    }
+    if (!niches.size) { console.log('[Trends] No active niches — skipping scan'); return; }
+    console.log(`[Trends] Scanning ${niches.size} niche(s): ${[...niches].slice(0, 5).join(', ')}${niches.size > 5 ? '…' : ''}`);
+
+    const col = agentCol('trending_topics');
+    const publishedAfter = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    let scanned = 0;
+
+    for (const niche of niches) {
+      const qc = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null).catch(() => ({ allowed: true }));
+      if (!qc.allowed) { console.warn(`[Trends] Quota guard tripped — stopping after ${scanned} niches`); break; }
+      try {
+        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(niche)}&order=viewCount&type=video&publishedAfter=${encodeURIComponent(publishedAfter)}&videoDuration=short&maxResults=20&key=${apiKey}`;
+        const res = await fetch(url);
+        logYoutubeQuota('search', YOUTUBE_QUOTA_COSTS.search, null).catch(() => {});
+        if (!res.ok) { console.warn(`[Trends] search.list failed for "${niche}": ${res.status}`); continue; }
+        const data = await res.json();
+        const items = data.items || [];
+        if (!items.length) { scanned++; continue; }
+
+        // Pull view counts in one videos.list call (cheap, 1 unit)
+        const ids = items.map(i => i.id?.videoId).filter(Boolean).slice(0, 20);
+        let statsMap = {};
+        if (ids.length) {
+          const vlQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.default, null).catch(() => ({ allowed: true }));
+          if (vlQC.allowed) {
+            try {
+              const vurl = `https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${ids.join(',')}&key=${apiKey}`;
+              const vres = await fetch(vurl);
+              logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, null).catch(() => {});
+              if (vres.ok) {
+                const vdata = await vres.json();
+                for (const v of (vdata.items || [])) statsMap[v.id] = v;
+              }
+            } catch {}
+          }
+        }
+
+        const savedAt = new Date();
+        const docs = items.map(i => {
+          const id    = i.id?.videoId;
+          const stat  = statsMap[id]?.statistics || {};
+          const views = parseInt(stat.viewCount || 0);
+          const pub   = i.snippet?.publishedAt || publishedAfter;
+          const hrs   = Math.max(1, (Date.now() - new Date(pub).getTime()) / 3600000);
+          return {
+            niche,
+            videoId:   id,
+            title:     (i.snippet?.title || '').slice(0, 200),
+            channel:   i.snippet?.channelTitle || '',
+            views,
+            viewsPerHour: Math.round(views / hrs),
+            topic:     '',
+            publishedAt: pub,
+            savedAt,
+          };
+        }).filter(d => d.videoId);
+
+        // Refresh the niche batch — purge previous day's snapshot, write new one
+        await col.deleteMany({ niche, savedAt: { $lt: new Date(Date.now() - 6 * 60 * 60 * 1000) } }).catch(() => {});
+        if (docs.length) await col.insertMany(docs).catch(() => {});
+
+        // Extract topic keywords from titles via OpenAI (best-effort; non-fatal)
+        if (process.env.OPENAI_API_KEY && docs.length >= 3) {
+          try {
+            const { OpenAI } = require('openai');
+            const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+            const titleList = docs.slice(0, 15).map((d, i) => `${i + 1}. ${d.title}`).join('\n');
+            const tr = await openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [{ role: 'user', content: `These are the top YouTube Shorts in the "${niche}" niche from the last 24 hours.
+${titleList}
+
+Return JSON: { "topics": [10 short topic phrases (3-5 words each) that capture what these Shorts are actually about — concrete subjects, not generic words] }` }],
+              temperature: 0.4,
+              response_format: { type: 'json_object' },
+              max_tokens: 400,
+            });
+            const parsed = JSON.parse(tr.choices[0].message.content || '{}');
+            const topics = Array.isArray(parsed.topics) ? parsed.topics.slice(0, 10).map(t => String(t).slice(0, 80)) : [];
+            await agentCol('trending_topic_keywords').updateOne(
+              { niche }, { $set: { niche, topics, updatedAt: new Date() } }, { upsert: true }
+            ).catch(() => {});
+            logAPIUsage('openai', 'trend_topic_extract', null, tr.usage?.total_tokens || 0,
+              (tr.usage?.prompt_tokens || 0) * API_COSTS.openai_input + (tr.usage?.completion_tokens || 0) * API_COSTS.openai_output, true).catch(() => {});
+          } catch (e) { console.warn(`[Trends] Topic extraction failed for "${niche}": ${e.message}`); }
+        }
+        scanned++;
+      } catch (e) { console.warn(`[Trends] Failed for "${niche}": ${e.message}`); }
+    }
+    console.log(`[Trends] Scan complete — ${scanned}/${niches.size} niches updated`);
+  } catch (e) { console.error('[Trends] runTrendScanner fatal:', e.message); }
+}
+
+// Returns up to `limit` trending topic phrases for a niche (today's batch only).
+async function getTrendingTopicsForNiche(niche, limit = 3) {
+  if (!niche) return [];
+  try {
+    const kw = await agentCol('trending_topic_keywords').findOne({ niche }).catch(() => null);
+    if (kw?.topics?.length) return kw.topics.slice(0, limit);
+    // Fall back to raw titles if topic extraction didn't run
+    const docs = await agentCol('trending_topics')
+      .find({ niche, savedAt: { $gte: new Date(Date.now() - 30 * 60 * 60 * 1000) } })
+      .sort({ viewsPerHour: -1 }).limit(limit).toArray().catch(() => []);
+    return docs.map(d => d.title).filter(Boolean).slice(0, limit);
+  } catch { return []; }
+}
+
+// ─── B) HOOK PERFORMANCE TRACKER (48h fetch) ─────────────────────────────────
+// Pulls live view counts for slots posted 36-60 hours ago and updates hook stats
+// (totalUses, avgViews48h, successRate). Also marks winning patterns on the channel
+// when a video crosses 5000 views (cross-video learning, Part 1.G).
+async function updateHookPerformance48h() {
+  try {
+    const slotsCol = agentCol('calendar_slots');
+    const hooksCol = agentCol('hooksLibrary');
+    const now      = Date.now();
+    const lower    = new Date(now - 60 * 60 * 60 * 1000).toISOString();
+    const upper    = new Date(now - 36 * 60 * 60 * 1000).toISOString();
+
+    const slots = await slotsCol.find({
+      posted: true,
+      youtubeVideoId: { $exists: true, $ne: null },
+      postedAt: { $gte: lower, $lte: upper },
+      performance48hChecked: { $ne: true },
+    }).limit(200).toArray();
+
+    if (!slots.length) { console.log('[Hooks48h] No slots in 36-60h window'); return; }
+
+    // Group by user so each YouTube call uses the channel's own OAuth token
+    const byUser = {};
+    for (const s of slots) {
+      const uid = String(s.userId);
+      (byUser[uid] = byUser[uid] || []).push(s);
+    }
+
+    const { google } = require('googleapis');
+    const { ObjectId } = require('mongoose').Types;
+    let processed = 0, winners = 0;
+
+    for (const [uid, userSlots] of Object.entries(byUser)) {
+      const user = await User.findById(uid).catch(() => null);
+      if (!user || !user.youtubeChannels?.length) continue;
+
+      // Group by channel
+      const byChannel = {};
+      for (const s of userSlots) {
+        const cid = s.channelId || user.youtubeChannels[0].channelId;
+        (byChannel[cid] = byChannel[cid] || []).push(s);
+      }
+
+      for (const [channelId, chSlots] of Object.entries(byChannel)) {
+        const channel = user.youtubeChannels.find(c => c.channelId === channelId) || user.youtubeChannels[0];
+        if (!channel?.accessToken) continue;
+        const qc = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.default, uid).catch(() => ({ allowed: true }));
+        if (!qc.allowed) { console.warn(`[Hooks48h] Quota guard — skipping ${channelId}`); continue; }
+
+        const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+        oauth2.setCredentials({ access_token: channel.accessToken, refresh_token: channel.refreshToken });
+        const yt = google.youtube({ version: 'v3', auth: oauth2 });
+        const videoIds = chSlots.map(s => s.youtubeVideoId).filter(Boolean).slice(0, 50);
+        if (!videoIds.length) continue;
+
+        let items = [];
+        try {
+          const r = await yt.videos.list({ part: ['statistics'], id: videoIds });
+          logYoutubeQuota('videos.list', YOUTUBE_QUOTA_COSTS.default, uid).catch(() => {});
+          items = r.data?.items || [];
+        } catch (e) { console.warn(`[Hooks48h] videos.list failed for ${channelId}:`, e.message); continue; }
+
+        const statsMap = {};
+        for (const it of items) statsMap[it.id] = it.statistics || {};
+
+        for (const slot of chSlots) {
+          const st    = statsMap[slot.youtubeVideoId] || {};
+          const views = parseInt(st.viewCount   || 0);
+          const likes = parseInt(st.likeCount   || 0);
+          const cmts  = parseInt(st.commentCount || 0);
+
+          await slotsCol.updateOne(
+            { _id: slot._id },
+            { $set: { performance48h: { views, likes, comments: cmts, checkedAt: new Date() }, performance48hChecked: true } }
+          ).catch(() => {});
+
+          // Update the hook's running stats
+          if (slot.hookId) {
+            try {
+              const oid    = new ObjectId(slot.hookId);
+              const hook   = await hooksCol.findOne({ _id: oid });
+              if (hook) {
+                const prevUses = hook.totalUses    || hook.timesUsed || 0;
+                const prevSucc = hook.successCount || 0;
+                const prevAvg  = hook.avgViews48h  || 0;
+                const newUses  = prevUses + 1;
+                const newAvg   = Math.round(((prevAvg * prevUses) + views) / newUses);
+                const isHit    = views >= 1000;
+                const newSucc  = prevSucc + (isHit ? 1 : 0);
+                const newRate  = newUses > 0 ? Math.round((newSucc / newUses) * 1000) / 10 : 0;
+                await hooksCol.updateOne(
+                  { _id: oid },
+                  { $set: { totalUses: newUses, avgViews48h: newAvg, successCount: newSucc, successRate: newRate, lastPerformanceAt: new Date() } }
+                ).catch(() => {});
+              }
+            } catch {}
+          }
+
+          // G) Cross-video learning — winning pattern
+          if (views >= 5000) {
+            winners++;
+            const winningPattern = {
+              slotId:        String(slot._id),
+              title:         slot.title,
+              views,
+              hookId:        slot.hookId        || null,
+              hookTemplate:  slot.hookTemplate  || null,
+              hashtags:      slot.hashtags      || slot.scriptHashtags || [],
+              postedAt:      slot.postedAt      || null,
+              postedHour:    slot.scheduledPostTime ? new Date(slot.scheduledPostTime).getUTCHours() : null,
+              detectedAt:    new Date(),
+            };
+            await User.updateOne(
+              { _id: uid, 'youtubeChannels.channelId': channelId },
+              { $push: { 'youtubeChannels.$.winningPatterns': { $each: [winningPattern], $slice: -50 } } }
+            ).catch(() => {});
+            console.log(`[VIRALITY] Winner detected slotId=${slot._id} pattern=${slot.hookTemplate ? 'hook="' + slot.hookTemplate.slice(0, 40) + '…"' : 'no-hook'} views=${views}`);
+          }
+
+          processed++;
+        }
+      }
+    }
+    console.log(`[Hooks48h] Processed ${processed} slot(s), detected ${winners} winner(s)`);
+  } catch (e) { console.error('[Hooks48h] fatal:', e.message); }
+}
+
+// ─── E) HASHTAG STRATEGY ─────────────────────────────────────────────────────
+// 3 broad niche + 2 trending + 1 unique-to-video, returned as a deduped array of "#tags".
+async function generateHashtags(script, niche) {
+  const broadByNiche = {
+    'Finance':           ['#finance', '#money', '#wealth'],
+    'Technology':        ['#tech', '#ai', '#future'],
+    'Health & Wellness': ['#health', '#wellness', '#mindset'],
+    'Self Improvement':  ['#selfimprovement', '#mindset', '#growth'],
+    'Business':          ['#business', '#entrepreneur', '#success'],
+    'Entertainment':     ['#viral', '#trending', '#fyp'],
+    'Education':         ['#learn', '#facts', '#education'],
+    'default':           ['#shorts', '#viral', '#trending'],
+  };
+  const category = mapNicheToCategory(niche);
+  const broad    = broadByNiche[category] || broadByNiche.default;
+
+  // 2 trending hashtags — pull from current trending topic phrases, convert to hashtag-safe form
+  let trending = [];
+  try {
+    const topics = await getTrendingTopicsForNiche(niche, 6);
+    trending = topics
+      .map(t => '#' + String(t).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 24))
+      .filter(t => t.length > 4)
+      .slice(0, 2);
+  } catch {}
+  while (trending.length < 2) trending.push('#shorts');
+
+  // 1 unique-to-video — generated from the script's most prominent noun via OpenAI (best-effort).
+  let unique = '#shorts';
+  if (process.env.OPENAI_API_KEY && script) {
+    try {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const r = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: `Read this short video script:\n${String(script).slice(0, 800)}\n\nReturn JSON: { "hashtag": "one short specific hashtag (max 22 chars including #) that names the single most concrete subject of this script. No spaces, lowercase, no punctuation. Must be unique enough to identify this exact video."}` }],
+        temperature: 0.6,
+        response_format: { type: 'json_object' },
+        max_tokens: 60,
+      });
+      const parsed = JSON.parse(r.choices[0].message.content || '{}');
+      let tag = String(parsed.hashtag || '').toLowerCase().replace(/[^a-z0-9#]/g, '');
+      if (!tag.startsWith('#')) tag = '#' + tag;
+      if (tag.length > 4) unique = tag.slice(0, 24);
+      logAPIUsage('openai', 'hashtag_unique', null, r.usage?.total_tokens || 0,
+        (r.usage?.prompt_tokens || 0) * API_COSTS.openai_input + (r.usage?.completion_tokens || 0) * API_COSTS.openai_output, true).catch(() => {});
+    } catch (e) { /* non-fatal */ }
+  }
+
+  const all = [...broad, ...trending, unique, '#shorts', '#youtubeshorts'];
+  const seen = new Set();
+  const out = [];
+  for (const t of all) {
+    const lc = t.toLowerCase();
+    if (seen.has(lc)) continue;
+    seen.add(lc);
+    out.push(t);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+// ─── F) RETENTION ANALYSIS ───────────────────────────────────────────────────
+// Pulls daily-bucket audience-retention data for the last 30 posted videos via
+// YouTube Analytics, identifies drop-off points, and writes channel.retentionInsights.
+async function runRetentionAnalysis() {
+  try {
+    const slotsCol = agentCol('calendar_slots');
+    const users    = await User.find({ 'youtubeChannels.0': { $exists: true }, subscriptionStatus: { $in: ['trial', 'active', 'past_due'] } }).lean();
+    const { google } = require('googleapis');
+    let analysed = 0;
+
+    for (const u of users) {
+      for (const ch of (u.youtubeChannels || [])) {
+        if (!ch.accessToken || !ch.channelId) continue;
+        const recent = await slotsCol.find({
+          userId: String(u._id), channelId: ch.channelId, posted: true,
+          youtubeVideoId: { $exists: true, $ne: null },
+        }).sort({ postedAt: -1 }).limit(30).toArray().catch(() => []);
+        if (recent.length < 5) continue;
+
+        const qc = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.analytics, String(u._id)).catch(() => ({ allowed: true }));
+        if (!qc.allowed) continue;
+
+        const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+        oauth2.setCredentials({ access_token: ch.accessToken, refresh_token: ch.refreshToken });
+        const ytAnalytics = google.youtubeAnalytics({ version: 'v2', auth: oauth2 });
+
+        const ids = recent.map(s => s.youtubeVideoId).slice(0, 30);
+        const endDate   = new Date().toISOString().slice(0, 10);
+        const startDate = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+        // Aggregate retention curve across all recent videos (elapsedVideoTimeRatio dim)
+        let rows = [];
+        try {
+          const r = await ytAnalytics.reports.query({
+            ids: 'channel==MINE',
+            startDate, endDate,
+            metrics: 'audienceWatchRatio,relativeRetentionPerformance',
+            dimensions: 'elapsedVideoTimeRatio',
+            filters: `video==${ids.join(',')}`,
+            sort: 'elapsedVideoTimeRatio',
+          });
+          logYoutubeQuota('analytics', YOUTUBE_QUOTA_COSTS.analytics, String(u._id)).catch(() => {});
+          rows = r.data?.rows || [];
+        } catch (e) { console.warn(`[Retention] reports.query failed for ${ch.channelId}: ${e.message}`); continue; }
+
+        if (!rows.length) continue;
+
+        // Find largest drop-off between adjacent ratio buckets
+        let dropAt = null, dropMag = 0, prev = rows[0][1] || 1;
+        for (let i = 1; i < rows.length; i++) {
+          const cur = rows[i][1] || 0;
+          const diff = prev - cur;
+          if (diff > dropMag) { dropMag = diff; dropAt = rows[i][0]; }
+          prev = cur;
+        }
+
+        // Get avg video duration to convert ratio → seconds (best-effort, assume 55s)
+        const avgDurationSec = 55;
+        const dropSec = dropAt != null ? Math.round(Number(dropAt) * avgDurationSec) : null;
+        const avgRetention = Math.round((rows.reduce((a, r) => a + (r[1] || 0), 0) / rows.length) * 100);
+
+        const insights = [];
+        if (dropSec != null && dropMag > 0.08) {
+          insights.push(`Largest viewer drop-off at ~${dropSec}s (lost ${Math.round(dropMag * 100)}% of audience). Tighten pacing before this point.`);
+        }
+        if (avgRetention >= 55) {
+          insights.push(`Strong avg retention (${avgRetention}%) — keep your current hook + script structure.`);
+        } else if (avgRetention >= 40) {
+          insights.push(`Moderate retention (${avgRetention}%). Faster hooks and shorter sentences usually lift this to 55%+.`);
+        } else {
+          insights.push(`Low avg retention (${avgRetention}%). Cut intros, lead with the payoff tease, and aim for sub-50s videos.`);
+        }
+        insights.push(`Tip: videos under 45 seconds typically retain better in your niche — the AI is biased toward this length going forward.`);
+
+        const payload = {
+          generatedAt: new Date(),
+          videosAnalysed: ids.length,
+          avgRetentionPct: avgRetention,
+          biggestDropAtSec: dropSec,
+          biggestDropPct:   Math.round(dropMag * 100),
+          curve: rows.slice(0, 20).map(r => ({ ratio: Number(r[0]), retention: Number(r[1] || 0) })),
+          insights,
+        };
+
+        await User.updateOne(
+          { _id: u._id, 'youtubeChannels.channelId': ch.channelId },
+          { $set: { 'youtubeChannels.$.retentionInsights': payload } }
+        ).catch(() => {});
+        analysed++;
+      }
+    }
+    console.log(`[Retention] Analysed ${analysed} channel(s)`);
+  } catch (e) { console.error('[Retention] fatal:', e.message); }
+}
+
+// ─── H) VIRALITY SCORE ──────────────────────────────────────────────────────
+// Returns 0-100 + breakdown. Inputs:
+//   hookHistorical (object|null): hook doc from hooksLibrary, scored on avgViews48h/successRate
+//   trendAlignment (number 0-1):  fraction of trending-topic words present in title
+//   title (string)
+//   wordCount (number): script length — used for length sweet-spot (28-45s = 60-100 words)
+//   hashtags (array): generated hashtags
+function calculateViralityScore({ hookHistorical = null, trendAlignment = 0, title = '', wordCount = 0, hashtags = [] } = {}) {
+  // Hook strength (35 pts)
+  let hook = 12; // default if no historical data
+  if (hookHistorical) {
+    const succ = Number(hookHistorical.successRate || 0);   // 0-100
+    const avg  = Number(hookHistorical.avgViews48h || 0);   // raw views
+    const avgNorm = Math.min(1, avg / 5000);                 // 5K views = max
+    hook = Math.round(35 * (0.6 * (succ / 100) + 0.4 * avgNorm));
+    if (hook < 6) hook = 6;
+  }
+  hook = Math.min(35, hook);
+
+  // Trend alignment (25 pts) — linear on coverage ratio
+  const trend = Math.min(25, Math.round(25 * Math.max(0, Math.min(1, trendAlignment))));
+
+  // Title psychology (15 pts) — questions, numbers, controversy/curiosity words
+  const t = String(title || '');
+  let title15 = 0;
+  if (/\?$/.test(t.trim())) title15 += 5;
+  if (/\b\d+\b/.test(t)) title15 += 4;
+  if (/\b(why|how|the|never|always|secret|nobody|wrong|truth|hack|stop|warning|mistake)\b/i.test(t)) title15 += 4;
+  if (t.length >= 30 && t.length <= 60) title15 += 2;
+  title15 = Math.min(15, title15);
+
+  // Length optimisation (10 pts) — 60-100 words ≈ 28-45s sweet spot
+  let len10 = 4;
+  if (wordCount >= 60 && wordCount <= 100) len10 = 10;
+  else if (wordCount >= 50 && wordCount <= 130) len10 = 7;
+  else if (wordCount >= 40 && wordCount <= 160) len10 = 5;
+
+  // Hashtag strength (15 pts) — diversity + presence of #shorts/#trending/unique
+  const tagCount = Array.isArray(hashtags) ? hashtags.length : 0;
+  let tag15 = 0;
+  if (tagCount >= 6) tag15 += 6;
+  else if (tagCount >= 4) tag15 += 4;
+  else if (tagCount >= 2) tag15 += 2;
+  const tagStr = (hashtags || []).join(' ').toLowerCase();
+  if (/#shorts/.test(tagStr)) tag15 += 3;
+  if (/#trending|#viral|#fyp/.test(tagStr)) tag15 += 3;
+  if (tagCount >= 6 && new Set(hashtags).size === tagCount) tag15 += 3; // all unique
+  tag15 = Math.min(15, tag15);
+
+  const total = hook + trend + title15 + len10 + tag15;
+  return {
+    score: Math.max(0, Math.min(100, total)),
+    breakdown: { hook, trend, title: title15, length: len10, hashtags: tag15 },
+  };
+}
+
+// Helper: count fraction of trending-topic keywords present in a title.
+function computeTrendAlignment(title, trendingTopics = []) {
+  if (!title || !trendingTopics?.length) return 0;
+  const titleLc = String(title).toLowerCase();
+  let hits = 0, total = 0;
+  for (const topic of trendingTopics) {
+    const words = String(topic).toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+    if (!words.length) continue;
+    total++;
+    if (words.some(w => titleLc.includes(w))) hits++;
+  }
+  return total ? hits / total : 0;
 }
 
 // =============================================================================
@@ -3321,12 +3834,26 @@ app.get('/api/optimisation/insights', requireAuth, async (req, res) => {
       { projection: { weeklyInsights: 1, nicheName: 1, generatedAt: 1, weeklyRefreshedAt: 1 } }
     );
     const wi = doc?.weeklyInsights || null;
+
+    // Surface retentionInsights + winningPatterns from the user's primary channel
+    let retentionInsights = null, winningPatterns = [];
+    try {
+      const user = await User.findById(req.user.id).select('youtubeChannels').lean();
+      const ch   = (user?.youtubeChannels || [])[0];
+      if (ch) {
+        retentionInsights = ch.retentionInsights || null;
+        winningPatterns   = Array.isArray(ch.winningPatterns) ? ch.winningPatterns.slice(-10).reverse() : [];
+      }
+    } catch {}
+
     res.json({
       success:           true,
       weeklyInsights:    wi,
       nicheName:         doc?.nicheName         || null,
       generatedAt:       doc?.generatedAt       || null,
       weeklyRefreshedAt: doc?.weeklyRefreshedAt || null,
+      retentionInsights,
+      winningPatterns,
     });
   } catch (err) {
     console.error('[Optimisation] GET /insights error:', err);
@@ -3362,15 +3889,42 @@ app.get('/api/optimisation/stats', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/content/queue — pending/approved calendar slots awaiting review or posting
+// GET /api/content/queue — pending/approved calendar slots awaiting review or posting.
+// Enriches each item with virality + hashtag data from the calendar_slots collection.
 app.get('/api/content/queue', requireAuth, async (req, res) => {
   try {
     const col      = await agentCol('content_calendars');
+    const slotsCol = agentCol('calendar_slots');
     const calendar = await col.findOne({ userId: req.user.id, status: 'active' });
     if (!calendar) return res.json({ success: true, items: [], count: 0 });
-    const items = (calendar.slots || [])
+
+    const baseItems = (calendar.slots || [])
       .filter(s => !s.posted && ['planned', 'pending', 'approved'].includes(s.status))
       .map(s => ({ ...s, slotId: `${s.day}_${s.videoIndex || 1}` }));
+
+    // Enrich from calendar_slots (which carries virality/hashtags/hook metadata)
+    const liveDocs = await slotsCol.find({
+      userId: req.user.id,
+      day:    { $in: baseItems.map(i => i.day) },
+    }).project({
+      day: 1, videoIndex: 1, viralityScore: 1, viralityBreakdown: 1,
+      hashtags: 1, hookTemplate: 1, trendingTopicsUsed: 1, scriptContext: 1,
+    }).toArray().catch(() => []);
+    const liveMap = {};
+    for (const d of liveDocs) liveMap[`${d.day}_${d.videoIndex || 1}`] = d;
+
+    const items = baseItems.map(i => {
+      const live = liveMap[i.slotId] || {};
+      return {
+        ...i,
+        viralityScore:      live.viralityScore      ?? i.viralityScore      ?? null,
+        viralityBreakdown:  live.viralityBreakdown  ?? i.viralityBreakdown  ?? null,
+        hashtags:           live.hashtags           ?? i.hashtags           ?? [],
+        hookTemplate:       live.hookTemplate       ?? i.hookTemplate       ?? null,
+        trendingTopicsUsed: live.trendingTopicsUsed ?? i.trendingTopicsUsed ?? [],
+      };
+    });
+
     res.json({ success: true, items, count: items.length });
   } catch (err) {
     console.error('[ContentQueue] GET /queue error:', err);
@@ -5578,6 +6132,13 @@ async function pipelineGenerateScript(title, nicheName, type, hookTemplate, user
     ? await fetchScriptContext(userId, channelId)
     : { competitors: [], pastSlots: [] };
 
+  // A) Trending topic injection — top 3 trending phrases for the niche
+  let trendingTopics = [];
+  try { trendingTopics = await getTrendingTopicsForNiche(nicheName, 3); } catch {}
+  const trendingBlock = trendingTopics.length
+    ? `TRENDING NOW IN THIS NICHE (last 24 h):\n${trendingTopics.map(t => `• ${t}`).join('\n')}\nThese topics are trending RIGHT NOW in this niche — consider tying scripts to similar themes if relevant.\n\n`
+    : '';
+
   const hookInstruction = hookTemplate
     ? `\nOPENING HOOK (mandatory first line): Your script MUST begin with this exact hook verbatim (replace [TOPIC] with the video topic): "${hookTemplate}". Do NOT modify, paraphrase, or skip this hook under any circumstances.`
     : '';
@@ -5602,10 +6163,11 @@ async function pipelineGenerateScript(title, nicheName, type, hookTemplate, user
     : '';
 
   const scriptContext = {
-    competitorsUsed: competitors.map(c => c.channelName),
-    pastVideosUsed:  pastSlots.length,
-    hookUsed:        hookTemplate || null,
-    promptLength:    0, // filled in after prompt is built
+    competitorsUsed:  competitors.map(c => c.channelName),
+    pastVideosUsed:   pastSlots.length,
+    hookUsed:         hookTemplate || null,
+    trendingTopics:   trendingTopics.slice(0, 3),
+    promptLength:     0, // filled in after prompt is built
   };
 
   if (type === 'Long-form') {
@@ -5630,10 +6192,15 @@ async function pipelineGenerateScript(title, nicheName, type, hookTemplate, user
 Write a viral-optimised Shorts script for the video: "${title}"
 ${hookInstruction}
 
-${competitorBlock}${pastVideosBlock}STRICT RULES:
+${trendingBlock}${competitorBlock}${pastVideosBlock}STRICT RULES:
 1. HOOK (first 3 seconds): ${hookTemplate ? `Use the mandatory hook above verbatim (replace [TOPIC] with the video topic). Do NOT modify it.` : `Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.`}
 2. LENGTH: Script must be EXACTLY 130-150 words total. This is a hard requirement — do NOT write fewer than 130 words under any circumstances. Count every word. 130-150 words at natural speaking pace produces a 55-65 second video.
-3. STRUCTURE: Hook (5 sec) → 5 value-packed points with examples (40 sec) → powerful call-to-action + Loop ending (10 sec). The LAST sentence MUST echo or reference the hook to create a rewatch loop.
+3. CURIOSITY-GAP STRUCTURE (mandatory — follow line by line):
+   • Line 1: The Hook (above).
+   • Lines 2-4: Tease the answer/payoff but DO NOT reveal it. Hint at the surprise, name the stakes, and promise the reveal is coming.
+   • Lines 5-8: Build context, raise the stakes, give one concrete example or contrast that makes the audience need the answer.
+   • Final 2 sentences: The reveal/payoff — and the very LAST sentence must echo or reference the hook to create a rewatch loop.
+   HARD RULE: Never reveal the main answer until the final 2 sentences. Build anticipation throughout.
 4. STYLE: Short punchy sentences only. Zero filler words (no "basically", "actually", "you know"). Every sentence adds new information or a concrete example.
 5. TITLE: Generate a viral title using power words. Format: "[Number] [Topic] That [Surprising Outcome]" OR "Why [Common Belief] Is Wrong" OR "The [Topic] Secret Nobody Tells You".
 6. HASHTAGS: Generate exactly 5 hashtags relevant to the ${nicheName} niche.
@@ -5698,13 +6265,14 @@ Return valid JSON only — no prose, no markdown:
   }
 
   return {
-    title:      best.title      || title,
-    script:     best.script     || '',
-    hook:       best.hook       || '',
-    loopEnding: best.loopEnding || '',
-    captions:   Array.isArray(best.captions)  ? best.captions.slice(0, 200)  : [],
-    hashtags:   Array.isArray(best.hashtags)  ? best.hashtags.slice(0, 5)    : [],
-    wordCount:  best.wordCount  || 0,
+    title:          best.title      || title,
+    script:         best.script     || '',
+    hook:           best.hook       || '',
+    loopEnding:     best.loopEnding || '',
+    captions:       Array.isArray(best.captions)  ? best.captions.slice(0, 200)  : [],
+    hashtags:       Array.isArray(best.hashtags)  ? best.hashtags.slice(0, 5)    : [],
+    wordCount:      best.wordCount  || 0,
+    trendingTopics: trendingTopics.slice(0, 3),
     scriptContext,
   };
 }
@@ -6414,7 +6982,7 @@ function generateSRTFile(captions, slotId) {
 // Step 4 — Assemble: concat clips, burn-in drawtext captions (Shorts only), mix voiceover + background music
 // styleConfig: { captionFont, colorScheme, musicGenre, introText } — all optional, defaults applied if absent.
 // If the captions filter fails, retries without captions.
-async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true, styleConfig = null) {
+async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captions = [], isShort = true, styleConfig = null, hookText = '') {
   const fs   = require('fs');
   const path = require('path');
   const runId = Date.now();
@@ -6449,14 +7017,35 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   }
 
   const n       = clipPaths.length;
-  const clipDur = 8; // 8s per clip × 8 clips = 64s footage — covers a 55-65s voiceover with headroom
+  const clipDur = 8; // base duration per clip (overridden for first segment to create a jump cut)
 
-  // Base filter parts: scale/crop/trim each clip, then concat
+  // ─── Pattern-interrupt cut plan ─────────────────────────────────────────────
+  // First 3 s of the video must feel snappy:
+  //   • clip 0 → 0.0-1.5 s  (sharp jump cut at 1.5 s)
+  //   • clip 1 → 1.5-4.5 s  (3 s burst — high-contrast feel)
+  //   • clips 2+ → 4-5 s segments with subtle zoom-in (Ken Burns) on alternates
+  // Each clip is forced to be cut every 4-5 s thereafter for visual variety.
   const baseParts = [];
   for (let i = 0; i < n; i++) {
+    let segDur;
+    if (i === 0)       segDur = 1.5;
+    else if (i === 1)  segDur = 3.0;
+    else               segDur = 4.5; // 4-5 s cuts maintain attention
+
+    // Higher-contrast eq for the first two segments to give visual punch
+    const contrast = (i < 2) ? `,eq=contrast=1.18:saturation=1.12` : '';
+
+    // Subtle Ken Burns zoom on alternating clips (every other clip past clip 1)
+    // zoompan input is 25 fps assumed; zoom from 1.0 → 1.08 across the segment.
+    let zoom = '';
+    if (i >= 2 && i % 2 === 0) {
+      const frames = Math.round(segDur * 25);
+      zoom = `,zoompan=z='min(zoom+0.0015,1.08)':d=${frames}:s=1080x1920:fps=25`;
+    }
+
     baseParts.push(
       `[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,` +
-      `crop=1080:1920,setsar=1,trim=0:${clipDur},setpts=PTS-STARTPTS[v${i}]`
+      `crop=1080:1920,setsar=1${contrast}${zoom},trim=0:${segDur},setpts=PTS-STARTPTS[v${i}]`
     );
   }
   const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join('');
@@ -6471,8 +7060,38 @@ async function pipelineAssembleVideo(footageClips, audioPath, outputPath, captio
   console.log(`[DIAG] pipelineAssembleVideo — isShort=${isShort}, captions.length=${captions.length}, genre=${styleConfig?.musicGenre||'ambient'}, captions sample:`, JSON.stringify(captions.slice(0,2)));
   const drawtextFilters = (isShort && captions.length > 0) ? buildDrawtextFilters(captions, styleConfig) : [];
 
-  // Optional 2-second intro text overlay (Shorts only)
-  const introText = isShort ? sanitizeCaptionText(styleConfig?.introText || '') : '';
+  // ─── Pattern-interrupt: BIG hook overlay in the first 3 seconds ─────────────
+  // Renders the hook text at fontsize=72, centered, with a fade-in over 0-0.6 s
+  // and a fade-out at 2.6-3.0 s. Auto-wraps to two lines if longer than 18 chars.
+  const hookOverlayText = isShort ? sanitizeCaptionText(hookText || '') : '';
+  if (hookOverlayText) {
+    const hookFont = CAPTION_FONT_PATHS.bold ? `:fontfile='${CAPTION_FONT_PATHS.bold}'` : '';
+    // Split into two lines for readability if >18 chars
+    let line1 = hookOverlayText, line2 = '';
+    if (hookOverlayText.length > 18) {
+      const words = hookOverlayText.split(/\s+/);
+      let split = Math.ceil(words.length / 2);
+      line1 = words.slice(0, split).join(' ');
+      line2 = words.slice(split).join(' ');
+    }
+    // Fade alpha: ramp in 0→1 between 0 and 0.6 s, hold, ramp 1→0 between 2.6 and 3.0 s
+    const alphaExpr = `'if(lt(t,0.6),t/0.6,if(lt(t,2.6),1,if(lt(t,3.0),(3.0-t)/0.4,0)))'`;
+    drawtextFilters.unshift(
+      `drawtext=text='${line1}':fontsize=72${hookFont}:fontcolor=#FFFFFF` +
+      `:borderw=6:bordercolor=black:box=0` +
+      `:x=(w-text_w)/2:y=h*0.32:alpha=${alphaExpr}:enable='between(t,0,3)'`
+    );
+    if (line2) {
+      drawtextFilters.unshift(
+        `drawtext=text='${line2}':fontsize=72${hookFont}:fontcolor=#FFE500` +
+        `:borderw=6:bordercolor=black:box=0` +
+        `:x=(w-text_w)/2:y=h*0.32+90:alpha=${alphaExpr}:enable='between(t,0,3)'`
+      );
+    }
+  }
+
+  // Optional 2-second intro text overlay (Shorts only) — only if no hook overlay is set
+  const introText = (isShort && !hookOverlayText) ? sanitizeCaptionText(styleConfig?.introText || '') : '';
   if (introText) {
     const introFont = CAPTION_FONT_PATHS.bold ? `:fontfile='${CAPTION_FONT_PATHS.bold}'` : '';
     drawtextFilters.unshift(
@@ -6585,11 +7204,19 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   const uploadTitle = isShort && !title.includes('#Shorts')
     ? (title + ' #Shorts').slice(0, 100)
     : title.slice(0, 100);
+  // If caller provided hashtags, the description already contains them — don't double-up.
+  const callerHashtags = Array.isArray(options.hashtags) ? options.hashtags : [];
+  const descHasHashtags = /#\w+/.test(description || '');
   const uploadDesc  = ((description || title).slice(0, 4800)) +
-    (isShort ? '\n\n#Shorts #YouTubeShorts #viral' : '');
-  const uploadTags  = isShort
+    (isShort && !descHasHashtags ? '\n\n#Shorts #YouTubeShorts #viral' : '');
+  const baseTags = isShort
     ? ['shorts', 'youtube shorts', 'viral', 'trending']
     : ['youtube', 'educational'];
+  const fromHashtags = callerHashtags
+    .map(h => String(h || '').replace(/^#/, '').trim())
+    .filter(t => t.length > 1 && t.length <= 30);
+  // YouTube tag list max is 500 chars total; we cap at 15 tags.
+  const uploadTags = [...new Set([...baseTags, ...fromHashtags])].slice(0, 15);
 
   const tryUpload = async (accessToken) => {
     oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
@@ -6909,17 +7536,59 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       ).catch(() => {});
     }
 
-    const scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '');
-    const script     = scriptData.script;
+    // ── H) Virality Score — generate script, score it, regenerate (max 2x) if score < 50 ──
+    let scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '');
+    let hashtagsForUpload = await generateHashtags(scriptData.script, nicheName).catch(() => scriptData.hashtags || []);
+    let viralityResult = (function () {
+      const align = computeTrendAlignment(scriptData.title || slotDoc.title, scriptData.trendingTopics || []);
+      return calculateViralityScore({
+        hookHistorical: selectedHook,
+        trendAlignment: align,
+        title:          scriptData.title || slotDoc.title,
+        wordCount:      scriptData.wordCount || 0,
+        hashtags:       hashtagsForUpload,
+      });
+    })();
+
+    if (viralityResult.score < 50 && (slotDoc.type !== 'Long-form')) {
+      for (let vAttempt = 1; vAttempt <= 2; vAttempt++) {
+        console.log(`[VIRALITY] Score ${viralityResult.score} < 50 — regenerating (attempt ${vAttempt}/2)`);
+        const retry = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '');
+        const retryTags = await generateHashtags(retry.script, nicheName).catch(() => retry.hashtags || []);
+        const align = computeTrendAlignment(retry.title || slotDoc.title, retry.trendingTopics || []);
+        const retryScore = calculateViralityScore({
+          hookHistorical: selectedHook,
+          trendAlignment: align,
+          title:          retry.title || slotDoc.title,
+          wordCount:      retry.wordCount || 0,
+          hashtags:       retryTags,
+        });
+        if (retryScore.score > viralityResult.score) {
+          scriptData = retry;
+          hashtagsForUpload = retryTags;
+          viralityResult = retryScore;
+        }
+        if (viralityResult.score >= 50) break;
+      }
+      console.log(`[VIRALITY] Final score after regenerate: ${viralityResult.score}`);
+    } else {
+      console.log(`[VIRALITY] Score=${viralityResult.score} breakdown=${JSON.stringify(viralityResult.breakdown)}`);
+    }
+
+    const script = scriptData.script;
     await setStatus({
       scriptText: script, scriptCaptions: scriptData.captions,
       cachedScript: script.slice(0, 2000), pipelineStatus: 'script-done',
       hookId, hookCategory, hookTemplate: selectedHook?.template || null,
-      scriptContext: scriptData.scriptContext || null,
+      scriptContext:   scriptData.scriptContext || null,
+      hashtags:        hashtagsForUpload,
+      viralityScore:   viralityResult.score,
+      viralityBreakdown: viralityResult.breakdown,
+      trendingTopicsUsed: scriptData.trendingTopics || [],
     });
     PIPELINE_STATUS.todayStats.generated++;
-    console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words`);
-    logActivity('script_generated', 'success', `Script OK — ${scriptData.wordCount} words`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), wordCount: scriptData.wordCount });
+    console.log(`[JIT] 1/5 Done — ${scriptData.wordCount} words, virality=${viralityResult.score}, hashtags=${hashtagsForUpload.length}`);
+    logActivity('script_generated', 'success', `Script OK — ${scriptData.wordCount} words, virality=${viralityResult.score}`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), wordCount: scriptData.wordCount, viralityScore: viralityResult.score });
 
     // 2/5 Thumbnail — skipped only when channel is CONFIRMED ineligible (thumbnailsEnabled === false).
     // Missing or null thumbnailsEnabled is treated as eligible (optimistic attempt).
@@ -6983,7 +7652,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
     console.log(`[JIT] 5/5 Assembling "${slotDoc.title}" → ${outPath} (style: font=${channel.styleConfig?.captionFont||'clean'} color=${channel.styleConfig?.colorScheme||'white-yellow'} music=${channel.styleConfig?.musicGenre||'ambient'})`);
     await setStatus({ pipelineStatus: 'assembling' });
-    await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort, channel.styleConfig || null);
+    await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort, channel.styleConfig || null, scriptData?.hook || selectedHook?.template || '');
     logActivity('video_assembled', 'success', `Video assembled: "${slotDoc.title}"`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId) });
 
     // ── Hold until the exact scheduled post time — never upload early.
@@ -7010,11 +7679,15 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
 
     console.log(`[JIT] Uploading "${slotDoc.title}"`);
     await setStatus({ pipelineStatus: 'uploading' });
-    const description = script.slice(0, 4800) || slotDoc.title;
+    const hashtagLine = (Array.isArray(hashtagsForUpload) && hashtagsForUpload.length)
+      ? '\n\n' + hashtagsForUpload.join(' ')
+      : '';
+    const description = (script.slice(0, 4600) || slotDoc.title) + hashtagLine;
     const ytId = await pipelineUploadToYouTube(outPath, slotDoc.title, description, channel, isShort, {
       thumbPath,
-      userId:  String(slotDoc.userId),
-      slotId:  String(slotId),
+      userId:   String(slotDoc.userId),
+      slotId:   String(slotId),
+      hashtags: hashtagsForUpload,
     });
 
     await setStatus({
@@ -7361,7 +8034,7 @@ async function runAssembleAndUpload(calendar, slot, user, calCol, channel) {
     // Assemble — use channel's styleConfig if available
     const assembleStyle = channel?.styleConfig || null;
     console.log(`[AssembleUpload] 3/3 Assembling "${slot.title}" → ${outPath} (style: font=${assembleStyle?.captionFont||'clean'} color=${assembleStyle?.colorScheme||'white-yellow'} music=${assembleStyle?.musicGenre||'ambient'})`);
-    await pipelineAssembleVideo(footageClips, audioPath, outPath, captions, isShort, assembleStyle);
+    await pipelineAssembleVideo(footageClips, audioPath, outPath, captions, isShort, assembleStyle, slot.hookTemplate || slot.scriptHook || '');
 
     // Upload
     const description = slot.cachedScript || scriptText || slot.title;
@@ -9804,6 +10477,25 @@ function registerCronJobs() {
   cron.schedule('0 1 1 * *', async () => {
     console.log('[Hooks] Monthly rebuild cron starting...');
     await rebuildHooksMonthly().catch(e => console.error('[Hooks] Monthly rebuild error:', e.message));
+  }, { timezone: 'UTC' });
+
+  // ─── VIRALITY ENGINE CRONS ─────────────────────────────────────────────────
+  // A) Trend scanner — daily at 03:00 UTC
+  cron.schedule('0 3 * * *', async () => {
+    console.log('[Trends] Daily trend scanner cron starting...');
+    await runTrendScanner().catch(e => console.error('[Trends] cron error:', e.message));
+  }, { timezone: 'UTC' });
+
+  // B) Hook performance / 48h tracker + winning patterns — every 6 hours
+  cron.schedule('17 */6 * * *', async () => {
+    console.log('[Hooks48h] 48h performance check starting...');
+    await updateHookPerformance48h().catch(e => console.error('[Hooks48h] cron error:', e.message));
+  }, { timezone: 'UTC' });
+
+  // F) Retention analysis — weekly, Tuesday 04:00 UTC
+  cron.schedule('0 4 * * 2', async () => {
+    console.log('[Retention] Weekly retention analysis cron starting...');
+    await runRetentionAnalysis().catch(e => console.error('[Retention] cron error:', e.message));
   }, { timezone: 'UTC' });
 
   cronJobsRegistered = true;

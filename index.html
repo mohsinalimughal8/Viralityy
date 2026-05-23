@@ -618,8 +618,9 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <span class="ob-dot"></span>
       <span class="ob-dot"></span>
       <span class="ob-dot"></span>
+      <span class="ob-dot"></span>
     </div>
-    <span id="ob-step-label">Step 1 of 4</span>
+    <span id="ob-step-label">Step 1 of 5</span>
   </div>
   <div id="ob-icon"></div>
   <div>
@@ -664,6 +665,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <a class="btn btn-primary btn-lg" onclick="nav('signup')">Start free — no credit card →</a>
       <a class="btn btn-ghost btn-lg" onclick="nav('signup')">See how it works →</a>
     </div>
+    <p style="font-size:.72rem;opacity:.6;max-width:600px;margin:0 auto .9rem;text-align:center;line-height:1.6;color:var(--text2)">Viralityy makes consistent, high-quality content effortless — virality depends on niche, audience, and consistency. Most channels see meaningful growth after 30–60 days of consistent posting.</p>
     <p class="hero-social-proof">Join <strong>2,400+</strong> creators already growing with Viralityy</p>
     <div class="hero-demo-preview">
       <div class="demo-bar">
@@ -760,6 +762,7 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <div class="faq-item"><p class="faq-q" onclick="toggleFaq(this)">Do I need to film or edit anything?<svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p><p class="faq-a">No. Viralityy generates everything from scratch using AI — scripts, voiceovers, visuals, subtitles and music. You don't need a camera, microphone or any editing software.</p></div>
       <div class="faq-item"><p class="faq-q" onclick="toggleFaq(this)">Will YouTube flag my channel as AI-generated?<svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p><p class="faq-a">We run every video through a 6-pass quality process and automatically add YouTube's AI disclosure tag. Videos are compliant with YouTube's current policies on AI-assisted content.</p></div>
       <div class="faq-item"><p class="faq-q" onclick="toggleFaq(this)">How long until I see results?<svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p><p class="faq-a">Most channels start seeing consistent view growth within 3–4 weeks. The AI optimisation loop kicks in after 10–15 videos and measurably improves performance month over month.</p></div>
+      <div class="faq-item"><p class="faq-q" onclick="toggleFaq(this)">Will my videos go viral?<svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p><p class="faq-a">Viralityy doesn't promise virality — we promise consistency. The platform handles daily content creation, posting, and optimisation so you can build the foundation that makes virality possible. Most successful channels grow steadily over 30–90 days through consistent quality output. Some videos may go viral; most will steadily build your audience.</p></div>
       <div class="faq-item"><p class="faq-q" onclick="toggleFaq(this)">Can I review videos before they post?<svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p><p class="faq-a">Yes. Every video goes into a 24-hour preview queue where you can approve, skip, or request edits. If you don't act, videos auto-post — or you can turn that off.</p></div>
       <div class="faq-item"><p class="faq-q" onclick="toggleFaq(this)">Can I cancel any time?<svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></p><p class="faq-a">Yes. Cancel any time from your dashboard — no questions, no penalties. Your channel content stays live on YouTube even after cancellation.</p></div>
     </div>
@@ -1110,6 +1113,10 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
       <button onclick="showInfoModal('Dashboard','Your command centre. Shows live stats from your connected YouTube channels including views, subscribers and videos posted. Updates every 30 minutes.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
     </div>
   </div>
+  <!-- Success Tips banner (shown for first 30 days only — set by initOverview) -->
+  <div id="success-tips-banner" style="display:none;background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(236,72,153,.08));border:1px solid rgba(99,102,241,.25);border-radius:10px;padding:.8rem 1rem;margin-bottom:1rem;font-size:.78rem;color:var(--text2);line-height:1.55">
+    <span style="font-size:1rem;margin-right:6px">📈</span><strong style="color:var(--text)">Pro tip: Consistency beats perfection.</strong> The most successful Viralityy users post daily for 30+ days before seeing real traction. The platform is doing the work — give the algorithm time to learn.
+  </div>
   <div id="thumb-warn-dashboard" style="display:none"></div>
   <div class="stats-row">
     <div class="stat-card"><p class="sc-label">Total views</p><p class="sc-value" id="ov-views">—</p><p class="sc-sub" id="ov-views-sub">Channel lifetime</p></div>
@@ -1318,6 +1325,22 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
     <h4>Hooks Library <span class="hl-badge" id="hooks-total-badge">Loading…</span></h4>
     <div id="hooks-lib-content">
       <p style="font-size:.78rem;color:var(--text3)">Loading hooks data…</p>
+    </div>
+  </div>
+
+  <!-- Retention Insights — viewer drop-off analysis from YouTube Analytics -->
+  <div class="card-block" style="margin-top:14px" id="retention-insights-block">
+    <h4>Audience Retention Insights <span style="font-size:.65rem;color:var(--text3);font-weight:500;margin-left:6px">Updated weekly</span></h4>
+    <div id="retention-insights-content" style="margin-top:.6rem">
+      <p style="font-size:.78rem;color:var(--text3)">Loading retention analysis…</p>
+    </div>
+  </div>
+
+  <!-- Winning Patterns — videos with >5K views in 48h -->
+  <div class="card-block" style="margin-top:12px" id="winning-patterns-block">
+    <h4>Winning Patterns <span style="font-size:.65rem;color:var(--text3);font-weight:500;margin-left:6px">Auto-detected when a video crosses 5,000 views in 48h</span></h4>
+    <div id="winning-patterns-content" style="margin-top:.6rem">
+      <p style="font-size:.78rem;color:var(--text3)">No winning patterns detected yet — they appear when a video crosses 5,000 views within 48 hours of posting.</p>
     </div>
   </div>
 </div>
@@ -1684,6 +1707,9 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 
   <h2>12. Limitation of Liability</h2>
   <p>Viralityy is provided on an "as is" and "as available" basis without warranties of any kind. Viralityy makes no warranties regarding uptime, content quality, or YouTube performance results. Viralityy shall not be liable for any indirect, incidental, or consequential damages, including but not limited to loss of revenue, subscribers, or YouTube channel standing. Viralityy's total liability shall not exceed the amount paid by you in the 30 days preceding the claim.</p>
+
+  <h2>12a. No Guarantee of Results</h2>
+  <p>Viralityy provides automated content creation and posting tools. We do not guarantee views, subscribers, revenue, or virality. Results depend on your niche, content quality, and consistency. Performance figures, testimonials and case studies shown on the marketing site reflect individual experiences and are not representative of typical outcomes.</p>
 
   <h2>13. Indemnification</h2>
   <p>You agree to indemnify and hold harmless Viralityy and its operators from any claims, damages, losses, or expenses (including legal fees) arising from your use of the Service, your content, or your violation of these Terms.</p>
@@ -2810,6 +2836,12 @@ const OB_STEPS = [
     action: () => dashPage('niches', document.querySelector('[onclick="dashPage(\'niches\',this)"]')),
   },
   {
+    icon: '📈',
+    title: 'Set realistic expectations',
+    body: 'Viralityy automates the hard work of creating and posting consistent content daily. Channels typically see meaningful growth after 30–60 days. Stick with it!',
+    target: null,
+  },
+  {
     icon: '🚀',
     title: "You're all set!",
     body: "That's everything. Viralityy's pipeline now runs automatically — writing scripts, generating voiceovers, assembling videos and posting them. Check your dashboard tomorrow for your first results.",
@@ -2943,6 +2975,15 @@ async function updateSidebarBadges() {
 // ════════════════════════════════════════════
 async function initOverview() {
   const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+
+  // Success Tips banner — show for first 30 days from account creation
+  try {
+    const banner = document.getElementById('success-tips-banner');
+    if (banner && CURRENT_USER?.createdAt) {
+      const ageDays = (Date.now() - new Date(CURRENT_USER.createdAt).getTime()) / 86400000;
+      if (ageDays <= 30) banner.style.display = 'block';
+    }
+  } catch {}
 
   ensureThumbnailWarnings(); // non-blocking — updates banners when channel data arrives
 
@@ -3495,6 +3536,20 @@ function renderQueue() {
     const hasPreview = !!q.previewReadyAt;
     const statusLabel = q.status === 'posted' ? '<span style="color:var(--green);font-size:.69rem;font-weight:600">✓ Posted</span>' : q.status === 'processing' ? '<span style="color:#a5b4fc;font-size:.69rem;font-weight:600">⟳ Processing</span>' : '';
 
+    // Virality score chip (0-100) — colour-coded
+    let viralityHtml = '';
+    if (typeof q.viralityScore === 'number') {
+      const v = q.viralityScore;
+      const colour = v >= 70 ? '#34d399' : v >= 50 ? '#fcd34d' : '#f87171';
+      const bg     = v >= 70 ? 'rgba(16,185,129,.12)' : v >= 50 ? 'rgba(245,158,11,.12)' : 'rgba(239,68,68,.12)';
+      const bd     = q.viralityBreakdown || {};
+      const tip    = `AI virality prediction: ${v}/100\nHook ${bd.hook ?? '–'}/35 · Trend ${bd.trend ?? '–'}/25 · Title ${bd.title ?? '–'}/15 · Length ${bd.length ?? '–'}/10 · Hashtags ${bd.hashtags ?? '–'}/15`;
+      viralityHtml = `<span title="${tip.replace(/"/g,'&quot;')}" style="font-size:.66rem;font-weight:700;color:${colour};background:${bg};border:1px solid ${colour}40;border-radius:20px;padding:2px 9px">⚡ Virality ${v}/100</span>`;
+    }
+    const hashtagsHtml = (Array.isArray(q.hashtags) && q.hashtags.length)
+      ? `<p class="preview-meta" style="margin-top:3px;color:#a5b4fc;font-size:.68rem;letter-spacing:.01em">${q.hashtags.slice(0,7).join(' ')}</p>`
+      : '';
+
     return `
     <div class="preview-card" id="pc-${slotId}">
       <div class="preview-card-top">
@@ -3505,9 +3560,11 @@ function renderQueue() {
             <span class="${badgeCls}">${typeLabel}</span>
             <span class="preview-sched">${postTimeStr}</span>
             ${countdownHtml}
+            ${viralityHtml}
             ${statusLabel}
           </div>
           <p class="preview-meta">Day ${q.day || '?'} · Video ${q.videoIndex || 1}${q.angle ? ' · ' + q.angle : ''}</p>
+          ${hashtagsHtml}
         </div>
       </div>
       <div class="preview-player" id="player-${slotId}">
@@ -5033,6 +5090,43 @@ async function initLearning() {
 
     // Hooks library
     _renderHooksLibrary();
+
+    // Retention insights (from /api/optimisation/insights)
+    const retEl = document.getElementById('retention-insights-content');
+    if (retEl) {
+      const ri = insightsRes?.retentionInsights;
+      if (!ri) {
+        retEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">Retention analysis appears after at least 5 videos are posted. Runs every Tuesday automatically.</p>';
+      } else {
+        const stats = [
+          `<div style="background:var(--bg3);border-radius:8px;padding:.55rem .75rem;flex:1"><p style="font-size:.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Avg retention</p><p style="font-size:1.15rem;font-weight:700;color:${ri.avgRetentionPct >= 55 ? '#34d399' : ri.avgRetentionPct >= 40 ? '#fcd34d' : '#f87171'}">${ri.avgRetentionPct ?? '—'}%</p></div>`,
+          `<div style="background:var(--bg3);border-radius:8px;padding:.55rem .75rem;flex:1"><p style="font-size:.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Videos analysed</p><p style="font-size:1.15rem;font-weight:700">${ri.videosAnalysed || 0}</p></div>`,
+          (ri.biggestDropAtSec != null)
+            ? `<div style="background:var(--bg3);border-radius:8px;padding:.55rem .75rem;flex:1"><p style="font-size:.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Biggest drop-off</p><p style="font-size:1.15rem;font-weight:700;color:#f87171">~${ri.biggestDropAtSec}s</p></div>`
+            : '',
+        ].filter(Boolean).join('');
+        const insightRows = (ri.insights || []).map(t =>
+          `<div style="background:var(--bg3);border-radius:8px;padding:.55rem .75rem;border-left:3px solid var(--purple);font-size:.76rem;color:var(--text2);line-height:1.55;margin-bottom:6px">${t}</div>`
+        ).join('');
+        retEl.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">${stats}</div>${insightRows}<p style="font-size:.65rem;color:var(--text3);margin-top:.6rem">AI learns: ${(ri.insights||[]).length > 0 ? 'adjusting future scripts based on these signals' : 'pending'} · last run ${ri.generatedAt ? _relTime(ri.generatedAt) : '—'}</p>`;
+      }
+    }
+
+    // Winning Patterns (cross-video learning)
+    const winEl = document.getElementById('winning-patterns-content');
+    if (winEl) {
+      const wp = insightsRes?.winningPatterns || [];
+      if (!wp.length) {
+        winEl.innerHTML = '<p style="font-size:.78rem;color:var(--text3)">No winning patterns detected yet — they appear when a video crosses 5,000 views within 48 hours of posting.</p>';
+      } else {
+        winEl.innerHTML = wp.slice(0, 8).map(w => `
+          <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:.7rem;font-weight:700;color:#34d399;background:rgba(16,185,129,.12);border-radius:4px;padding:2px 8px;flex-shrink:0">⚡ ${(w.views || 0).toLocaleString()} views</span>
+            <span style="font-size:.76rem;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${w.title || '(untitled)'}</span>
+            ${w.postedHour != null ? `<span style="font-size:.66rem;color:var(--text3);flex-shrink:0">${String(w.postedHour).padStart(2,'0')}:00 UTC</span>` : ''}
+          </div>`).join('') + '<p style="font-size:.65rem;color:var(--text3);margin-top:.6rem">The AI biases future hooks, timing and hashtags toward what made these videos win.</p>';
+      }
+    }
 
   } catch (err) {
     console.error('[initLearning] error:', err);
