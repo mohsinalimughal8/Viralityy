@@ -505,10 +505,19 @@ async function runStartupSlotCheck() {
 
 
     // Reset any slots that were stuck mid-pipeline when the server went down.
-    // Never pre-generate or run any pipeline at startup.
+    // Only reset slots older than 30 min (processingStartedAt) to avoid interrupting a live pipeline
+    // that started just before the dyno cycled. Slots without processingStartedAt are legacy and
+    // always safe to reset.
     const slotsCol = agentCol('calendar_slots');
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
     const result = await slotsCol.updateMany(
-      { status: 'processing' },
+      {
+        status: 'processing',
+        $or: [
+          { processingStartedAt: { $lt: thirtyMinAgo } },
+          { processingStartedAt: { $exists: false } },
+        ],
+      },
       { $set: { status: 'scheduled', pipelineStatus: 'reset-on-startup' } }
     );
     if (result.modifiedCount > 0) {
@@ -7221,6 +7230,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   const tryUpload = async (accessToken) => {
     oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
     const yt  = google.youtube({ version: 'v3', auth: oauth2 });
+    console.log(`[UPLOAD] slotId=${options.slotId || 'n/a'} selfDeclaredMadeForKids=false included in upload request`);
     const res = await yt.videos.insert({
       part: ['snippet', 'status'],
       requestBody: {
@@ -7230,7 +7240,13 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
           tags:        uploadTags,
           categoryId:  '22',
         },
-        status: { privacyStatus: 'public', madeForKids: false },
+        status: {
+          privacyStatus:            'public',
+          selfDeclaredMadeForKids:  false,   // required — omitting this sends video to review limbo
+          madeForKids:              false,
+          embeddable:               true,
+          publicStatsViewable:      true,
+        },
       },
       media: { body: fs.createReadStream(videoPath) },
     });
@@ -7437,14 +7453,20 @@ async function generateThumbnail(title, nicheName, videoType, slotId) {
     return null;
   }
   try {
-    const isShort    = (videoType || 'Short').toLowerCase() !== 'long-form';
-    const shortTitle = title.split(/\s+/).slice(0, 5).join(' ');
-    const prompt     =
+    const isShort       = (videoType || 'Short').toLowerCase() !== 'long-form';
+    const aspectRatio   = isShort ? '9:16' : '16:9';
+    const shortTitle    = title.split(/\s+/).slice(0, 5).join(' ');
+    const orientationHint = isShort
+      ? 'vertical portrait orientation, 9:16 aspect ratio'
+      : 'horizontal landscape orientation, 16:9 aspect ratio, wide format';
+    const prompt =
       `Professional YouTube thumbnail, bold white text '${shortTitle}' with thick black outline, ` +
-      `vibrant high contrast background representing ${nicheName}, dramatic professional lighting, ` +
-      `eye-catching colors, no people or faces, clean composition optimised for high click-through rate`;
+      `${orientationHint}, vibrant high contrast background representing ${nicheName}, ` +
+      `dramatic professional lighting, eye-catching colors, no people or faces, ` +
+      `clean composition optimised for high click-through rate`;
 
-    const { imageBytes, mimeType } = await callImagenAPI(prompt, isShort ? '9:16' : '16:9');
+    console.log(`[THUMB] slotId=${slotId} type=${isShort ? 'short' : 'longform'} aspectRatio=${aspectRatio}`);
+    const { imageBytes, mimeType } = await callImagenAPI(prompt, aspectRatio);
 
     const thumbPath = `/tmp/thumbnail_${slotId}.jpg`;
     fs.writeFileSync(thumbPath, Buffer.from(imageBytes, 'base64'));
@@ -7491,6 +7513,15 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
   const psEntry = { slotId: String(slotId), title: slotDoc.title, userId: String(slotDoc.userId), startedAt: new Date().toISOString(), step: '1/5' };
   PIPELINE_STATUS.currentlyProcessing.push(psEntry);
   const psUpdate = (step) => { psEntry.step = step; };
+
+  // Secondary guard: re-fetch the slot to confirm it is still 'processing'.
+  // If another cron tick or process already claimed it, the status will have changed.
+  const guardCheck = await slotsCol.findOne({ _id: slotId }).catch(() => null);
+  if (!guardCheck || guardCheck.status !== 'processing') {
+    console.log(`[PIPELINE ABORT] slotId=${String(slotId)} status=${guardCheck?.status || 'not found'} — already processing/posted, skipping`);
+    PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
+    return null;
+  }
 
   try {
     // 0/5 Pre-flight — resolve channel and verify YouTube upload quota BEFORE spending
@@ -7602,7 +7633,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       await setStatus({ pipelineStatus: 'generating-thumbnail', thumbnailStatus: 'generating' });
       thumbPath = await generateThumbnail(slotDoc.title, nicheName, slotDoc.type, String(slotId));
       if (thumbPath) {
-        await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done', thumbnailStatus: 'imagen-ok' });
+        const thumbAspect = isShort ? '9:16' : '16:9';
+        await setStatus({ thumbnailPath: thumbPath, pipelineStatus: 'thumbnail-done', thumbnailStatus: 'imagen-ok', thumbnailAspectRatio: thumbAspect });
         // todayStats.thumbnails is incremented in doThumbUpload on actual YouTube upload success
         console.log(`[THUMB START] Imagen OK — thumbPath=${thumbPath}`);
       } else {
@@ -7675,6 +7707,26 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
         // Within 500ms of scheduledTime — upload now
         console.log(`[PIPELINE UPLOAD] slotId=${String(slotId)} — uploading NOW at exact scheduled time ${rawScheduled}`);
       }
+    }
+
+    // Dedup guard: if a slot with the same title was posted to the same channel in the last 24h
+    // (same-channel check via MongoDB, zero YouTube quota cost) abort and mark duplicate_skipped.
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const dupSlot = await slotsCol.findOne({
+      channelId: slotDoc.channelId,
+      title:     slotDoc.title,
+      status:    'posted',
+      posted:    true,
+      postedAt:  { $gt: twentyFourHoursAgo },
+      _id:       { $ne: slotId },
+    }).catch(() => null);
+    if (dupSlot) {
+      console.log(`[PIPELINE ABORT] slotId=${String(slotId)} — duplicate: "${slotDoc.title}" already posted at ${dupSlot.postedAt} (slotId=${String(dupSlot._id)}) — marking duplicate_skipped`);
+      await setStatus({ status: 'duplicate_skipped', pipelineStatus: 'duplicate-skipped', skipReason: 'duplicate_title_in_24h', skippedAt: new Date().toISOString() });
+      PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
+      fs.unlink(outPath, () => {});
+      if (audioPath) { fs.unlink(audioPath, () => {}); }
+      return null;
     }
 
     console.log(`[JIT] Uploading "${slotDoc.title}"`);
@@ -8509,14 +8561,18 @@ async function runScheduledPosting() {
   console.log(`[PostingCron] ${dueSlots.length} slot(s) due — processing one at a time`);
 
   for (const slotDoc of dueSlots) {
-    // Re-read to guard against concurrent cron overlaps
-    const fresh = await slotsCol.findOne({ _id: slotDoc._id, status: 'scheduled', posted: false }).catch(() => null);
-    if (!fresh) continue;
-
-    await slotsCol.updateOne(
-      { _id: fresh._id },
-      { $set: { status: 'processing', pipelineStartedAt: nowIso } }
-    ).catch(() => {});
+    // Atomic claim: findOneAndUpdate is a single MongoDB operation — if two cron ticks fire
+    // simultaneously only one can flip status from 'scheduled' to 'processing'. The other
+    // gets null back and skips, eliminating the TOCTOU race of findOne + updateOne.
+    const fresh = await slotsCol.findOneAndUpdate(
+      { _id: slotDoc._id, status: 'scheduled', posted: false },
+      { $set: { status: 'processing', pipelineStartedAt: nowIso, processingStartedAt: new Date() } },
+      { returnDocument: 'after' }
+    ).catch(() => null);
+    if (!fresh) {
+      console.log(`[PIPELINE ABORT] slotId=${String(slotDoc._id)} already processing/posted, skipping`);
+      continue;
+    }
 
     const user = await User.findById(fresh.userId).catch(() => null);
     if (!user) {
@@ -9549,6 +9605,107 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
   } catch (err) {
     console.error('[TestThumb] Fatal error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/test-thumb-upload?secret=VRL-ADM-X7K9-2025&videoId=VIDEO_ID
+// Maximum-verbosity thumbnail debug endpoint. Generates an Imagen 4 thumbnail and attempts to
+// apply it to a real YouTube video — logs every step so we can diagnose Shorts thumbnail failures
+// without waiting for the next posting cycle.
+app.get('/api/admin/test-thumb-upload', requireAdmin, async (req, res) => {
+  const { videoId } = req.query;
+  if (!videoId) return res.status(400).json({ error: 'videoId query param is required (e.g. ?videoId=dQw4w9WgXcQ)' });
+
+  const fs = require('fs');
+  const { google } = require('googleapis');
+  const steps = [];
+  const log = (msg, data) => {
+    console.log(`[TestThumbUpload] ${msg}`, data !== undefined ? JSON.stringify(data) : '');
+    steps.push({ msg, data: data !== undefined ? data : null });
+  };
+
+  try {
+    // Step 1: Resolve user and channel
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
+    const user = await User.findOne({ email: adminEmail });
+    if (!user) return res.status(404).json({ error: `No user for ADMIN_EMAIL ${adminEmail}` });
+    const channel = (user.youtubeChannels || []).find(ch => ch.channelId) || user.youtubeChannels?.[0];
+    if (!channel) return res.status(404).json({ error: 'No YouTube channel on admin account' });
+    log('Step 1: Channel resolved', { channelId: channel.channelId, channelName: channel.channelName, thumbnailsEnabled: channel.thumbnailsEnabled });
+
+    // Step 2: Check video exists in YouTube API before attempting thumbnail
+    log('Step 2: Checking YouTube video exists…', { videoId });
+    const oauth2 = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+    let accessToken = channel.accessToken;
+    oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
+    let yt = google.youtube({ version: 'v3', auth: oauth2 });
+    let videoRes;
+    try {
+      videoRes = await yt.videos.list({ part: ['status', 'snippet'], id: [videoId] });
+    } catch (e) {
+      if (e.code === 401 || e.status === 401) {
+        log('Step 2: 401 on videos.list — refreshing token');
+        accessToken = await pipelineRefreshToken(channel);
+        oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
+        yt = google.youtube({ version: 'v3', auth: oauth2 });
+        videoRes = await yt.videos.list({ part: ['status', 'snippet'], id: [videoId] });
+      } else { throw e; }
+    }
+    const videoItem = videoRes?.data?.items?.[0];
+    log('Step 2: videos.list response', {
+      found: !!videoItem,
+      uploadStatus: videoItem?.status?.uploadStatus || null,
+      title: videoItem?.snippet?.title || null,
+    });
+    if (!videoItem) return res.status(404).json({ error: `Video ${videoId} not found in YouTube API`, steps });
+
+    // Step 3: Generate Imagen 4 thumbnail (Short format 9:16 for testing)
+    log('Step 3: Calling Imagen 4 (imagen-4.0-generate-001) aspectRatio=9:16…');
+    const slotTag = `testthumbdbg_${Date.now()}`;
+    const thumbPath = await generateThumbnail('Amazing Facts You Never Knew', 'General Knowledge', 'Short', slotTag);
+    if (!thumbPath) {
+      log('Step 3: FAIL — generateThumbnail returned null — see [Imagen] logs above');
+      return res.status(500).json({ error: 'Imagen 4 failed to generate thumbnail', steps });
+    }
+    const thumbStat = fs.statSync(thumbPath);
+    const thumbMime = 'image/jpeg';
+    log('Step 3: Imagen OK', { path: thumbPath, sizeBytes: thumbStat.size, sizeMB: (thumbStat.size / 1024 / 1024).toFixed(2), mime: thumbMime });
+    if (thumbStat.size > 2 * 1024 * 1024) {
+      fs.unlink(thumbPath, () => {});
+      return res.status(500).json({ error: `Thumbnail too large: ${(thumbStat.size/1024/1024).toFixed(2)} MB (YouTube max 2 MB)`, steps });
+    }
+
+    // Step 4: thumbnails.set
+    log('Step 4: Calling thumbnails.set…', { videoId, sizeMB: (thumbStat.size / 1024 / 1024).toFixed(2), mime: thumbMime });
+    let uploadResult = null;
+    let uploadError  = null;
+    try {
+      const setRes = await yt.thumbnails.set({
+        videoId,
+        media: { mimeType: thumbMime, body: fs.createReadStream(thumbPath) },
+      });
+      uploadResult = { httpStatus: setRes?.status, data: setRes?.data };
+      log('Step 4: thumbnails.set SUCCESS', uploadResult);
+      logYoutubeQuota('thumbnails.set', YOUTUBE_QUOTA_COSTS.thumbnails, String(user._id)).catch(() => {});
+    } catch (e) {
+      uploadError = { message: e.message, code: e.code || e.status || null, responseData: e?.response?.data || null };
+      log('Step 4: thumbnails.set FAILED', uploadError);
+    } finally {
+      fs.unlink(thumbPath, () => {});
+    }
+
+    res.json({
+      success: !uploadError,
+      videoId,
+      channel: { channelId: channel.channelId, channelName: channel.channelName, thumbnailsEnabled: channel.thumbnailsEnabled },
+      steps,
+      uploadResult: uploadResult || null,
+      uploadError:  uploadError  || null,
+    });
+  } catch (err) {
+    console.error('[TestThumbUpload] Fatal:', err.message);
+    res.status(500).json({ error: err.message, steps });
   }
 });
 
