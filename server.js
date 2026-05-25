@@ -195,6 +195,60 @@ function emailSubCancelled({ userName, accessEndsAt }) {
   `);
 }
 
+// ── Generation orchestrator emails ─────────────────────────────────────────────
+function emailDailyGenerationComplete({ userName, scheduled, userTimezone }) {
+  const tz = userTimezone || 'UTC';
+  const videoRows = (scheduled || []).map(v => {
+    const localTime = v.publishAt ? new Date(v.publishAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: tz }) : 'Scheduled';
+    return `<div class="meta-row"><span style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.title}</span><span class="val">${localTime}</span></div>`;
+  }).join('');
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#0f1f0f;color:#4ade80">✅ Videos Scheduled</div>
+      <h2 style="margin-top:16px">Your ${scheduled.length} video${scheduled.length !== 1 ? 's' : ''} for today are scheduled on YouTube</h2>
+      <p>Hi ${userName || 'there'}, Viralityy has generated and scheduled today's videos. YouTube will auto-publish them at their optimal times.</p>
+      <div class="meta">${videoRows}</div>
+      <hr class="divider">
+      <p style="font-size:13px;color:#888">You can edit titles, descriptions, or thumbnails in YouTube Studio before they go live.</p>
+      <a class="cta" href="https://viralityy.com" target="_blank">View Preview Queue →</a>
+    </div>
+  `);
+}
+
+function emailDailyGenerationPartial({ userName, generated, total, skipped, reason }) {
+  const reasonLabel = reason === 'quota' ? 'YouTube API quota limit reached' : reason || 'generation error';
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#1a1200;color:#fbbf24">⚠️ Partial Generation</div>
+      <h2 style="margin-top:16px">${generated} of ${total} videos generated today</h2>
+      <p>Hi ${userName || 'there'}, Viralityy generated ${generated} of your ${total} scheduled videos today. ${skipped} video${skipped !== 1 ? 's were' : ' was'} skipped due to: <strong>${reasonLabel}</strong>.</p>
+      <div class="meta">
+        <div class="meta-row"><span>Generated</span><span class="val" style="color:#4ade80">${generated} videos</span></div>
+        <div class="meta-row"><span>Skipped</span><span class="val" style="color:#fbbf24">${skipped} videos</span></div>
+        <div class="meta-row"><span>Reason</span><span class="val">${reasonLabel}</span></div>
+      </div>
+      <hr class="divider">
+      <p style="font-size:13px;color:#888">Skipped videos will be retried in tomorrow's generation cycle. No action needed — the pipeline recovers automatically.</p>
+      <a class="cta" href="https://viralityy.com" target="_blank">View Dashboard →</a>
+    </div>
+  `);
+}
+
+function emailDailyGenerationFailed({ userName, total, errors }) {
+  const errList = (errors || []).slice(0, 3).map(e => `<li style="margin-bottom:6px;color:#f87171;font-size:13px">${e}</li>`).join('');
+  return emailWrap(`
+    <div class="card">
+      <div class="tag" style="background:#1a1010;color:#f87171">🚨 Generation Failed</div>
+      <h2 style="margin-top:16px">Today's video generation failed — action needed</h2>
+      <p>Hi ${userName || 'there'}, Viralityy was unable to generate any of your ${total} scheduled videos today.</p>
+      ${errList ? `<ul style="padding-left:18px;margin:12px 0">${errList}</ul>` : ''}
+      <hr class="divider">
+      <p style="font-size:13px;color:#888">Please check your channel's OAuth connection and YouTube quota in your dashboard settings. The pipeline will retry tomorrow.</p>
+      <a class="cta" href="https://viralityy.com" target="_blank">Fix in Settings →</a>
+    </div>
+  `);
+}
+
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
@@ -270,11 +324,12 @@ const QUOTA_AUDIT_MAP = [
 
 // ─── In-memory pipeline status — reset on restart, updated by runJITPipelineForSlot ───
 const PIPELINE_STATUS = {
-  currentlyProcessing: [], // [{slotId, title, userId, startedAt, step}]
-  lastCompletedAt:     null,
-  lastError:           null,
-  todayDate:           '',
-  todayStats:          { generated: 0, posted: 0, failed: 0, thumbnails: 0 },
+  currentlyProcessing:  [], // [{slotId, title, userId, startedAt, step}]
+  lastCompletedAt:      null,
+  lastError:            null,
+  todayDate:            '',
+  todayStats:           { generated: 0, posted: 0, scheduledOnYoutube: 0, failed: 0, thumbnails: 0 },
+  activeGenerationUser: null, // userId currently being processed by orchestrator
 };
 function pipelineEnsureTodayStats() {
   const today = new Date().toISOString().slice(0, 10);
@@ -472,6 +527,111 @@ async function getOptimalPostingTimes(userId, channelId, nicheName, plan) {
   return { times: optimalTimes, source };
 }
 
+// Research-backed defaults per niche, used when channel data < 14 days old.
+const NICHE_POSTING_DEFAULTS_V2 = {
+  psychology:       ['07:00','12:00','18:00','21:00'],
+  self_improvement: ['07:00','12:00','18:00','21:00'],
+  fitness:          ['06:00','12:00','17:00','20:00'],
+  finance:          ['07:00','12:00','17:00'],
+  business:         ['07:00','12:00','17:00'],
+  entertainment:    ['12:00','18:00','21:00'],
+  education:        ['09:00','13:00','16:00','19:00'],
+  history:          ['10:00','14:00','19:00'],
+  tech:             ['09:00','13:00','17:00','21:00'],
+  default:          ['09:00','12:00','15:00','18:00','21:00'],
+};
+
+function getNicheKeyV2(nicheName) {
+  const n = (nicheName || '').toLowerCase();
+  if (/psycholog/.test(n))                                          return 'psychology';
+  if (/self.improv|motivat|stoic|mindset|personal.dev|productiv/.test(n)) return 'self_improvement';
+  if (/fitness|gym|workout|diet|nutrition|wellness/.test(n))        return 'fitness';
+  if (/finance|money|invest|crypto|stock|wealth|budget/.test(n))    return 'finance';
+  if (/business|entrepreneur|startup|market|sales/.test(n))         return 'business';
+  if (/entertain|comedy|fun|game|gaming|movie|music/.test(n))       return 'entertainment';
+  if (/history|histor/.test(n))                                     return 'history';
+  if (/tech|ai |software|coding|program|gadget|digital/.test(n))   return 'tech';
+  if (/educat|learn|study|science|explain/.test(n))                 return 'education';
+  return 'default';
+}
+
+// Expand `baseTimes` to `needed` slots by cycling with 90-min offsets.
+function cycleTimesWithSpacing(baseTimes, needed) {
+  const toMin   = t => { const [h,m] = t.split(':').map(Number); return h*60+(m||0); };
+  const fromMin = m => `${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+  const result = [...baseTimes];
+  let offset = 0;
+  while (result.length < needed) {
+    offset += 90;
+    for (const t of baseTimes) {
+      if (result.length >= needed) break;
+      result.push(fromMin((toMin(t) + offset) % 1440));
+    }
+  }
+  return result.slice(0, needed).sort((a,b) => toMin(a)-toMin(b));
+}
+
+// Convert a local HH:MM time string + IANA timezone + date string (YYYY-MM-DD) → UTC ISO string.
+// Falls back to treating the time as UTC if timezone conversion fails.
+function localTimeToUTC(localHHMM, timezone, dateStr) {
+  try {
+    // Build a date string in the target timezone using the Intl machinery
+    const [h, m] = localHHMM.split(':').map(Number);
+    // We construct a Date as if it were UTC, then offset by the TZ difference
+    const tempUtc = new Date(`${dateStr}T${localHHMM}:00Z`);
+    // Get what UTC time corresponds to localHHMM in the given timezone on dateStr
+    // by subtracting the TZ offset
+    const tzDate = new Date(tempUtc.toLocaleString('en-US', { timeZone: timezone }));
+    const utcDate = new Date(tempUtc.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const offsetMs = tzDate.getTime() - utcDate.getTime();
+    return new Date(tempUtc.getTime() - offsetMs).toISOString();
+  } catch {
+    return `${dateStr}T${localHHMM}:00Z`;
+  }
+}
+
+// Part 4 — Personalised Posting Times
+// Threshold: 14 days of posting data → use YouTube Analytics.
+// Below threshold → use NICHE_POSTING_DEFAULTS_V2.
+// Cycles with 90-min spacing when count > available times.
+async function calculateOptimalPostingTimes(userId, channelId, nicheName, count) {
+  const slotsCol  = agentCol('calendar_slots');
+  const nicheKey  = getNicheKeyV2(nicheName);
+  const nicheDefaults = NICHE_POSTING_DEFAULTS_V2[nicheKey] || NICHE_POSTING_DEFAULTS_V2.default;
+
+  // Check data age: find the oldest posted slot for this channel
+  const oldestPosted = await slotsCol.findOne(
+    { userId: String(userId), ...(channelId ? { channelId } : {}), posted: true },
+    { sort: { date: 1 }, projection: { date: 1 } }
+  ).catch(() => null);
+
+  const postedCount = await slotsCol.countDocuments(
+    { userId: String(userId), ...(channelId ? { channelId } : {}), posted: true }
+  ).catch(() => 0);
+
+  const dataAgeDays = oldestPosted?.date
+    ? Math.floor((Date.now() - new Date(oldestPosted.date).getTime()) / 86400000)
+    : 0;
+
+  let times, personalized = false, topHours = [...nicheDefaults];
+
+  if (dataAgeDays >= 14) {
+    let analyticsHours = null;
+    try { analyticsHours = await fetchChannelAnalyticsHours(userId, channelId); }
+    catch(e) { console.warn('[TIMING] Analytics unavailable:', e.message); }
+
+    if (analyticsHours?.length) {
+      personalized = true;
+      topHours = analyticsHours.slice(0, 5);
+    }
+  }
+
+  times = cycleTimesWithSpacing(topHours, count);
+
+  console.log(`[TIMING] channel=${channelId||userId} personalized=${personalized} based_on_videos=${postedCount} top_hours=[${topHours.join(',')}]`);
+
+  return times;
+}
 
 // =============================================================================
 // DATABASE
@@ -574,6 +734,28 @@ async function runStartupSlotCheck() {
       rescued++;
     }
     if (rescued > 0) console.log(`[Startup] Rescued ${rescued} missed/skipped slot(s) → rescheduled for today`);
+
+    // ── Part 12: Migration — existing scheduled slots ─────────────────────────
+    // Slots with status 'scheduled' for FUTURE dates → keep them (orchestrator will pick them up).
+    // Slots with status 'scheduled' for PAST dates → mark as missed_during_migration.
+    const pastDate = new Date(now.getTime() - 5 * 60 * 1000).toISOString().slice(0, 10);
+    const nowIsoMs = Date.now();
+    const pastScheduled = await slotsCol.find({
+      status: 'scheduled',
+      posted: { $ne: true },
+      date:   { $lt: today },
+    }).toArray().catch(() => []);
+
+    let migrated = 0;
+    for (const s of pastScheduled) {
+      await slotsCol.updateOne(
+        { _id: s._id },
+        { $set: { status: 'missed_during_migration', pipelineStatus: 'missed-during-yt-native-migration', migratedAt: new Date().toISOString() } }
+      ).catch(() => {});
+      migrated++;
+    }
+    if (migrated > 0) console.log(`[Startup] Migration: marked ${migrated} past scheduled slot(s) → missed_during_migration`);
+    else console.log('[Startup] Migration: no past scheduled slots to migrate ✓');
 
     console.log('[Startup] Recovery check complete');
   } catch (e) {
@@ -746,16 +928,21 @@ app.get('/health', async (req, res) => {
   try {
     const slotsCol  = agentCol('calendar_slots');
     const quotaCol  = agentCol('youtubeQuota');
-    const [gen, ready, posted, failed, processing, quotaResult] = await Promise.all([
+    const queueCol  = agentCol('daily_gen_queue');
+    const [gen, ready, posted, failed, processing, quotaResult, scheduledOnYT, quotaSkipped, genFailed, genQueue] = await Promise.all([
       slotsCol.countDocuments({ date: today }),
       slotsCol.countDocuments({ date: today, status: 'scheduled', posted: false }),
       slotsCol.countDocuments({ status: 'posted', postedAt: { $gte: startOfToday } }),
-      slotsCol.countDocuments({ date: today, status: 'failed' }),
+      slotsCol.countDocuments({ date: today, status: { $in: ['failed', 'generation_failed'] } }),
       slotsCol.countDocuments({ date: today, status: 'processing' }),
       quotaCol.aggregate([
         { $match: { date: today } },
         { $group: { _id: null, total: { $sum: '$units' } } },
       ]).toArray(),
+      slotsCol.countDocuments({ date: today, status: 'scheduled_on_youtube' }),
+      slotsCol.countDocuments({ date: today, status: 'quota_skipped' }),
+      slotsCol.countDocuments({ date: today, status: 'generation_failed' }),
+      queueCol.find({ date: today }).sort({ genSlotStart: 1 }).limit(20).project({ userId: 1, userEmail: 1, plan: 1, genSlotStart: 1, status: 1 }).toArray().catch(() => []),
     ]);
     youtubeQuotaUsed = quotaResult[0]?.total || 0;
     const nextSlot = await slotsCol
@@ -773,9 +960,12 @@ app.get('/health', async (req, res) => {
     ]);
     // Recent failures and skips — last 5 of each for instant diagnostics
     const [recentFailed, recentSkipped] = await Promise.all([
-      slotsCol.find({ status: 'failed' }).sort({ failedAt: -1 }).limit(5).project({ _id: 1, title: 1, channelId: 1, failedAt: 1, failureReason: 1, pipelineError: 1 }).toArray(),
+      slotsCol.find({ status: { $in: ['failed', 'generation_failed'] } }).sort({ failedAt: -1 }).limit(5).project({ _id: 1, title: 1, channelId: 1, failedAt: 1, failureReason: 1, pipelineError: 1, generationError: 1 }).toArray(),
       slotsCol.find({ status: 'skipped' }).sort({ skippedAt: -1 }).limit(5).project({ _id: 1, title: 1, channelId: 1, skippedAt: 1, skipReason: 1, pipelineStatus: 1 }).toArray(),
     ]);
+    // Next orchestrator run — next 00:00 UTC
+    const now = new Date();
+    const nextOrchestratorRun = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
     pipeline = {
       todaysSlotsGenerated: gen > 0,
       totalSlotsToday:  gen,
@@ -786,6 +976,14 @@ app.get('/health', async (req, res) => {
       slotsMissed:     missed,
       slotsSkipped:    skipped,
       slotsPending:    pending,
+      // ── New orchestrator metrics ──────────────────────────────────────────────
+      todaysSlotsScheduledOnYoutube: scheduledOnYT,
+      todaysSlotsGenerating:         processing,
+      todaysSlotsQuotaSkipped:       quotaSkipped,
+      todaysSlotsGenerationFailed:   genFailed,
+      nextOrchestratorRun,
+      activeGenerationUser: PIPELINE_STATUS.activeGenerationUser || null,
+      queueStatus: genQueue.map(e => ({ userId: e.userId, plan: e.plan, genSlotStart: e.genSlotStart, status: e.status })),
       nextPostTime:    nextSlot?.scheduledPostTime || null,
       cronJobsRegistered,
       lastPipelineError: PIPELINE_STATUS.lastError || null,
@@ -796,7 +994,7 @@ app.get('/health', async (req, res) => {
           title:     s.title || null,
           channelId: s.channelId || null,
           step:      s.failureReason?.step  || 'unknown',
-          error:     s.failureReason?.error || s.pipelineError || 'unknown',
+          error:     s.failureReason?.error || s.pipelineError || s.generationError || 'unknown',
           timestamp: s.failedAt || s.failureReason?.timestamp || null,
         })),
         recentSkips: recentSkipped.map(s => ({
@@ -3896,6 +4094,68 @@ app.get('/api/optimisation/stats', requireAuth, async (req, res) => {
     console.error('[Optimisation] GET /stats error:', err);
     res.status(500).json({ error: 'Failed to fetch optimisation stats' });
   }
+});
+
+// GET /api/content/scheduled — slots scheduled on YouTube (private, pending auto-publish)
+// Powers the new Preview Queue — shows all videos scheduled via YouTube-native scheduling.
+app.get('/api/content/scheduled', requireAuth, async (req, res) => {
+  try {
+    const slotsCol = agentCol('calendar_slots');
+    const filter   = req.query.filter || 'all'; // all | today | this_week | failed
+    const userId   = String(req.user.id);
+    const now      = new Date();
+    const today    = now.toISOString().slice(0, 10);
+    const weekEnd  = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    let query = { userId };
+    if (filter === 'today') {
+      query.date = today;
+      query.status = 'scheduled_on_youtube';
+    } else if (filter === 'this_week') {
+      query.date = { $gte: today, $lte: weekEnd };
+      query.status = 'scheduled_on_youtube';
+    } else if (filter === 'failed') {
+      query.date = { $gte: today };
+      query.status = { $in: ['generation_failed', 'quota_skipped', 'failed'] };
+    } else {
+      // 'all' — scheduled + generating + failed from today onwards
+      query.date = { $gte: today };
+      query.status = { $in: ['scheduled_on_youtube', 'processing', 'scheduled', 'generation_failed', 'quota_skipped'] };
+    }
+
+    const slots = await slotsCol
+      .find(query)
+      .sort({ scheduledPublishAt: 1, scheduledPostTime: 1 })
+      .limit(100)
+      .project({ title: 1, type: 1, date: 1, status: 1, scheduledPublishAt: 1, scheduledPostTime: 1,
+                 youtubeVideoId: 1, youtubeStudioUrl: 1, generatedAt: 1, thumbnailStatus: 1,
+                 nicheName: 1, viralityScore: 1, generationError: 1, channelId: 1 })
+      .toArray();
+
+    slots.forEach(s => { s._id = s._id.toString(); });
+    res.json({ success: true, slots, count: slots.length, filter });
+  } catch (err) {
+    console.error('[Scheduled] GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch scheduled slots' });
+  }
+});
+
+// GET /api/user/timezone — get user's timezone
+app.get('/api/user/timezone', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('timezone').lean();
+    res.json({ success: true, timezone: user?.timezone || 'UTC' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH /api/user/timezone — save user's timezone
+app.patch('/api/user/timezone', requireAuth, async (req, res) => {
+  try {
+    const { timezone } = req.body;
+    if (!timezone || typeof timezone !== 'string') return res.status(400).json({ error: 'timezone required' });
+    await User.findByIdAndUpdate(req.user.id, { $set: { timezone } });
+    res.json({ success: true, timezone });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // GET /api/content/queue — pending/approved calendar slots awaiting review or posting.
@@ -7227,10 +7487,18 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
   // YouTube tag list max is 500 chars total; we cap at 15 tags.
   const uploadTags = [...new Set([...baseTags, ...fromHashtags])].slice(0, 15);
 
+  // YouTube-native scheduling: upload as private with publishAt so YouTube auto-publishes
+  const publishAt    = options.publishAt || null;
+  const useScheduled = !!(publishAt && new Date(publishAt).getTime() >= Date.now() + 15 * 60 * 1000);
+
   const tryUpload = async (accessToken) => {
     oauth2.setCredentials({ access_token: accessToken, refresh_token: channel.refreshToken });
     const yt  = google.youtube({ version: 'v3', auth: oauth2 });
-    console.log(`[UPLOAD] slotId=${options.slotId || 'n/a'} selfDeclaredMadeForKids=false included in upload request`);
+    const uploadMode = useScheduled ? 'scheduled' : 'immediate';
+    console.log(`[UPLOAD] slotId=${options.slotId || 'n/a'} mode=${uploadMode}${useScheduled ? ` publishAt=${new Date(publishAt).toISOString()}` : ''}`);
+    const statusBlock = useScheduled
+      ? { privacyStatus: 'private', publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, madeForKids: false, embeddable: true, publicStatsViewable: true }
+      : { privacyStatus: 'public', selfDeclaredMadeForKids: false, madeForKids: false, embeddable: true, publicStatsViewable: true };
     const res = await yt.videos.insert({
       part: ['snippet', 'status'],
       requestBody: {
@@ -7240,13 +7508,7 @@ async function pipelineUploadToYouTube(videoPath, title, description, channel, i
           tags:        uploadTags,
           categoryId:  '22',
         },
-        status: {
-          privacyStatus:            'public',
-          selfDeclaredMadeForKids:  false,   // required — omitting this sends video to review limbo
-          madeForKids:              false,
-          embeddable:               true,
-          publicStatsViewable:      true,
-        },
+        status: statusBlock,
       },
       media: { body: fs.createReadStream(videoPath) },
     });
@@ -7687,26 +7949,33 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     await pipelineAssembleVideo(footageClips, audioPath, outPath, finalCaptions, isShort, channel.styleConfig || null, scriptData?.hook || selectedHook?.template || '');
     logActivity('video_assembled', 'success', `Video assembled: "${slotDoc.title}"`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId) });
 
-    // ── Hold until the exact scheduled post time — never upload early.
-    // The cron starts the pipeline up to 35 min before scheduledPostTime so the
-    // video is ready on time. Without this wait, a fast pipeline posts immediately
-    // after assembly instead of at the scheduled time.
-    const rawScheduled = slotDoc.scheduledPostTime || '';
-    const scheduledTs  = rawScheduled
-      ? new Date(rawScheduled.endsWith('Z') ? rawScheduled : rawScheduled + 'Z').getTime()
-      : NaN;
-    if (!isNaN(scheduledTs)) {
-      const holdMs = scheduledTs - Date.now();
-      console.log(`[PIPELINE START] slotId=${String(slotId)} scheduledTime=${rawScheduled} now=${new Date().toISOString()} holdMs=${holdMs}`);
-      if (holdMs > 500) {
-        // Wait until exact scheduled time — no arbitrary cap (sleep is async, doesn't block the event loop)
-        console.log(`[HOLD] Slot ${String(slotId)} waiting ${Math.round(holdMs / 1000)}s until scheduledTime ${rawScheduled}`);
-        await setStatus({ pipelineStatus: 'waiting-for-schedule' });
-        await new Promise(r => setTimeout(r, holdMs));
-      } else {
-        // Within 500ms of scheduledTime — upload now
-        console.log(`[PIPELINE UPLOAD] slotId=${String(slotId)} — uploading NOW at exact scheduled time ${rawScheduled}`);
+    // ── YouTube-native scheduling detection ──────────────────────────────────────
+    // If slotDoc.scheduledPublishAt is set and >= now + 15 min, upload as private
+    // with YouTube's publishAt feature — YouTube auto-publishes at the right time.
+    // In that case we skip the hold and upload immediately after assembly.
+    const scheduledPublishAt = slotDoc.scheduledPublishAt || null;
+    const useYouTubeScheduling = !!(scheduledPublishAt &&
+      new Date(scheduledPublishAt).getTime() >= Date.now() + 15 * 60 * 1000);
+
+    if (!useYouTubeScheduling) {
+      // ── Legacy: hold until the exact scheduled post time — never upload early ──
+      const rawScheduled = slotDoc.scheduledPostTime || '';
+      const scheduledTs  = rawScheduled
+        ? new Date(rawScheduled.endsWith('Z') ? rawScheduled : rawScheduled + 'Z').getTime()
+        : NaN;
+      if (!isNaN(scheduledTs)) {
+        const holdMs = scheduledTs - Date.now();
+        console.log(`[PIPELINE START] slotId=${String(slotId)} scheduledTime=${rawScheduled} now=${new Date().toISOString()} holdMs=${holdMs}`);
+        if (holdMs > 500) {
+          console.log(`[HOLD] Slot ${String(slotId)} waiting ${Math.round(holdMs / 1000)}s until scheduledTime ${rawScheduled}`);
+          await setStatus({ pipelineStatus: 'waiting-for-schedule' });
+          await new Promise(r => setTimeout(r, holdMs));
+        } else {
+          console.log(`[PIPELINE UPLOAD] slotId=${String(slotId)} — uploading NOW at exact scheduled time ${rawScheduled}`);
+        }
       }
+    } else {
+      console.log(`[PIPELINE YT-SCHEDULE] slotId=${String(slotId)} — uploading as private, publishAt=${scheduledPublishAt}`);
     }
 
     // Dedup guard: if a slot with the same title was posted to the same channel in the last 24h
@@ -7729,7 +7998,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
       return null;
     }
 
-    console.log(`[JIT] Uploading "${slotDoc.title}"`);
+    console.log(`[JIT] Uploading "${slotDoc.title}"${useYouTubeScheduling ? ' (YouTube-native scheduling)' : ''}`);
     await setStatus({ pipelineStatus: 'uploading' });
     const hashtagLine = (Array.isArray(hashtagsForUpload) && hashtagsForUpload.length)
       ? '\n\n' + hashtagsForUpload.join(' ')
@@ -7737,23 +8006,58 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     const description = (script.slice(0, 4600) || slotDoc.title) + hashtagLine;
     const ytId = await pipelineUploadToYouTube(outPath, slotDoc.title, description, channel, isShort, {
       thumbPath,
-      userId:   String(slotDoc.userId),
-      slotId:   String(slotId),
-      hashtags: hashtagsForUpload,
+      userId:    String(slotDoc.userId),
+      slotId:    String(slotId),
+      hashtags:  hashtagsForUpload,
+      publishAt: useYouTubeScheduling ? scheduledPublishAt : null,
     });
 
-    await setStatus({
-      status:         'posted',
-      posted:         true,
-      postedAt:       new Date().toISOString(),
-      youtubeVideoId: ytId,
-      pipelineStatus: 'posted',
-      assembledPath:  null,
-      thumbnailPath:  null,
-      pipelineError:  null,
-    });
+    if (useYouTubeScheduling) {
+      // YouTube-native scheduling mode — video is private, YouTube auto-publishes at scheduledPublishAt
+      const studioUrl = `https://studio.youtube.com/video/${ytId}/edit`;
+      await setStatus({
+        status:             'scheduled_on_youtube',
+        posted:             false,
+        youtubeVideoId:     ytId,
+        scheduledPublishAt: scheduledPublishAt,
+        youtubeStudioUrl:   studioUrl,
+        generatedAt:        new Date().toISOString(),
+        pipelineStatus:     'scheduled-on-youtube',
+        assembledPath:      null,
+        thumbnailPath:      null,
+        pipelineError:      null,
+      });
+      PIPELINE_STATUS.todayStats.scheduledOnYoutube++;
+      console.log(`[JIT] ✓ "${slotDoc.title}" scheduled on YouTube → publishAt=${scheduledPublishAt} studioUrl=${studioUrl}`);
+      logActivity('video_scheduled', 'success', `Scheduled "${slotDoc.title}" → publishAt=${scheduledPublishAt}`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), youtubeVideoId: ytId, scheduledPublishAt });
+    } else {
+      // Legacy immediate-publish mode
+      await setStatus({
+        status:         'posted',
+        posted:         true,
+        postedAt:       new Date().toISOString(),
+        youtubeVideoId: ytId,
+        pipelineStatus: 'posted',
+        assembledPath:  null,
+        thumbnailPath:  null,
+        pipelineError:  null,
+      });
+      PIPELINE_STATUS.todayStats.posted++;
+      console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
+      logActivity('video_posted', 'success', `Posted "${slotDoc.title}" → https://youtu.be/${ytId}`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), youtubeVideoId: ytId });
+      if (user.email) {
+        const _ch2 = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId) || user.youtubeChannels?.[0];
+        sendEmail(user.email, '✅ Your video is live on YouTube!', emailPostSuccess({
+          title:        slotDoc.title,
+          youtubeLink:  `https://youtu.be/${ytId}`,
+          channelName:  _ch2?.channelName || 'Your Channel',
+          postedAt:     new Date().toISOString(),
+          hasThumbnail: !!(thumbPath),
+        }));
+      }
+    }
 
-    // Track hook posting performance
+    // Track hook performance regardless of mode
     if (hookId && selectedHook) {
       agentCol('hooksLibrary').updateOne(
         { _id: selectedHook._id },
@@ -7767,22 +8071,8 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     }
     fs.unlink(outPath, () => {});
     if (audioPath) { fs.unlink(audioPath, () => {}); audioPath = null; }
-    // thumbPath is deleted inside doThumbUpload (whether upload succeeds or fails)
     PIPELINE_STATUS.currentlyProcessing = PIPELINE_STATUS.currentlyProcessing.filter(e => e.slotId !== String(slotId));
     PIPELINE_STATUS.lastCompletedAt = new Date().toISOString();
-    PIPELINE_STATUS.todayStats.posted++;
-    console.log(`[JIT] ✓ "${slotDoc.title}" → https://youtu.be/${ytId}`);
-    logActivity('video_posted', 'success', `Posted "${slotDoc.title}" → https://youtu.be/${ytId}`, { slotId: String(slotId), channelId: channel.channelId, userId: String(slotDoc.userId), youtubeVideoId: ytId });
-    if (user.email) {
-      const channel = (user.youtubeChannels || []).find(ch => ch.channelId === slotDoc.channelId) || user.youtubeChannels?.[0];
-      sendEmail(user.email, '✅ Your video is live on YouTube!', emailPostSuccess({
-        title:       slotDoc.title,
-        youtubeLink: `https://youtu.be/${ytId}`,
-        channelName: channel?.channelName || 'Your Channel',
-        postedAt:    new Date().toISOString(),
-        hasThumbnail: !!(thumbPath),
-      }));
-    }
     return ytId;
   } catch (err) {
     // Attach the current pipeline step so the caller (runScheduledPosting) can write it to MongoDB
@@ -8270,25 +8560,12 @@ async function runDailySlotGeneration(targetUserId = null, targetDate = null) {
 
       const config = PLAN_CONFIG[user.plan] || PLAN_CONFIG.trial;
       const count  = config.shortsPerDay;
+      const userTimezone = user.timezone || 'UTC';
 
-      // Resolve optimal posting times — use cached value if < 7 days old, else recalculate
-      const chDoc = (user.youtubeChannels || []).find(c => c.channelId === channelId) || user.youtubeChannels?.[0];
-      const cacheAge = chDoc?.optimalTimesCalculatedAt
-        ? Date.now() - new Date(chDoc.optimalTimesCalculatedAt).getTime() : Infinity;
-      let optimalTimes = (chDoc?.optimalPostingTimes?.length && cacheAge < 7 * 24 * 60 * 60 * 1000)
-        ? chDoc.optimalPostingTimes
-        : (await getOptimalPostingTimes(String(user._id), channelId, nicheName, user.plan).catch(() => null))?.times;
-      if (!optimalTimes?.length) optimalTimes = pickSpreadSlots(NICHE_DEFAULT_TIMES.default, count);
-
-      if (optimalTimes.length < count) {
-        const expandedPool = [...new Set([
-          ...optimalTimes,
-          ...(POSTING_TIMES_BY_COUNT[Math.min(count, 7)] || []),
-          ...NICHE_DEFAULT_TIMES.default,
-        ])];
-        optimalTimes = pickSpreadSlots(expandedPool, count);
-      }
-      const shortTimes = optimalTimes.slice(0, count);
+      // Resolve optimal posting times using Part-4 personalised logic
+      const shortTimes = await calculateOptimalPostingTimes(
+        String(user._id), channelId, nicheName, count
+      ).catch(() => cycleTimesWithSpacing(NICHE_POSTING_DEFAULTS_V2.default, count));
 
       const yesterdayCtx = await getYesterdayPerformance(String(user._id), channelId);
       const genRes = await openai.chat.completions.create({
@@ -8317,7 +8594,7 @@ Return JSON: { "titles": [${count} strings] }` }],
           title: titles[v] || `${nicheName} Short #${v + 1}`,
           type: 'Short', videoIndex: v + 1, totalForDay: count, angle: 'short',
           status: 'scheduled', posted: false, retryCount: 0,
-          scheduledPostTime: `${today}T${shortTimes[v]}:00Z`, // explicit UTC
+          scheduledPostTime: localTimeToUTC(shortTimes[v], userTimezone, today),
           generatedAt,
         });
       }
@@ -8347,7 +8624,7 @@ Return JSON: { "title": "string" }` }],
           day: 1, date: today, title: lfTitle,
           type: 'Long-form', videoIndex: count + 1, totalForDay: 1, angle: 'long-form',
           status: 'scheduled', posted: false, retryCount: 0,
-          scheduledPostTime: `${today}T${lfTime}:00Z`, // explicit UTC
+          scheduledPostTime: localTimeToUTC(lfTime, userTimezone, today),
           generatedAt,
         });
       }
@@ -8375,6 +8652,259 @@ Return JSON: { "title": "string" }` }],
 
   console.log(`[DailyGen] Complete — ${generated}/${workItems.length} user(s) had new slots generated for ${today}`);
   return { generated, total: workItems.length };
+}
+
+// =============================================================================
+// DAILY GENERATION ORCHESTRATOR — runs at 00:00 UTC, replaces PostingCron
+// =============================================================================
+
+// Plan priority for staggered generation order (lower number = higher priority)
+const PLAN_GEN_PRIORITY = { agency: 1, growth: 2, shorts_pro: 3, starter: 4, trial: 5 };
+
+async function runDailyGenerationOrchestrator() {
+  const today = new Date().toISOString().slice(0, 10);
+  const baseTime = new Date(`${today}T00:00:00Z`);
+
+  // Step 1: Generate slot metadata for all users (titles + scheduledPostTimes)
+  await runDailySlotGeneration();
+
+  // Step 2: Collect all active users with channels + niche
+  const users = await User.find({
+    'youtubeChannels.0': { $exists: true },
+    subscriptionStatus: { $nin: ['expired'] },
+  }).lean().catch(() => []);
+
+  // Sort by plan priority
+  users.sort((a, b) => (PLAN_GEN_PRIORITY[a.plan] || 99) - (PLAN_GEN_PRIORITY[b.plan] || 99));
+
+  // Step 3: Assign 20-minute generation windows
+  const queue = users.map((user, i) => {
+    const genSlotStart = new Date(baseTime.getTime() + i * 20 * 60 * 1000);
+    const genSlotEnd   = new Date(genSlotStart.getTime() + 20 * 60 * 1000);
+    return {
+      userId:      String(user._id),
+      userEmail:   user.email,
+      plan:        user.plan || 'trial',
+      genSlotStart: genSlotStart.toISOString(),
+      genSlotEnd:   genSlotEnd.toISOString(),
+      date:         today,
+      status:       'pending',
+      createdAt:    new Date().toISOString(),
+    };
+  });
+
+  // Step 4: Save queue to DB
+  const queueCol = agentCol('daily_gen_queue');
+  await queueCol.deleteMany({ date: today }).catch(() => {});
+  if (queue.length) await queueCol.insertMany(queue).catch(() => {});
+
+  const firstSlot = queue[0]?.genSlotStart?.slice(11, 16) || '00:00';
+  const lastSlot  = queue[queue.length - 1]?.genSlotStart?.slice(11, 16) || '00:00';
+  console.log(`[ORCHESTRATOR] Queued ${queue.length} users for today, first slot at ${firstSlot} UTC, last slot at ${lastSlot} UTC`);
+
+  return { queued: queue.length, queue };
+}
+
+// Processes one queued user — runs the full pipeline for all their today's slots.
+// Called by runGenerationWorker when the user's gen slot time arrives.
+async function runUserGeneration(queueEntry, slotsCol, queueCol) {
+  const { userId, plan, date } = queueEntry;
+
+  PIPELINE_STATUS.activeGenerationUser = userId;
+
+  const user = await User.findById(userId).catch(() => null);
+  if (!user) {
+    console.log(`[GEN ABORT] user=${userId} reason=user_not_found`);
+    await queueCol.updateOne({ _id: queueEntry._id }, { $set: { status: 'aborted', abortReason: 'user_not_found' } }).catch(() => {});
+    PIPELINE_STATUS.activeGenerationUser = null;
+    return;
+  }
+
+  // Pre-flight: subscription
+  const subBlock = getPipelineBlock(user);
+  if (subBlock.blocked) {
+    console.log(`[GEN ABORT] user=${userId} reason=subscription_${subBlock.reason}`);
+    await queueCol.updateOne({ _id: queueEntry._id }, { $set: { status: 'aborted', abortReason: `subscription_${subBlock.reason}` } }).catch(() => {});
+    PIPELINE_STATUS.activeGenerationUser = null;
+    return;
+  }
+
+  // Pre-flight: channel + OAuth
+  const channel = (user.youtubeChannels || []).find(c => !c.paused && c.accessToken) || user.youtubeChannels?.[0];
+  if (!channel?.accessToken) {
+    const reason = !channel ? 'no_channel' : 'oauth_invalid';
+    console.log(`[GEN ABORT] user=${userId} reason=${reason}`);
+    await queueCol.updateOne({ _id: queueEntry._id }, { $set: { status: 'aborted', abortReason: reason } }).catch(() => {});
+    // Admin alert email
+    if (process.env.ADMIN_EMAIL) {
+      sendEmail(process.env.ADMIN_EMAIL, `[Viralityy] Gen aborted — user=${userId} reason=${reason}`, emailWrap(`<div class="card"><p>Generation aborted for user <strong>${user.email}</strong>.</p><p>Reason: ${reason}</p></div>`));
+    }
+    PIPELINE_STATUS.activeGenerationUser = null;
+    return;
+  }
+
+  // Pre-flight: niche
+  const nicheName = channel.nicheName || user.nicheName || '';
+  if (!nicheName) {
+    console.log(`[GEN ABORT] user=${userId} reason=no_niche`);
+    await queueCol.updateOne({ _id: queueEntry._id }, { $set: { status: 'aborted', abortReason: 'no_niche' } }).catch(() => {});
+    PIPELINE_STATUS.activeGenerationUser = null;
+    return;
+  }
+
+  // Get today's slots
+  const todaySlots = await slotsCol.find({
+    userId: String(userId), date,
+    status: { $in: ['scheduled', 'queued_for_generation'] },
+    posted: false,
+  }).sort({ scheduledPostTime: 1 }).toArray().catch(() => []);
+
+  const videosToGenerate = todaySlots.length;
+  const slotTime = queueEntry.genSlotStart?.slice(11, 16) || '00:00';
+  console.log(`[GEN START] user=${userId} plan=${plan} slot=${slotTime} UTC videosToGenerate=${videosToGenerate}`);
+
+  if (!videosToGenerate) {
+    await queueCol.updateOne({ _id: queueEntry._id }, { $set: { status: 'completed', videosScheduled: 0 } }).catch(() => {});
+    PIPELINE_STATUS.activeGenerationUser = null;
+    return;
+  }
+
+  // Quota calculation — 1650 units per video (1600 upload + 50 thumbnail)
+  const quotaPerVideo = 1650;
+  const quotaNeeded   = videosToGenerate * quotaPerVideo;
+  const quotaCheck    = await checkYoutubeQuota(0, String(userId)).catch(() => ({ allowed: true, used: 0 }));
+  const quotaUsed     = quotaCheck.used || 0;
+  const quotaAvail    = Math.max(0, YOUTUBE_DAILY_LIMIT - quotaUsed);
+  const canGenerate   = Math.floor(quotaAvail / quotaPerVideo);
+  const skipping      = Math.max(0, videosToGenerate - canGenerate);
+  const actualCount   = Math.min(videosToGenerate, canGenerate);
+
+  console.log(`[QUOTA] user=${userId} needed=${quotaNeeded} available=${quotaAvail} generating=${actualCount} skipping=${skipping}`);
+
+  // Mark quota-skipped slots
+  if (skipping > 0) {
+    const skippedSlots = todaySlots.slice(actualCount);
+    await Promise.all(skippedSlots.map(s =>
+      slotsCol.updateOne({ _id: s._id }, { $set: { status: 'quota_skipped', quotaSkippedAt: new Date().toISOString() } }).catch(() => {})
+    ));
+    if (user.email) {
+      sendEmail(user.email, `⚠️ ${actualCount} of ${videosToGenerate} videos generated today`, emailDailyGenerationPartial({
+        userName: user.name, generated: actualCount, total: videosToGenerate, skipped: skipping, reason: 'quota',
+      }));
+    }
+  }
+
+  // Generate videos SEQUENTIALLY within the 20-min window
+  const slotsToProcess = todaySlots.slice(0, actualCount);
+  let successCount = 0, failCount = 0;
+  const scheduledVideos = [];
+  const failErrors = [];
+
+  for (let i = 0; i < slotsToProcess.length; i++) {
+    const slot = slotsToProcess[i];
+    console.log(`[GEN PROGRESS] user=${userId} slot=${i + 1}/${actualCount} title="${slot.title}" status=starting`);
+
+    // Retry with exponential backoff: 1 min, 5 min, 15 min
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) {
+        const backoffMs = [60000, 300000, 900000][attempt - 2];
+        console.log(`[GEN RETRY] user=${userId} slot=${i + 1} attempt=${attempt}/3 backoff=${backoffMs / 1000}s`);
+        await new Promise(r => setTimeout(r, backoffMs));
+      }
+
+      try {
+        // Claim the slot atomically
+        const freshSlot = await slotsCol.findOneAndUpdate(
+          { _id: slot._id, status: { $in: ['scheduled', 'queued_for_generation'] }, posted: false },
+          { $set: { status: 'processing', processingStartedAt: new Date().toISOString() } },
+          { returnDocument: 'after' }
+        ).catch(() => null);
+        if (!freshSlot) { console.log(`[GEN SKIP] slot=${String(slot._id)} already claimed`); break; }
+
+        // Inject scheduledPublishAt so runJITPipelineForSlot uses YouTube-native scheduling
+        const slotWithPublishAt = { ...freshSlot, scheduledPublishAt: freshSlot.scheduledPostTime };
+
+        await runJITPipelineForSlot(slotWithPublishAt, user, slotsCol);
+
+        // Check result
+        const updated = await slotsCol.findOne({ _id: slot._id }).catch(() => null);
+        const videoId  = updated?.youtubeVideoId;
+        const publishAt = updated?.scheduledPublishAt;
+        console.log(`[GEN PROGRESS] user=${userId} slot=${i + 1}/${actualCount} status=scheduled_on_youtube videoId=${videoId} publishAt=${publishAt}`);
+        scheduledVideos.push({ title: slot.title, publishAt, youtubeVideoId: videoId, youtubeStudioUrl: `https://studio.youtube.com/video/${videoId}/edit` });
+        successCount++;
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.error(`[GEN FAIL] user=${userId} slot=${i + 1} attempt=${attempt} error=${err.message}`);
+      }
+    }
+
+    if (lastErr) {
+      failCount++;
+      failErrors.push(lastErr.message.slice(0, 150));
+      await slotsCol.updateOne({ _id: slot._id }, { $set: {
+        status: 'generation_failed',
+        generationError: lastErr.message.slice(0, 500),
+        generationFailedAt: new Date().toISOString(),
+      }}).catch(() => {});
+    }
+  }
+
+  // Update queue entry
+  await queueCol.updateOne({ _id: queueEntry._id }, { $set: {
+    status: 'completed', completedAt: new Date().toISOString(),
+    videosScheduled: successCount, videosFailed: failCount, videosQuotaSkipped: skipping,
+  }}).catch(() => {});
+
+  PIPELINE_STATUS.activeGenerationUser = null;
+  console.log(`[GEN COMPLETE] user=${userId} scheduled=${successCount} failed=${failCount} quotaSkipped=${skipping}`);
+
+  // Send completion email
+  if (user.email) {
+    if (failCount === 0 && successCount > 0) {
+      sendEmail(user.email, `✅ Your ${successCount} video${successCount !== 1 ? 's' : ''} for today are scheduled on YouTube`,
+        emailDailyGenerationComplete({ userName: user.name, scheduled: scheduledVideos, userTimezone: user.timezone || 'UTC' }));
+    } else if (successCount === 0 && failCount > 0) {
+      sendEmail(user.email, '🚨 Today\'s video generation failed — action needed',
+        emailDailyGenerationFailed({ userName: user.name, total: videosToGenerate, errors: failErrors }));
+    }
+  }
+}
+
+// Generation worker — runs every 2 minutes, picks up users whose gen slot has started
+async function runGenerationWorker() {
+  const now     = new Date();
+  const today   = now.toISOString().slice(0, 10);
+  const queueCol  = agentCol('daily_gen_queue');
+  const slotsCol  = agentCol('calendar_slots');
+
+  const due = await queueCol.find({
+    date:         today,
+    status:       'pending',
+    genSlotStart: { $lte: now.toISOString() },
+  }).sort({ genSlotStart: 1 }).toArray().catch(() => []);
+
+  for (const entry of due) {
+    // Atomic claim — prevents duplicate workers from double-processing
+    const claimed = await queueCol.findOneAndUpdate(
+      { _id: entry._id, status: 'pending' },
+      { $set: { status: 'processing', processingStartedAt: now.toISOString() } },
+      { returnDocument: 'after' }
+    ).catch(() => null);
+    if (!claimed) continue;
+
+    console.log(`[GEN WORKER] Picked up user=${entry.userId} plan=${entry.plan} slot=${entry.genSlotStart?.slice(11, 16)} UTC`);
+    try {
+      await runUserGeneration(claimed, slotsCol, queueCol);
+    } catch (err) {
+      console.error(`[GEN WORKER] Fatal error for user ${entry.userId}:`, err.message);
+      await queueCol.updateOne({ _id: entry._id }, { $set: { status: 'failed', error: err.message.slice(0, 300) } }).catch(() => {});
+      PIPELINE_STATUS.activeGenerationUser = null;
+    }
+  }
 }
 
 // After the last video of the day posts, pre-generate tomorrow's slots immediately.
@@ -9431,6 +9961,112 @@ app.post('/api/admin/force-activate', async (req, res) => {
   }
 });
 
+// ── Part 11: Generation Orchestrator Admin Endpoints ─────────────────────────
+
+// GET /api/admin/generation-queue — today's full user queue with assigned slots
+app.get('/api/admin/generation-queue', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const queueCol = agentCol('daily_gen_queue');
+    const queue    = await queueCol.find({ date: today }).sort({ genSlotStart: 1 }).toArray();
+    queue.forEach(e => { e._id = e._id.toString(); });
+    res.json({ success: true, date: today, count: queue.length, queue });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/generation-status — current generation progress across all users today
+app.get('/api/admin/generation-status', requireAdmin, async (req, res) => {
+  try {
+    const today    = new Date().toISOString().slice(0, 10);
+    const slotsCol = agentCol('calendar_slots');
+    const queueCol = agentCol('daily_gen_queue');
+    const [scheduledOnYT, generating, quotaSkipped, genFailed, queueEntries] = await Promise.all([
+      slotsCol.countDocuments({ date: today, status: 'scheduled_on_youtube' }),
+      slotsCol.countDocuments({ date: today, status: 'processing' }),
+      slotsCol.countDocuments({ date: today, status: 'quota_skipped' }),
+      slotsCol.countDocuments({ date: today, status: 'generation_failed' }),
+      queueCol.find({ date: today }).sort({ genSlotStart: 1 }).toArray(),
+    ]);
+    res.json({
+      success: true, date: today,
+      activeGenerationUser: PIPELINE_STATUS.activeGenerationUser,
+      todaysSlotsScheduledOnYoutube: scheduledOnYT,
+      todaysSlotsGenerating: generating,
+      todaysSlotsQuotaSkipped: quotaSkipped,
+      todaysSlotsGenerationFailed: genFailed,
+      queueSummary: queueEntries.map(e => ({
+        userId: e.userId, plan: e.plan, genSlotStart: e.genSlotStart, status: e.status,
+        videosScheduled: e.videosScheduled, videosFailed: e.videosFailed,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/trigger-generation — manually trigger generation for a specific user
+app.post('/api/admin/trigger-generation', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const today    = new Date().toISOString().slice(0, 10);
+    const queueCol = agentCol('daily_gen_queue');
+    const slotsCol = agentCol('calendar_slots');
+
+    // Ensure slot metadata exists for today
+    await runDailySlotGeneration(userId, today);
+
+    // Create or reset queue entry
+    const entry = {
+      userId:      String(userId),
+      plan:        'unknown',
+      genSlotStart: new Date().toISOString(),
+      genSlotEnd:   new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+      date:         today,
+      status:       'pending',
+      createdAt:    new Date().toISOString(),
+      adminTriggered: true,
+    };
+    await queueCol.deleteOne({ userId: String(userId), date: today });
+    await queueCol.insertOne(entry);
+
+    res.json({ success: true, message: `Generation queued for user ${userId} — worker picks up in ~2 min` });
+
+    // Fire immediately in background
+    setImmediate(async () => {
+      try {
+        const fresh = await queueCol.findOneAndUpdate(
+          { userId: String(userId), date: today, status: 'pending' },
+          { $set: { status: 'processing', processingStartedAt: new Date().toISOString() } },
+          { returnDocument: 'after' }
+        ).catch(() => null);
+        if (fresh) await runUserGeneration(fresh, slotsCol, queueCol);
+      } catch (e) { console.error('[Admin Trigger] Error:', e.message); }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/skip-user-today — skip a user from today's generation
+app.post('/api/admin/skip-user-today', requireAdmin, async (req, res) => {
+  try {
+    const { userId, reason } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const today    = new Date().toISOString().slice(0, 10);
+    const queueCol = agentCol('daily_gen_queue');
+    const result   = await queueCol.updateOne(
+      { userId: String(userId), date: today },
+      { $set: { status: 'skipped_by_admin', skipReason: reason || 'admin_skip', skippedAt: new Date().toISOString() } }
+    );
+    res.json({ success: true, matched: result.matchedCount, message: `User ${userId} skipped for today` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/admin/run-pipeline — manually trigger daily generation + scheduled posting (admin only)
 app.post('/api/admin/run-pipeline', requireAdmin, async (req, res) => {
   try {
@@ -10432,24 +11068,28 @@ function registerCronJobs() {
     });
   }
 
-  // Posting cron — every 5 minutes: upload pre-assembled videos that are due
-  cron.schedule('*/5 * * * *', async () => {
-    console.log('[PostingCron] Cron fired at', new Date().toISOString(), '— checking for due slots');
-    logActivity('cron_fired', 'info', 'PostingCron fired — checking for due slots', {});
-    try { await runScheduledPosting(); }
-    catch (err) { console.error('[PostingCron] Error:', err.message); logActivity('cron_error', 'error', `PostingCron error: ${err.message}`, { errorMessage: err.message }); }
-  });
+  // ── PostingCron RETIRED — replaced by YouTube-native scheduled posting ─────────
+  // Retired in favour of runDailyGenerationOrchestrator + runGenerationWorker.
+  // Videos are now uploaded as PRIVATE with publishAt; YouTube auto-publishes at the right time.
+  // Keeping the function definition intact for safety — only the cron registration is removed.
+  // cron.schedule('*/5 * * * *', async () => { await runScheduledPosting(); });
 
-  // Daily generation — 00:01 UTC
-  // Primary trigger is maybePreGenerateTomorrow(); this is the safety net.
-  cron.schedule('1 0 * * *', async () => {
-    console.log('[DailyGen] Cron fired at', new Date().toISOString());
+  // Daily generation orchestrator — 00:00 UTC
+  // Assigns staggered 20-minute generation windows per user (Agency → Growth → Shorts Pro → Starter → Trial).
+  // Creates slot metadata + daily_gen_queue; the worker (below) picks up each user at their assigned time.
+  cron.schedule('0 0 * * *', async () => {
+    console.log('[ORCHESTRATOR] Daily generation orchestrator fired at', new Date().toISOString());
     try {
-      const result = await runDailySlotGeneration();
-      console.log(`[DailyGen] Cron complete — ${result.generated}/${result.total} user(s) got new slots`);
-    }
-    catch (err) { console.error('[DailyGen] Cron error:', err.message); }
+      const result = await runDailyGenerationOrchestrator();
+      console.log(`[ORCHESTRATOR] Complete — ${result.queued} user(s) queued`);
+    } catch (err) { console.error('[ORCHESTRATOR] Error:', err.message); }
   }, { timezone: 'UTC' });
+
+  // Generation worker — every 2 minutes, picks up users whose gen slot has started
+  cron.schedule('*/2 * * * *', async () => {
+    try { await runGenerationWorker(); }
+    catch (err) { console.error('[GEN WORKER] Error:', err.message); }
+  });
 
   // Analytics Collection — 4 AM daily (feature-gated)
   if (FEATURES.analyticsCollection) {

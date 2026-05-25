@@ -408,6 +408,16 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 .preview-player{margin:.7rem 0;border-radius:8px;overflow:hidden;background:#000;display:none}
 .preview-player video{width:100%;max-height:280px;display:block}
 .preview-actions{display:flex;gap:7px;flex-wrap:wrap}
+.pq-filter{font-size:.7rem;font-weight:600;padding:5px 12px;border-radius:20px;border:1px solid var(--border2);background:transparent;color:var(--text3);cursor:pointer;transition:all .14s}
+.pq-filter:hover{border-color:var(--purple2);color:var(--text)}
+.pq-filter.active{background:var(--purple2);color:#fff;border-color:var(--purple2)}
+.pq-status-badge{font-size:.65rem;font-weight:700;padding:2px 9px;border-radius:20px}
+.pq-status-scheduled{background:rgba(16,185,129,.12);color:#34d399;border:1px solid rgba(16,185,129,.2)}
+.pq-status-generating{background:rgba(99,102,241,.12);color:#a5b4fc;border:1px solid rgba(99,102,241,.2)}
+.pq-status-failed{background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.2)}
+.pq-status-quota_skipped{background:rgba(245,158,11,.12);color:#fbbf24;border:1px solid rgba(245,158,11,.2)}
+.pq-studio-btn{font-size:.72rem;font-weight:600;color:#a78bfa;background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.25);border-radius:7px;padding:6px 12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:5px;transition:all .14s}
+.pq-studio-btn:hover{background:rgba(139,92,246,.22);color:#c4b5fd}
 .aff-stat{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.9rem 1.1rem;text-align:center}
 .aff-stat-num{font-family:'DM Serif Display',serif;font-size:1.5rem;color:var(--text);line-height:1}
 .aff-stat-label{font-size:.68rem;color:var(--text3);margin-top:.2rem}
@@ -1367,9 +1377,16 @@ table.data-table{width:100%;border-collapse:collapse;font-size:.76rem}
 <div class="dash-page" id="dp-preview">
   <div class="dash-topbar"><div><p class="ph">Preview Queue</p><p class="ps" id="preview-queue-subtitle">Loading…</p></div>
     <div style="display:flex;gap:8px;align-items:center">
-      <div class="toggle-wrap-sm"><span style="font-size:.76rem;color:var(--text2);margin-right:6px">Auto-post</span><label class="toggle-sm"><input type="checkbox" id="auto-post-toggle" onchange="handleAutoPostToggle(this.checked)"><span class="toggle-sm-sl"></span></label></div>
-      <button onclick="showInfoModal('Preview Queue','Today\'s videos ready to post. Review them before their scheduled time or leave Auto-post on to let the system handle it.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
+      <button onclick="showInfoModal('Preview Queue','Videos generated and scheduled on YouTube. They are currently private — YouTube will auto-publish them at the scheduled time. Click View on YouTube Studio to edit before they go live.')" title="About this section" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">ℹ</button>
     </div>
+  </div>
+  <!-- Filter bar -->
+  <div style="display:flex;gap:8px;padding:0 0 12px;flex-wrap:wrap">
+    <button class="pq-filter active" data-filter="all" onclick="setPQFilter('all',this)">All</button>
+    <button class="pq-filter" data-filter="today" onclick="setPQFilter('today',this)">Today</button>
+    <button class="pq-filter" data-filter="this_week" onclick="setPQFilter('this_week',this)">This Week</button>
+    <button class="pq-filter" data-filter="failed" onclick="setPQFilter('failed',this)">Failed</button>
+    <button onclick="initPreview()" style="margin-left:auto;font-size:.72rem;color:var(--text3);background:transparent;border:none;cursor:pointer" title="Refresh">↺ Refresh</button>
   </div>
   <div id="thumb-warn-preview" style="display:none"></div>
   <div id="preview-queue-list"></div>
@@ -3443,39 +3460,51 @@ async function initAnalytics() {
 }
 
 // ════════════════════════════════════════════
-// PREVIEW QUEUE — merges /api/content/queue (calendar slots) + /api/agents/preview/queue (pipeline)
+// PREVIEW QUEUE — shows YouTube-native scheduled videos + generation status
 // ════════════════════════════════════════════
 let liveQueue = [];
 let _countdownTimer = null;
-let _todayAllPosted = false;
+let _previewAutoRefreshTimer = null;
+let _pqFilter = 'all';
+
+function setPQFilter(filter, btn) {
+  _pqFilter = filter;
+  document.querySelectorAll('.pq-filter').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  initPreview();
+}
 
 async function initPreview() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
   ensureThumbnailWarnings(); // non-blocking
   list.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3);font-size:.82rem">Loading preview queue…</div>';
-  const [calData, pipeData] = await Promise.all([
-    apiCall('/api/content/queue'),
-    apiCall('/api/agents/preview/queue'),
-  ]);
-  const today = new Date().toISOString().slice(0, 10);
-  const allTodayItems = (calData?.items || []).filter(s => (s.date || s.scheduledDate || '') === today);
-  _todayAllPosted = allTodayItems.length > 0 && allTodayItems.every(s => s.posted || s.status === 'posted');
-  const calItems = allTodayItems
-    .filter(s => !s.posted && s.status !== 'posted')
-    .map(s => ({ ...s, slotId: s.slotId || `${s.day}_${s.videoIndex || 1}`, _source: 'calendar' }));
-  const pipeItems = (pipeData?.queue || pipeData?.videos || []).map(v => ({ ...v, _source: 'pipeline' }));
-  liveQueue = [...calItems, ...pipeItems];
+
+  // Fetch YouTube-scheduled slots from new endpoint
+  const data = await apiCall(`/api/content/scheduled?filter=${_pqFilter}`).catch(() => null);
+  liveQueue = (data?.slots || []).map(s => ({ ...s, slotId: String(s._id), _source: 'scheduled' }));
 
   const sub = document.getElementById('preview-queue-subtitle');
-  if (sub) sub.textContent = liveQueue.length ? `${liveQueue.length} video${liveQueue.length !== 1 ? 's' : ''} awaiting your review` : (_todayAllPosted ? 'All videos posted today' : 'No videos pending review');
+  const schedCount = liveQueue.filter(s => s.status === 'scheduled_on_youtube').length;
+  const genCount   = liveQueue.filter(s => s.status === 'processing').length;
+  if (sub) {
+    if (liveQueue.length === 0) sub.textContent = 'No videos in queue';
+    else sub.textContent = `${schedCount} scheduled on YouTube${genCount ? ` · ${genCount} generating` : ''}`;
+  }
 
   renderQueue();
-  // Restore auto-post toggle from saved state (default true matches schema default)
-  const apToggle = document.getElementById('auto-post-toggle');
-  if (apToggle) apToggle.checked = CURRENT_USER?.autoPost !== false;
   if (_countdownTimer) clearInterval(_countdownTimer);
   _countdownTimer = setInterval(tickCountdowns, 30000);
+
+  // Auto-refresh every 30 seconds to show generation progress
+  if (_previewAutoRefreshTimer) clearInterval(_previewAutoRefreshTimer);
+  _previewAutoRefreshTimer = setInterval(() => {
+    if (document.getElementById('dp-preview')?.classList.contains('active') ||
+        document.getElementById('dp-preview')?.style.display !== 'none') {
+      initPreview();
+    }
+  }, 30000);
+
   updateSidebarBadges();
 }
 
@@ -3519,35 +3548,58 @@ function renderQueue() {
   const list = document.getElementById('preview-queue-list');
   if (!list) return;
   if (!liveQueue.length) {
-    list.innerHTML = _todayAllPosted
-      ? '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">All videos posted today — next batch generates at midnight</div>'
-      : '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">Queue is empty — no content pending review</div>';
+    const emptyMsg = _pqFilter === 'failed'
+      ? 'No failed videos — everything generated successfully'
+      : 'No videos in queue — generation runs at midnight UTC';
+    list.innerHTML = `<div style="text-align:center;padding:3rem;color:var(--text3);font-size:.82rem">${emptyMsg}</div>`;
     return;
   }
+
   list.innerHTML = liveQueue.map(q => {
-    const slotId = q.slotId || String(q._id || q.id);
-    const src    = q._source || 'pipeline';
+    const slotId = q.slotId || String(q._id);
     const isShort = (q.type || '').toLowerCase() !== 'long-form';
     const badgeCls = isShort ? 'preview-badge' : 'preview-badge preview-badge-long';
     const typeLabel = isShort ? 'Short' : 'Long-form';
-    const postTimeStr = _fmtPostTime(q.scheduledPostTime) || (q.scheduledDate ? `Scheduled ${q.scheduledDate}` : 'Pending review');
-    const cd = _fmtCountdown(q.scheduledPostTime);
-    const countdownHtml = cd ? `<span class="preview-countdown${cd.past ? ' past' : ''}" id="cd-${slotId}">${cd.text}</span>` : '';
-    const hasPreview = !!q.previewReadyAt;
-    const statusLabel = q.status === 'posted' ? '<span style="color:var(--green);font-size:.69rem;font-weight:600">✓ Posted</span>' : q.status === 'processing' ? '<span style="color:#a5b4fc;font-size:.69rem;font-weight:600">⟳ Processing</span>' : '';
 
-    // Virality score chip (0-100) — colour-coded
+    // Publish time — prefer scheduledPublishAt (YT-native), fall back to scheduledPostTime
+    const publishTime = q.scheduledPublishAt || q.scheduledPostTime;
+    const postTimeStr = _fmtPostTime(publishTime) || (q.date ? `Scheduled ${q.date}` : 'Pending');
+    const cd = _fmtCountdown(publishTime);
+    const countdownHtml = cd ? `<span class="preview-countdown${cd.past ? ' past' : ''}" id="cd-${slotId}">${cd.text}</span>` : '';
+
+    // Status badge
+    const statusMap = {
+      scheduled_on_youtube: ['Scheduled on YouTube', 'pq-status-scheduled'],
+      processing:            ['Generating…',          'pq-status-generating'],
+      scheduled:             ['Queued',               'pq-status-generating'],
+      generation_failed:     ['Generation Failed',    'pq-status-failed'],
+      quota_skipped:         ['Quota Skipped',        'pq-status-quota_skipped'],
+      failed:                ['Failed',               'pq-status-failed'],
+    };
+    const [statusText, statusClass] = statusMap[q.status] || ['Unknown', 'pq-status-generating'];
+    const statusBadge = `<span class="pq-status-badge ${statusClass}">${statusText}</span>`;
+
+    // Virality score chip
     let viralityHtml = '';
     if (typeof q.viralityScore === 'number') {
       const v = q.viralityScore;
       const colour = v >= 70 ? '#34d399' : v >= 50 ? '#fcd34d' : '#f87171';
       const bg     = v >= 70 ? 'rgba(16,185,129,.12)' : v >= 50 ? 'rgba(245,158,11,.12)' : 'rgba(239,68,68,.12)';
-      const bd     = q.viralityBreakdown || {};
-      const tip    = `AI virality prediction: ${v}/100\nHook ${bd.hook ?? '–'}/35 · Trend ${bd.trend ?? '–'}/25 · Title ${bd.title ?? '–'}/15 · Length ${bd.length ?? '–'}/10 · Hashtags ${bd.hashtags ?? '–'}/15`;
-      viralityHtml = `<span title="${tip.replace(/"/g,'&quot;')}" style="font-size:.66rem;font-weight:700;color:${colour};background:${bg};border:1px solid ${colour}40;border-radius:20px;padding:2px 9px">⚡ Virality ${v}/100</span>`;
+      viralityHtml = `<span style="font-size:.66rem;font-weight:700;color:${colour};background:${bg};border:1px solid ${colour}40;border-radius:20px;padding:2px 9px">⚡ ${v}/100</span>`;
     }
-    const hashtagsHtml = (Array.isArray(q.hashtags) && q.hashtags.length)
-      ? `<p class="preview-meta" style="margin-top:3px;color:#a5b4fc;font-size:.68rem;letter-spacing:.01em">${q.hashtags.slice(0,7).join(' ')}</p>`
+
+    // Error detail for failed slots
+    const errorHtml = (q.status === 'generation_failed' || q.status === 'failed') && q.generationError
+      ? `<p style="font-size:.67rem;color:#f87171;margin-top:4px;padding:4px 8px;background:rgba(239,68,68,.07);border-radius:5px">${q.generationError.slice(0, 100)}</p>`
+      : '';
+
+    // YouTube Studio button (only for successfully scheduled videos)
+    const studioUrl = q.youtubeStudioUrl;
+    const studioBtn = studioUrl
+      ? `<a class="pq-studio-btn" href="${studioUrl}" target="_blank" rel="noopener" title="Edit video details in YouTube Studio. Changes will apply when published.">
+           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+           View on YouTube Studio →
+         </a>`
       : '';
 
     return `
@@ -3560,22 +3612,15 @@ function renderQueue() {
             <span class="${badgeCls}">${typeLabel}</span>
             <span class="preview-sched">${postTimeStr}</span>
             ${countdownHtml}
+            ${statusBadge}
             ${viralityHtml}
-            ${statusLabel}
           </div>
-          <p class="preview-meta">Day ${q.day || '?'} · Video ${q.videoIndex || 1}${q.angle ? ' · ' + q.angle : ''}</p>
-          ${hashtagsHtml}
+          <p class="preview-meta">${q.nicheName || ''}${q.channelId ? ' · ch:' + q.channelId.slice(-6) : ''}</p>
+          ${errorHtml}
         </div>
       </div>
-      <div class="preview-player" id="player-${slotId}">
-        <video controls playsinline preload="none">
-          <source src="/api/content/preview/${slotId}" type="video/mp4">
-        </video>
-      </div>
-      <div class="preview-actions">
-        ${hasPreview ? `<button class="act" onclick="togglePreview('${slotId}')">▶ Preview</button>` : `<button class="act" style="opacity:.45;cursor:not-allowed" title="Video not yet generated">▶ Preview</button>`}
-        <button class="act act-ok" onclick="approveVideo('${slotId}','${src}')">✓ Approve</button>
-        <button class="act" onclick="skipVideo('${slotId}','${src}')">Skip</button>
+      <div class="preview-actions" style="margin-top:.65rem">
+        ${studioBtn}
       </div>
     </div>`;
   }).join('');
@@ -4739,6 +4784,34 @@ async function openBillingModal() {
     const label = status === 'cancelled' ? 'Access until' : 'Renews';
     rows += `<div class="bm-row"><span class="bm-label">${label}</span><span class="bm-val">${fmt(renewDate)}</span></div>`;
   }
+  // Fetch saved timezone (may differ from browser timezone if user overrode it)
+  let savedTZ = userTZ;
+  try {
+    const tzRes = await apiCall('/api/user/timezone');
+    if (tzRes?.timezone) savedTZ = tzRes.timezone;
+  } catch {}
+
+  // Common IANA timezones for the selector
+  const TZ_OPTIONS = [
+    'UTC','America/New_York','America/Chicago','America/Denver','America/Los_Angeles',
+    'America/Toronto','America/Sao_Paulo','America/Mexico_City','America/Buenos_Aires',
+    'Europe/London','Europe/Paris','Europe/Berlin','Europe/Madrid','Europe/Rome',
+    'Europe/Moscow','Europe/Istanbul','Asia/Dubai','Asia/Karachi','Asia/Kolkata',
+    'Asia/Dhaka','Asia/Bangkok','Asia/Singapore','Asia/Hong_Kong','Asia/Tokyo',
+    'Asia/Seoul','Asia/Shanghai','Australia/Sydney','Australia/Melbourne',
+    'Pacific/Auckland','Africa/Cairo','Africa/Lagos','Africa/Johannesburg',
+  ];
+  const tzOpts = TZ_OPTIONS.map(tz =>
+    `<option value="${tz}"${tz === savedTZ ? ' selected' : ''}>${tz.replace(/_/g,' ')}</option>`
+  ).join('');
+  rows += `<div class="bm-row" style="align-items:center">
+    <span class="bm-label">Timezone</span>
+    <select id="bm-tz-select" onchange="saveBillingTimezone(this.value)"
+      style="background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:6px;
+             padding:3px 6px;font-size:.78rem;cursor:pointer;max-width:180px">
+      ${tzOpts}
+    </select>
+  </div>`;
   if (rowsEl) rowsEl.innerHTML = rows;
 
   // Action buttons
@@ -4765,6 +4838,17 @@ async function openBillingModal() {
 function closeBillingModal() {
   const overlay = document.getElementById('billing-modal-overlay');
   if (overlay) overlay.classList.remove('open');
+}
+
+async function saveBillingTimezone(tz) {
+  if (!tz) return;
+  try {
+    await apiCall('/api/user/timezone', 'PATCH', { timezone: tz });
+    if (CURRENT_USER) CURRENT_USER.timezone = tz;
+    toast('Timezone saved', 'success');
+  } catch {
+    toast('Failed to save timezone', 'error');
+  }
 }
 
 async function openPaddlePortal() {
