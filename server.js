@@ -3535,9 +3535,10 @@ async function runRetentionAnalysis() {
 //   hookHistorical (object|null): hook doc from hooksLibrary, scored on avgViews48h/successRate
 //   trendAlignment (number 0-1):  fraction of trending-topic words present in title
 //   title (string)
-//   wordCount (number): script length — used for length sweet-spot (28-45s = 60-100 words)
+//   wordCount (number): script length — used for length sweet-spot (65-85 words = 30-35s)
 //   hashtags (array): generated hashtags
-function calculateViralityScore({ hookHistorical = null, trendAlignment = 0, title = '', wordCount = 0, hashtags = [] } = {}) {
+//   script (string): full script text — used for hasCTA and hookStrength checks
+function calculateViralityScore({ hookHistorical = null, trendAlignment = 0, title = '', wordCount = 0, hashtags = [], script = '' } = {}) {
   // Hook strength (35 pts)
   let hook = 12; // default if no historical data
   if (hookHistorical) {
@@ -3561,11 +3562,11 @@ function calculateViralityScore({ hookHistorical = null, trendAlignment = 0, tit
   if (t.length >= 30 && t.length <= 60) title15 += 2;
   title15 = Math.min(15, title15);
 
-  // Length optimisation (10 pts) — 60-100 words ≈ 28-45s sweet spot
-  let len10 = 4;
-  if (wordCount >= 60 && wordCount <= 100) len10 = 10;
-  else if (wordCount >= 50 && wordCount <= 130) len10 = 7;
-  else if (wordCount >= 40 && wordCount <= 160) len10 = 5;
+  // Length optimisation (10 pts) — 65-85 words = 30-35s sweet spot
+  let len10 = 0;
+  if (wordCount >= 65 && wordCount <= 85) len10 = 10;
+  else if (wordCount >= 60 && wordCount <= 90) len10 = 6;
+  else if (wordCount >= 50 && wordCount <= 120) len10 = 3;
 
   // Hashtag strength (15 pts) — diversity + presence of #shorts/#trending/unique
   const tagCount = Array.isArray(hashtags) ? hashtags.length : 0;
@@ -3579,10 +3580,35 @@ function calculateViralityScore({ hookHistorical = null, trendAlignment = 0, tit
   if (tagCount >= 6 && new Set(hashtags).size === tagCount) tag15 += 3; // all unique
   tag15 = Math.min(15, tag15);
 
-  const total = hook + trend + title15 + len10 + tag15;
+  // NEW — hasCTA (+10): script ends with a known engagement CTA
+  const ctaBankRef = [
+    "Like this if it changed how you think.",
+    "Drop a like if you needed to hear this today.",
+    "If this resonated with you, tap like.",
+    "Like if you agree with this.",
+    "This took years to learn — like if it helped you.",
+    "Save this if you want to remember it.",
+    "Like if this surprised you.",
+    "Tap like if this made you think differently."
+  ];
+  const hasCTA = ctaBankRef.some(c => String(script || '').trimEnd().endsWith(c)) ? 10 : 0;
+
+  // NEW — hookStrength (+10): first sentence > 8 words and not a question
+  const firstSentence = String(script || '').split(/(?<=[.!?])\s/)[0].trim();
+  const fsWords = firstSentence.split(/\s+/).filter(Boolean).length;
+  const fsIsQuestion = firstSentence.endsWith('?') ||
+    /^(did you|have you|what if|why do|how do|are you|can you|is it|do you|would you|should you)\b/i.test(firstSentence);
+  const hookStrength = (fsWords > 8 && !fsIsQuestion) ? 10 : 0;
+
+  // NEW — scriptLength: +5 if 65-85 words (30-35s), -10 if over 90 (too long)
+  let scriptLenBonus = 0;
+  if (wordCount >= 65 && wordCount <= 85) scriptLenBonus = 5;
+  else if (wordCount > 90) scriptLenBonus = -10;
+
+  const total = hook + trend + title15 + len10 + tag15 + hasCTA + hookStrength + scriptLenBonus;
   return {
     score: Math.max(0, Math.min(100, total)),
-    breakdown: { hook, trend, title: title15, length: len10, hashtags: tag15 },
+    breakdown: { hook, trend, title: title15, length: len10, hashtags: tag15, hasCTA, hookStrength, scriptLength: scriptLenBonus },
   };
 }
 
@@ -6392,7 +6418,7 @@ async function fetchScriptContext(userId, channelId) {
 // Returns { title, script, hook, loopEnding, captions, hashtags, wordCount, scriptContext }
 // Shorts: structured JSON with hook rules, 130-150 word target, caption segments, hashtags
 // Long-form: plain text wrapped in the same shape for a consistent call site
-async function pipelineGenerateScript(title, nicheName, type, hookTemplate, userId = null, channelId = null) {
+async function pipelineGenerateScript(title, nicheName, type, hookTemplate, userId = null, channelId = null, slotSeed = null) {
   const { OpenAI } = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -6457,85 +6483,240 @@ async function pipelineGenerateScript(title, nicheName, type, hookTemplate, user
   }
 
   // ── Shorts: viral-optimised structured JSON ──
-  const prompt = `You are a viral YouTube Shorts script writer for a "${nicheName}" channel.
-Write a viral-optimised Shorts script for the video: "${title}"
-${hookInstruction}
 
-${trendingBlock}${competitorBlock}${pastVideosBlock}STRICT RULES:
-1. HOOK (first 3 seconds): ${hookTemplate ? `Use the mandatory hook above verbatim (replace [TOPIC] with the video topic). Do NOT modify it.` : `Must use ONE of: a shocking fact ("Did you know…"), a bold claim ("Most people get this wrong…"), a direct question ("What if you could…"), or a number ("3 things that…"). Hook must be under 15 words.`}
-2. LENGTH: Script must be EXACTLY 130-150 words total. This is a hard requirement — do NOT write fewer than 130 words under any circumstances. Count every word. 130-150 words at natural speaking pace produces a 55-65 second video.
-3. CURIOSITY-GAP STRUCTURE (mandatory — follow line by line):
-   • Line 1: The Hook (above).
-   • Lines 2-4: Tease the answer/payoff but DO NOT reveal it. Hint at the surprise, name the stakes, and promise the reveal is coming.
-   • Lines 5-8: Build context, raise the stakes, give one concrete example or contrast that makes the audience need the answer.
-   • Final 2 sentences: The reveal/payoff — and the very LAST sentence must echo or reference the hook to create a rewatch loop.
-   HARD RULE: Never reveal the main answer until the final 2 sentences. Build anticipation throughout.
-4. STYLE: Short punchy sentences only. Zero filler words (no "basically", "actually", "you know"). Every sentence adds new information or a concrete example.
-5. TITLE: Generate a viral title using power words. Format: "[Number] [Topic] That [Surprising Outcome]" OR "Why [Common Belief] Is Wrong" OR "The [Topic] Secret Nobody Tells You".
-6. HASHTAGS: Generate exactly 5 hashtags relevant to the ${nicheName} niche.
-7. CAPTIONS: Split the full script into caption segments — each segment MAX 4 words, estimated timestamps at ~2.5 words/sec pace.
+  // CTA bank — appended after script, not counted in word count
+  const ctaBank = [
+    "Like this if it changed how you think.",
+    "Drop a like if you needed to hear this today.",
+    "If this resonated with you, tap like.",
+    "Like if you agree with this.",
+    "This took years to learn — like if it helped you.",
+    "Save this if you want to remember it.",
+    "Like if this surprised you.",
+    "Tap like if this made you think differently."
+  ];
 
-Return valid JSON only — no prose, no markdown:
+  // Niche-specific emotional tone instructions
+  const nicheToneMap = {
+    'psychology':       'Focus on human behaviour, self-awareness, and mental patterns. Make viewers feel deeply understood.',
+    'self-improvement': 'Focus on identity, habits, and growth. Make viewers feel motivated and slightly challenged.',
+    'fitness':          'Focus on effort, results, and transformation. Make viewers feel energised and capable.',
+    'business':         'Focus on money, leverage, and strategy. Make viewers feel like they are getting insider knowledge.',
+    'finance':          'Focus on wealth, mistakes, and smart decisions. Make viewers feel financially empowered.',
+    'history':          'Focus on surprising facts and human stories. Make viewers feel intellectually stimulated.',
+    'education':        'Focus on clarity and insight. Make viewers feel smarter after watching.',
+    'entertainment':    'Focus on surprise, humour, and relatability. Make viewers feel entertained and seen.',
+    'default':          'Focus on delivering genuine value. Make viewers feel the watch was worth their time.'
+  };
+  const nicheLower = (nicheName || '').toLowerCase();
+  const toneInstruction = nicheToneMap[nicheLower] || nicheToneMap['default'];
+
+  // Deterministic CTA selection — seed from slotSeed so same slot always gets same CTA
+  function _seedHash(s) {
+    let h = 0;
+    const str = String(s || '');
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+    return h;
+  }
+  const ctaIndex    = _seedHash(slotSeed) % ctaBank.length;
+  const selectedCTA = ctaBank[ctaIndex];
+
+  const hookMandatory = hookTemplate
+    ? `\nOPENING HOOK (mandatory — use verbatim, replace [TOPIC] with the video topic): "${hookTemplate}"`
+    : '';
+
+  const systemPrompt = `You are an expert YouTube Shorts scriptwriter specialising in viral short-form content for the ${nicheName} niche.
+
+STRICT REQUIREMENTS:
+- Length: 65-85 words ONLY (30-35 seconds when spoken). Hard maximum: 90 words. Hard minimum: 60 words.
+- Structure: Hook (0-3 sec) → Explanation (3-25 sec) → Takeaway (25-33 sec) → [CTA appended separately]
+- Hook: Must be a bold, provocative STATEMENT — never a question, never an intro like 'hey guys'
+- Tone: Emotionally charged — make the viewer feel surprised, validated, curious, or challenged
+- Language: Conversational, direct, second-person (use 'you' frequently)
+- NO filler words: never start with 'In today's video', 'Did you know', 'Welcome back'
+- NO weak openers: never start with a question or greeting
+- Takeaway: Must give the viewer one clear, actionable or thought-provoking insight
+- Format: Plain text only, no bullet points, no headers, no stage directions
+
+HOOK EXAMPLES (use as style reference, never copy):
+- 'Most people spend their entire lives optimising for the wrong thing.'
+- 'The version of you from 5 years ago would not recognise you right now.'
+- 'You are not lazy. You are overwhelmed and calling it laziness.'
+
+EMOTIONAL TRIGGERS TO USE:
+- Surprise: reveal something counterintuitive
+- Validation: make viewers feel understood
+- Curiosity: hint at something most people do not know
+- Challenge: push back on a common belief
+
+NICHE TONE: ${toneInstruction}
+
+TITLE: Generate a viral title using power words. Format: "[Number] [Topic] That [Surprising Outcome]" OR "Why [Common Belief] Is Wrong" OR "The [Topic] Secret Nobody Tells You".
+HASHTAGS: Generate exactly 5 hashtags relevant to the ${nicheName} niche.
+CAPTIONS: Split the script into caption segments — each segment MAX 4 words, estimated timestamps at ~2.5 words/sec pace.
+${hookMandatory}
+${trendingBlock}${competitorBlock}${pastVideosBlock}Return valid JSON only — no prose, no markdown:
 {
   "title": "viral title here",
-  "script": "full spoken script, 130-150 words, no stage directions",
-  "wordCount": 140,
+  "script": "full spoken script, 65-85 words, no stage directions, no CTA",
+  "wordCount": 75,
   "hook": "the opening hook sentence only",
-  "loopEnding": "the last sentence that echoes the hook",
+  "loopEnding": "the final takeaway sentence",
   "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
   "captions": [
-    {"text": "Did you know", "start": 0, "end": 1.6},
-    {"text": "most people fail", "start": 1.6, "end": 3.0}
+    {"text": "Most people waste", "start": 0, "end": 1.8},
+    {"text": "their entire lives", "start": 1.8, "end": 3.2}
   ]
 }`;
 
-  scriptContext.promptLength = prompt.length;
-  console.log(`[AI SCRIPT] channel=${channelId||'?'} hook=${hookTemplate?'yes':'none'} competitors=${competitors.length} pastVideos=${pastSlots.length} promptChars=${prompt.length}`);
+  const userPrompt = `Write a script for this topic: ${title}`;
+
+  scriptContext.promptLength = systemPrompt.length + userPrompt.length;
+  console.log(`[AI SCRIPT] channel=${channelId||'?'} hook=${hookTemplate?'yes':'none'} competitors=${competitors.length} pastVideos=${pastSlots.length} promptChars=${scriptContext.promptLength} cta="${selectedCTA}"`);
+
+  // Bad-hook patterns for Part 4 validation
+  const BAD_HOOK_PATTERNS = [
+    /^did you know/i,
+    /^hey\b/i,
+    /^hello\b/i,
+    /^welcome\b/i,
+    /^in this video/i,
+    /^today we/i,
+  ];
+
+  function _isHookBad(script) {
+    const first = String(script || '').split(/(?<=[.!?])\s/)[0].trim();
+    if (first.endsWith('?')) return true;
+    if (first.split(/\s+/).filter(Boolean).length < 6) return true;
+    return BAD_HOOK_PATTERNS.some(p => p.test(first));
+  }
+
+  // Trim script to maxWords words, preserving hook (first sentence) and last sentence (takeaway)
+  function _trimScript(script, maxWords) {
+    const words = script.trim().split(/\s+/);
+    if (words.length <= maxWords) return script;
+    // Find sentence boundaries
+    const sentences = script.trim().match(/[^.!?]+[.!?]+/g) || [script];
+    if (sentences.length <= 2) return words.slice(0, maxWords).join(' ');
+    // Keep first sentence (hook) + last sentence (takeaway), trim middle
+    const hook    = sentences[0].trim();
+    const last    = sentences[sentences.length - 1].trim();
+    const budget  = maxWords - hook.split(/\s+/).length - last.split(/\s+/).length;
+    let middle = '';
+    for (let i = 1; i < sentences.length - 1 && middle.split(/\s+/).filter(Boolean).length < budget; i++) {
+      const candidate = (middle + ' ' + sentences[i]).trim();
+      if (candidate.split(/\s+/).filter(Boolean).length <= budget) middle = candidate;
+      else break;
+    }
+    return [hook, middle, last].filter(Boolean).join(' ');
+  }
 
   let best = null;
+  let hookRejected = false;
+
   for (let attempt = 1; attempt <= 3; attempt++) {
-    // Attempt 1: temp 0.85, strict 120-180 words
-    // Attempt 2: temp 0.9 for more variation, still 120-180
-    // Attempt 3: temp 0.9, relaxed 100-200 words
     const temperature = attempt === 1 ? 0.85 : 0.9;
-    const minWords    = attempt === 3 ? 100 : 120;
-    const maxWords    = attempt === 3 ? 200 : 180;
+    const isLastAttempt = attempt === 3;
+
+    // On hook-rejection regeneration attempt we modify the system message
+    const sysContent = (attempt === 2 && hookRejected)
+      ? systemPrompt + '\n\nIMPORTANT: The previous hook was rejected. Start with a powerful declarative statement that immediately creates tension or curiosity.'
+      : systemPrompt;
+
     try {
       const res = await openai.chat.completions.create({
         model:           'gpt-4o-mini',
-        messages:        [{ role: 'user', content: prompt }],
+        messages:        [
+          { role: 'system', content: sysContent },
+          { role: 'user',   content: userPrompt },
+        ],
         temperature,
         response_format: { type: 'json_object' },
       });
       const parsed    = JSON.parse(res.choices[0].message.content);
-      const wordCount = (parsed.script || '').split(/\s+/).filter(Boolean).length;
+      let   rawScript = (parsed.script || '').trim();
       const inTok2    = res.usage?.prompt_tokens    || 0;
       const outTok2   = res.usage?.completion_tokens || 0;
-      const ok = wordCount >= minWords && wordCount <= maxWords;
+
+      // Part 4 — hook quality validation (only on first attempt)
+      if (attempt === 1 && _isHookBad(rawScript)) {
+        hookRejected = true;
+        logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
+          inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, false);
+        console.log(`[SCRIPT] slotId=${slotSeed} hookRejected=true regenerating=true`);
+        continue; // attempt 2 will carry the rejection notice
+      }
+      if (attempt === 1) console.log(`[SCRIPT] slotId=${slotSeed} hookQuality=passed`);
+
+      // Part 1 — word count validation (excluding CTA which is appended separately)
+      let wordCount = rawScript.split(/\s+/).filter(Boolean).length;
+
+      if (wordCount > 90) {
+        rawScript = _trimScript(rawScript, 90);
+        wordCount = rawScript.split(/\s+/).filter(Boolean).length;
+        console.log(`[SCRIPT] slotId=${slotSeed} trimmedTo=${wordCount} words`);
+      }
+
+      const ok = wordCount >= 60 && wordCount <= 90;
       logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
         inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, ok);
-      console.log(`[Script] attempt=${attempt} words=${wordCount} temperature=${temperature} target=${minWords}-${maxWords}`);
-      if (ok) { best = { ...parsed, wordCount }; break; }
-      if (wordCount < minWords) console.warn(`[Script] ${wordCount} words too short (< ${minWords}) — retrying`);
-      else console.warn(`[Script] ${wordCount} words too long (> ${maxWords}) — retrying`);
-      // On last attempt, accept any non-empty script rather than failing
-      if (attempt === 3 && wordCount > 0) { best = { ...parsed, wordCount }; break; }
+
+      const approxSeconds = Math.round((wordCount / 150) * 60);
+      console.log(`[SCRIPT] slotId=${slotSeed} wordCount=${wordCount} length=~${approxSeconds}s attempt=${attempt}`);
+
+      if (wordCount < 60 && !isLastAttempt) {
+        console.warn(`[SCRIPT] ${wordCount} words too short (< 60) — regenerating once with expand instruction`);
+        // Inject expand instruction into next attempt's prompt via a flag
+        hookRejected = false; // don't double-stack rejection notice
+        // Build a one-off expand attempt
+        const expandRes = await openai.chat.completions.create({
+          model:           'gpt-4o-mini',
+          messages:        [
+            { role: 'system', content: systemPrompt + '\n\nIMPORTANT: The previous script was too short. Expand slightly while keeping it punchy. Target 70-80 words.' },
+            { role: 'user',   content: userPrompt },
+          ],
+          temperature:     0.9,
+          response_format: { type: 'json_object' },
+        });
+        const expandParsed = JSON.parse(expandRes.choices[0].message.content);
+        const expandScript = (expandParsed.script || '').trim();
+        const expandWC     = expandScript.split(/\s+/).filter(Boolean).length;
+        const expTok       = (expandRes.usage?.prompt_tokens || 0) + (expandRes.usage?.completion_tokens || 0);
+        logAPIUsage('openai', 'script_short', null, expTok,
+          (expandRes.usage?.prompt_tokens || 0) * API_COSTS.openai_input + (expandRes.usage?.completion_tokens || 0) * API_COSTS.openai_output, expandWC >= 60);
+        console.log(`[SCRIPT] expand result: ${expandWC} words`);
+        if (expandWC >= 60) {
+          best = { ...expandParsed, script: expandScript, wordCount: expandWC };
+          break;
+        }
+      }
+
+      if (ok || isLastAttempt) {
+        best = { ...parsed, script: rawScript, wordCount };
+        break;
+      }
+      console.warn(`[SCRIPT] ${wordCount} words outside 60-90 range — retrying (attempt ${attempt})`);
     } catch (err) {
       logAPIUsage('openai', 'script_short', null, 0, 0, false);
       console.warn(`[Script] attempt=${attempt} failed: ${err.message}`);
     }
   }
-  // Absolute fallback — generate a minimal usable script rather than failing the slot entirely
+
+  // Absolute fallback
   if (!best) {
-    console.warn(`[Script] All 3 attempts failed — using hardcoded fallback script for "${title}"`);
-    const fallbackScript = `${title}. Here's what you need to know. Most people overlook this completely. First, understanding the basics changes everything. Second, consistency beats perfection every time. Third, small daily actions compound into massive results. The research is clear on this. Studies show that people who apply these principles see real change within weeks. So start today, not tomorrow. Your future self will thank you. Remember: ${title.split(' ').slice(0, 4).join(' ')} is the key to lasting transformation. Take action now.`;
-    best = { title, script: fallbackScript, hook: title, loopEnding: '', captions: [], hashtags: [], wordCount: fallbackScript.split(/\s+/).length };
+    console.warn(`[Script] All attempts failed — using hardcoded fallback for "${title}"`);
+    const fallbackScript = `Most people never realise how much ${title.toLowerCase()} shapes their daily decisions. You've been told to focus on the outcome, but the real shift happens at the habit level. Small, consistent changes rewire how you think and act. The people who master this do not just change what they do — they change who they are. You already have everything you need to start.`;
+    best = { title, script: fallbackScript, hook: title, loopEnding: '', captions: [], hashtags: [], wordCount: fallbackScript.split(/\s+/).filter(Boolean).length };
     console.log(`[Script] fallback wordCount=${best.wordCount}`);
   }
 
+  // Part 2 — append CTA (never counted in wordCount)
+  const finalScript = best.script.trimEnd() + ' ' + selectedCTA;
+  console.log(`[SCRIPT] slotId=${slotSeed} cta="${selectedCTA}"`);
+
   return {
     title:          best.title      || title,
-    script:         best.script     || '',
+    script:         finalScript,
     hook:           best.hook       || '',
     loopEnding:     best.loopEnding || '',
     captions:       Array.isArray(best.captions)  ? best.captions.slice(0, 200)  : [],
@@ -7830,7 +8011,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     }
 
     // ── H) Virality Score — generate script, score it, regenerate (max 2x) if score < 50 ──
-    let scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '');
+    let scriptData = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '', slotDoc._id);
     let hashtagsForUpload = await generateHashtags(scriptData.script, nicheName).catch(() => scriptData.hashtags || []);
     let viralityResult = (function () {
       const align = computeTrendAlignment(scriptData.title || slotDoc.title, scriptData.trendingTopics || []);
@@ -7840,13 +8021,14 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
         title:          scriptData.title || slotDoc.title,
         wordCount:      scriptData.wordCount || 0,
         hashtags:       hashtagsForUpload,
+        script:         scriptData.script  || '',
       });
     })();
 
     if (viralityResult.score < 50 && (slotDoc.type !== 'Long-form')) {
       for (let vAttempt = 1; vAttempt <= 2; vAttempt++) {
         console.log(`[VIRALITY] Score ${viralityResult.score} < 50 — regenerating (attempt ${vAttempt}/2)`);
-        const retry = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '');
+        const retry = await pipelineGenerateScript(slotDoc.title, nicheName, slotDoc.type, selectedHook?.template || null, String(slotDoc.userId), slotDoc.channelId || '', slotDoc._id);
         const retryTags = await generateHashtags(retry.script, nicheName).catch(() => retry.hashtags || []);
         const align = computeTrendAlignment(retry.title || slotDoc.title, retry.trendingTopics || []);
         const retryScore = calculateViralityScore({
@@ -7855,6 +8037,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
           title:          retry.title || slotDoc.title,
           wordCount:      retry.wordCount || 0,
           hashtags:       retryTags,
+          script:         retry.script   || '',
         });
         if (retryScore.score > viralityResult.score) {
           scriptData = retry;
@@ -8230,7 +8413,7 @@ async function runProductionPipelineForSlot(calendar, slot, user, col) {
     // 1/3 Script
     failedStep = 'script_generation';
     console.log(`[Pipeline] 1/3 Script — "${slot.title}" (${nicheName})`);
-    const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type, null, String(calendar.userId), slot.channelId || calendar.channelId || '');
+    const scriptData = await pipelineGenerateScript(slot.title, nicheName, slot.type, null, String(calendar.userId), slot.channelId || calendar.channelId || '', `${slot.day}_${slot.videoIndex || 1}`);
     const script     = scriptData.script;
     console.log(`[Pipeline] 1/3 Done — ${scriptData.wordCount} words, ${scriptData.captions.length} captions`);
 

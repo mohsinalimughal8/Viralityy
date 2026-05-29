@@ -3579,13 +3579,24 @@ function renderQueue() {
     const [statusText, statusClass] = statusMap[q.status] || ['Unknown', 'pq-status-generating'];
     const statusBadge = `<span class="pq-status-badge ${statusClass}">${statusText}</span>`;
 
-    // Virality score chip
+    // Virality score chip with breakdown tooltip
     let viralityHtml = '';
     if (typeof q.viralityScore === 'number') {
-      const v = q.viralityScore;
+      const v  = q.viralityScore;
+      const bd = q.viralityBreakdown || {};
       const colour = v >= 70 ? '#34d399' : v >= 50 ? '#fcd34d' : '#f87171';
       const bg     = v >= 70 ? 'rgba(16,185,129,.12)' : v >= 50 ? 'rgba(245,158,11,.12)' : 'rgba(239,68,68,.12)';
-      viralityHtml = `<span style="font-size:.66rem;font-weight:700;color:${colour};background:${bg};border:1px solid ${colour}40;border-radius:20px;padding:2px 9px">⚡ ${v}/100</span>`;
+      const tipLines = [
+        `Hook:        ${bd.hook      ?? '—'}`,
+        `Trend:       ${bd.trend     ?? '—'}`,
+        `Title:       ${bd.title     ?? '—'}`,
+        `Length:      ${bd.length    ?? '—'}`,
+        `Hashtags:    ${bd.hashtags  ?? '—'}`,
+        `CTA:         ${bd.hasCTA    != null ? (bd.hasCTA > 0 ? '+' + bd.hasCTA : bd.hasCTA) : '—'}`,
+        `Hook str:    ${bd.hookStrength != null ? (bd.hookStrength > 0 ? '+' + bd.hookStrength : bd.hookStrength) : '—'}`,
+        `Script len:  ${bd.scriptLength != null ? (bd.scriptLength >= 0 ? '+' + bd.scriptLength : bd.scriptLength) : '—'}`,
+      ].join('&#10;');
+      viralityHtml = `<span title="${tipLines}" style="font-size:.66rem;font-weight:700;color:${colour};background:${bg};border:1px solid ${colour}40;border-radius:20px;padding:2px 9px;cursor:default">⚡ ${v}/100</span>`;
     }
 
     // Error detail for failed slots
