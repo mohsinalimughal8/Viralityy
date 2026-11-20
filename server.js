@@ -250,6 +250,7 @@ function emailDailyGenerationFailed({ userName, total, errors }) {
 }
 
 const app  = express();
+app.set('trust proxy', 1); // behind Railway's proxy: real client IPs for rate limiting / req.ip
 const PORT = process.env.PORT || 3000;
 
 // =============================================================================
@@ -287,13 +288,13 @@ const API_COSTS = {
   openai_input:        0.000003,   // per input token (gpt-4o-mini)
   openai_output:       0.000015,   // per output token (gpt-4o-mini)
   gemini_tts:          0.000001,   // per character
-  youtube_upload:      1600,       // quota units per upload
+  youtube_upload:      100,        // quota units per upload (videos.insert)
   youtube_analytics:   10,         // quota units per analytics report call
   youtube_daily_quota: 10000,      // total daily quota units
 };
 
 const YOUTUBE_QUOTA_COSTS = {
-  upload:     1600,
+  upload:      100,
   search:      100,
   channels:      1,
   analytics:    10,
@@ -313,7 +314,7 @@ const QUOTA_AUDIT_MAP = [
   { endpoint: 'search.list + channels.list',   cost: 101,  guarded: true,  location: 'POST /api/research/niche — competitor suggestions' },
   { endpoint: 'search.list × 3 + channels.list', cost: 301, guarded: true, location: 'POST /api/competitors/add' },
   { endpoint: 'channels.list + videos.list',   cost: 2,    guarded: true,  location: 'fetchLiveAnalytics' },
-  { endpoint: 'videos.insert',                 cost: 1600, guarded: true,  location: 'pipelineUploadToYouTube — video upload' },
+  { endpoint: 'videos.insert',                 cost: 100,  guarded: true,  location: 'pipelineUploadToYouTube — video upload' },
   { endpoint: 'videos.list + thumbnails.set',  cost: 51,   guarded: true,  location: 'pipelineUploadToYouTube — doThumbUpload' },
   { endpoint: 'videos.list',                   cost: 1,    guarded: true,  location: 'analyzeChannelPerformance' },
   { endpoint: 'videos.list',                   cost: 1,    guarded: true,  location: 'fetchYesterdayPerformance (daily gen context)' },
@@ -6639,10 +6640,13 @@ ${trendingBlock}${competitorBlock}${pastVideosBlock}Return valid JSON only — n
       const outTok2   = res.usage?.completion_tokens || 0;
 
       // Part 4 — hook quality validation (only on first attempt)
+      // NOTE: `success` in apiUsage means "the OpenAI API call succeeded". Content-quality
+      // rejections (weak hook, wrong word count) are retries, not API failures — logging them
+      // as failures made the admin dashboard show a ~50% OpenAI success rate.
       if (attempt === 1 && _isHookBad(rawScript)) {
         hookRejected = true;
         logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
-          inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, false);
+          inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, true);
         console.log(`[SCRIPT] slotId=${slotSeed} hookRejected=true regenerating=true`);
         continue; // attempt 2 will carry the rejection notice
       }
@@ -6659,7 +6663,7 @@ ${trendingBlock}${competitorBlock}${pastVideosBlock}Return valid JSON only — n
 
       const ok = wordCount >= 60 && wordCount <= 90;
       logAPIUsage('openai', 'script_short', null, inTok2 + outTok2,
-        inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, ok);
+        inTok2 * API_COSTS.openai_input + outTok2 * API_COSTS.openai_output, true);
 
       const approxSeconds = Math.round((wordCount / 150) * 60);
       console.log(`[SCRIPT] slotId=${slotSeed} wordCount=${wordCount} length=~${approxSeconds}s attempt=${attempt}`);
@@ -6683,7 +6687,7 @@ ${trendingBlock}${competitorBlock}${pastVideosBlock}Return valid JSON only — n
         const expandWC     = expandScript.split(/\s+/).filter(Boolean).length;
         const expTok       = (expandRes.usage?.prompt_tokens || 0) + (expandRes.usage?.completion_tokens || 0);
         logAPIUsage('openai', 'script_short', null, expTok,
-          (expandRes.usage?.prompt_tokens || 0) * API_COSTS.openai_input + (expandRes.usage?.completion_tokens || 0) * API_COSTS.openai_output, expandWC >= 60);
+          (expandRes.usage?.prompt_tokens || 0) * API_COSTS.openai_input + (expandRes.usage?.completion_tokens || 0) * API_COSTS.openai_output, true);
         console.log(`[SCRIPT] expand result: ${expandWC} words`);
         if (expandWC >= 60) {
           best = { ...expandParsed, script: expandScript, wordCount: expandWC };
@@ -8952,8 +8956,8 @@ async function runUserGeneration(queueEntry, slotsCol, queueCol) {
     return;
   }
 
-  // Quota calculation — 1650 units per video (1600 upload + 50 thumbnail)
-  const quotaPerVideo = 1650;
+  // Quota calculation — 150 units per video (100 upload + 50 thumbnail)
+  const quotaPerVideo = YOUTUBE_QUOTA_COSTS.upload + YOUTUBE_QUOTA_COSTS.thumbnails;
   const quotaNeeded   = videosToGenerate * quotaPerVideo;
   const quotaCheck    = await checkYoutubeQuota(0, String(userId)).catch(() => ({ allowed: true, used: 0 }));
   const quotaUsed     = quotaCheck.used || 0;
@@ -9707,7 +9711,7 @@ app.get('/api/admin/quota-audit', requireAdmin, async (req, res) => {
     const activeUsers = await User.countDocuments({ 'youtubeChannels.0': { $exists: true } }).catch(() => 0);
 
     // Projected daily spend: one full pipeline per active user per day
-    // = upload (1600) + thumbnails.set+videos.list (51) + analytics (10) + channels.list + videos.list for live analytics (2)
+    // = upload (100) + thumbnails.set+videos.list (51) + analytics (10) + channels.list + videos.list for live analytics (2)
     const projectedPerUser = YOUTUBE_QUOTA_COSTS.upload + YOUTUBE_QUOTA_COSTS.thumbnails + YOUTUBE_QUOTA_COSTS.default + YOUTUBE_QUOTA_COSTS.analytics + 2;
     const projectedDaily   = projectedPerUser * Math.max(activeUsers, 1);
 
