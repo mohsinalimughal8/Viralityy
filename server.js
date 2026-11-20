@@ -1166,11 +1166,8 @@ function hashIp(ip) {
 
 // Admin JWT middleware — separate secret from user JWT; returns 403 with no details on failure
 function requireAdmin(req, res, next) {
-  // ?secret= bypass — allows browser-direct admin calls without a JWT
-  if (req.query.secret === 'VRL-ADM-X7K9-2025') {
-    req.adminUser = { role: 'admin', secretBypass: true };
-    return next();
-  }
+  // Admin JWT only (from POST /api/admin/login). The old hard-coded ?secret= bypass was
+  // removed because the repo is public — anyone could read it and get admin access.
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(403).json({ error: 'Access denied' });
   try {
@@ -10481,7 +10478,7 @@ app.get('/api/admin/test-thumbnail-upload', requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/test-thumb-upload?secret=VRL-ADM-X7K9-2025&videoId=VIDEO_ID
+// GET /api/admin/test-thumb-upload?videoId=VIDEO_ID  (Authorization: Bearer <admin token>)
 // Maximum-verbosity thumbnail debug endpoint. Generates an Imagen 4 thumbnail and attempts to
 // apply it to a real YouTube video — logs every step so we can diagnose Shorts thumbnail failures
 // without waiting for the next posting cycle.
@@ -10774,7 +10771,7 @@ app.post('/api/admin/channels/:channelId/thumbnail-enabled', requireAdmin, async
 });
 
 // GET /api/admin/slots-report — last 7 days of slots grouped by status with failure/skip reasons
-// Access: requireAdmin (?secret=VRL-ADM-X7K9-2025 bypass works in browser)
+// Access: requireAdmin (Authorization: Bearer <admin token>)
 app.get('/api/admin/slots-report', requireAdmin, async (req, res) => {
   try {
     const slotsCol = agentCol('calendar_slots');
@@ -11197,10 +11194,9 @@ Return valid JSON with exactly these fields:
 
 // =============================================================================
 // GET /api/admin/test-email — send preview of any email type to ADMIN_EMAIL
-// Usage: /api/admin/test-email?secret=VRL-ADM-X7K9-2025&type=success|failure|trial|digest|confirm|cancelled
+// Usage: /api/admin/test-email?type=success|failure|trial|digest|confirm|cancelled  (Authorization: Bearer <admin token>)
 // =============================================================================
-app.get('/api/admin/test-email', async (req, res) => {
-  if (req.query.secret !== 'VRL-ADM-X7K9-2025') return res.status(403).json({ error: 'Forbidden' });
+app.get('/api/admin/test-email', requireAdmin, async (req, res) => {
   const adminEmail = process.env.ADMIN_EMAIL;
   if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL env var not set' });
   const type = req.query.type || 'success';
@@ -11614,11 +11610,9 @@ app.get('/api/admin/activity/live', requireAdmin, async (req, res) => {
 // GET /admin/activity — real-time activity dashboard (HTML, no framework)
 // Must be BEFORE the app.get('*') catchall.
 // =============================================================================
+// The page itself holds no data; it asks for ADMIN_PASSWORD, logs in via
+// POST /api/admin/login, and fetches events with the returned admin token.
 app.get('/admin/activity', (req, res) => {
-  if (req.query.secret !== 'VRL-ADM-X7K9-2025') {
-    return res.status(403).send('<h1>403 Forbidden</h1><p>Pass ?secret=VRL-ADM-X7K9-2025</p>');
-  }
-  const secret = 'VRL-ADM-X7K9-2025';
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -11673,8 +11667,25 @@ header span{color:#555;font-size:12px}
 </div>
 <div id="events"><div id="empty">No events yet — waiting for activity…</div></div>
 <script>
-const SECRET = '${secret}';
+const TOKEN_KEY = 'vly_admin_token';
 let filterSev = '';
+
+async function getAdminToken(forceLogin){
+  let token = null;
+  try { token = forceLogin ? null : sessionStorage.getItem(TOKEN_KEY); } catch(_){}
+  if (token) return token;
+  const password = window.prompt('Admin password');
+  if (!password) throw new Error('login required');
+  const r = await fetch('/api/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!r.ok) throw new Error('login failed (HTTP ' + r.status + ')');
+  const d = await r.json();
+  try { sessionStorage.setItem(TOKEN_KEY, d.token); } catch(_){}
+  return d.token;
+}
 let allEvents = [];
 
 function fmt(ts){ return new Date(ts).toLocaleTimeString('en-GB',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})+' '+new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }
@@ -11700,9 +11711,17 @@ function renderEvents(){
   }).join('');
 }
 
-async function fetchEvents(){
+let loginFailed = false;
+async function fetchEvents(retried){
+  if (loginFailed) return;
   try{
-    const r = await fetch('/api/admin/activity?secret='+SECRET+'&limit=100');
+    const token = await getAdminToken(false);
+    const r = await fetch('/api/admin/activity?limit=100', { headers: { Authorization: 'Bearer ' + token } });
+    if (r.status === 403 && !retried) {
+      // Token expired (8h) or invalid — clear it and ask for the password again
+      try { sessionStorage.removeItem(TOKEN_KEY); } catch(_){}
+      return fetchEvents(true);
+    }
     if(!r.ok) throw new Error('HTTP '+r.status);
     const d = await r.json();
     allEvents = d.events || [];
@@ -11710,7 +11729,8 @@ async function fetchEvents(){
     document.getElementById('status').textContent = 'live · updated '+new Date().toLocaleTimeString();
     document.getElementById('status').className = 'live';
   } catch(err){
-    document.getElementById('status').textContent = 'error: '+err.message;
+    if (/login/.test(err.message)) loginFailed = true; // stop the 10s loop from re-prompting; reload to retry
+    document.getElementById('status').textContent = 'error: '+err.message+(loginFailed?' — reload to try again':'');
     document.getElementById('status').className = '';
   }
 }
