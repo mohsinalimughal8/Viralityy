@@ -288,14 +288,17 @@ const API_COSTS = {
   openai_input:        0.000003,   // per input token (gpt-4o-mini)
   openai_output:       0.000015,   // per output token (gpt-4o-mini)
   gemini_tts:          0.000001,   // per character
-  youtube_upload:      100,        // quota units per upload (videos.insert)
+  youtube_upload:      1,          // quota units per upload (videos.insert — also counts against its own 100/day call pool)
   youtube_analytics:   10,         // quota units per analytics report call
   youtube_daily_quota: 10000,      // total daily quota units
 };
 
+// Per Google's quota table (developers.google.com/youtube/v3/determine_quota_cost):
+// videos.insert and search.list each cost 1 unit but ALSO have their own separate
+// daily call limit (100 calls/day each). Everything else draws from the shared 10,000 units.
 const YOUTUBE_QUOTA_COSTS = {
-  upload:      100,
-  search:      100,
+  upload:        1,
+  search:        1,
   channels:      1,
   analytics:    10,
   thumbnails:   50,
@@ -303,22 +306,29 @@ const YOUTUBE_QUOTA_COSTS = {
 };
 const YOUTUBE_DAILY_LIMIT = 9000; // 1000-unit safety buffer below the 10,000 hard cap
 
+// Separate per-call daily pools. Keys match the `action` logged via logYoutubeQuota.
+// 90 = 10-call safety buffer below Google's 100/day, mirroring the 9000/10000 unit buffer.
+const YOUTUBE_CALL_LIMITS = {
+  upload: 90,  // videos.insert — Google limit 100/day
+  search: 90,  // search.list   — Google limit 100/day
+};
+
 // Static audit map — one entry per logical YouTube API call site in this codebase.
 // Guarded = pre-call checkYoutubeQuota + post-call logYoutubeQuota.
 const QUOTA_AUDIT_MAP = [
   { endpoint: 'youtubeAnalytics.reports.query', cost: 10,   guarded: true,  location: 'fetchChannelAnalyticsHours' },
-  { endpoint: 'search.list (REST)',             cost: 100,  guarded: true,  location: 'fetchNichePublishHours' },
+  { endpoint: 'search.list (REST)',             cost: 1,    guarded: true,  location: 'fetchNichePublishHours', callPool: 'search' },
   { endpoint: 'channels.list (REST)',           cost: 1,    guarded: true,  location: 'GET /api/channels — stats refresh' },
   { endpoint: 'channels.list (OAuth)',          cost: 1,    guarded: true,  location: 'POST /api/channels/:id/check-thumbnail-eligibility' },
   { endpoint: 'channels.list (OAuth async)',    cost: 1,    guarded: true,  location: 'POST /api/channels/confirm — setImmediate eligibility check' },
-  { endpoint: 'search.list + channels.list',   cost: 101,  guarded: true,  location: 'POST /api/research/niche — competitor suggestions' },
-  { endpoint: 'search.list × 3 + channels.list', cost: 301, guarded: true, location: 'POST /api/competitors/add' },
+  { endpoint: 'search.list + channels.list',   cost: 2,    guarded: true,  location: 'POST /api/research/niche — competitor suggestions', callPool: 'search' },
+  { endpoint: 'search.list × 3 + channels.list', cost: 4,   guarded: true, location: 'POST /api/competitors/add', callPool: 'search' },
   { endpoint: 'channels.list + videos.list',   cost: 2,    guarded: true,  location: 'fetchLiveAnalytics' },
-  { endpoint: 'videos.insert',                 cost: 100,  guarded: true,  location: 'pipelineUploadToYouTube — video upload' },
+  { endpoint: 'videos.insert',                 cost: 1,    guarded: true,  location: 'pipelineUploadToYouTube — video upload', callPool: 'upload' },
   { endpoint: 'videos.list + thumbnails.set',  cost: 51,   guarded: true,  location: 'pipelineUploadToYouTube — doThumbUpload' },
   { endpoint: 'videos.list',                   cost: 1,    guarded: true,  location: 'analyzeChannelPerformance' },
   { endpoint: 'videos.list',                   cost: 1,    guarded: true,  location: 'fetchYesterdayPerformance (daily gen context)' },
-  { endpoint: 'search.list (REST)',             cost: 100,  guarded: true,  location: 'scoutNicheVideos' },
+  { endpoint: 'search.list (REST)',             cost: 1,    guarded: true,  location: 'scoutNicheVideos', callPool: 'search' },
   { endpoint: 'thumbnails.set + videos.list',  cost: 51,   guarded: true,  location: 'GET /api/admin/test-thumbnail-upload' },
   { endpoint: 'videos.list + thumbnails.set',  cost: 51,   guarded: true,  location: 'GET /api/admin/retry-thumbnails (per slot)' },
 ];
@@ -448,7 +458,7 @@ async function fetchChannelAnalyticsHours(userId, channelId) {
 async function fetchNichePublishHours(nicheName) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return null;
-  const searchQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null).catch(() => ({ allowed: true }));
+  const searchQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null, { pool: 'search' }).catch(() => ({ allowed: true }));
   if (!searchQC.allowed) {
     console.warn(`[Quota] fetchNichePublishHours skipped: ${searchQC.reason}`);
     return null;
@@ -1202,11 +1212,30 @@ async function logYoutubeQuota(action, units, userId) {
   } catch { /* non-fatal */ }
 }
 
+// Number of calls logged today for a separate call pool ('upload' | 'search').
+async function youtubeCallsToday(pool) {
+  const today = new Date().toISOString().slice(0, 10);
+  return agentCol('youtubeQuota').countDocuments({ date: today, action: pool });
+}
+
 // Returns { allowed, reason, used, userUsed }. Fails open on DB errors — never blocks the caller.
-async function checkYoutubeQuota(unitsNeeded, userId) {
+// opts.pool  — 'upload' | 'search': also enforce that endpoint's separate daily call limit
+// opts.calls — how many calls of that pool this operation will make (default 1)
+async function checkYoutubeQuota(unitsNeeded, userId, opts = {}) {
   try {
     const today  = new Date().toISOString().slice(0, 10);
     const col    = agentCol('youtubeQuota');
+
+    // Separate per-endpoint call pool (videos.insert / search.list: 100 calls/day each)
+    if (opts.pool && YOUTUBE_CALL_LIMITS[opts.pool]) {
+      const poolLimit = YOUTUBE_CALL_LIMITS[opts.pool];
+      const poolUsed  = await youtubeCallsToday(opts.pool);
+      const callsNeeded = opts.calls || 1;
+      if (poolUsed + callsNeeded > poolLimit) {
+        console.warn(`[Quota] Daily ${opts.pool} call limit nearly reached — ${poolUsed}/${poolLimit} calls used`);
+        return { allowed: false, reason: `Daily ${opts.pool} call limit nearly reached (${poolUsed}/${poolLimit})`, used: 0, poolUsed };
+      }
+    }
 
     // Sum all quota used today across all users
     const totalResult = await col.aggregate([
@@ -2251,7 +2280,7 @@ async function ytSearch(keyword, { days = 30, maxResults = 20, order = 'viewCoun
     return [];
   }
   // search.list = 100 units + videos.list = 1 unit
-  const ytSearchQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search + YOUTUBE_QUOTA_COSTS.default, null).catch(() => ({ allowed: true }));
+  const ytSearchQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search + YOUTUBE_QUOTA_COSTS.default, null, { pool: 'search' }).catch(() => ({ allowed: true }));
   if (!ytSearchQC.allowed) {
     console.warn(`[Quota] ytSearch("${keyword}") blocked — ${ytSearchQC.reason}`);
     return [];
@@ -3148,7 +3177,7 @@ async function runTrendScanner() {
     let scanned = 0;
 
     for (const niche of niches) {
-      const qc = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null).catch(() => ({ allowed: true }));
+      const qc = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null, { pool: 'search' }).catch(() => ({ allowed: true }));
       if (!qc.allowed) { console.warn(`[Trends] Quota guard tripped — stopping after ${scanned} niches`); break; }
       try {
         const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(niche)}&order=viewCount&type=video&publishedAfter=${encodeURIComponent(publishedAfter)}&videoDuration=short&maxResults=20&key=${apiKey}`;
@@ -4549,7 +4578,7 @@ app.get('/api/competitors', requireAuth, async (req, res) => {
           const existingIds = new Set(docs.map(d => d.channelId));
 
           // search.list (100) + channels.list (1)
-          const suggestQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search + YOUTUBE_QUOTA_COSTS.channels, null).catch(() => ({ allowed: true }));
+          const suggestQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search + YOUTUBE_QUOTA_COSTS.channels, null, { pool: 'search' }).catch(() => ({ allowed: true }));
           if (!suggestQC.allowed) {
             console.warn(`[Quota] Competitor suggest blocked — ${suggestQC.reason}`);
           } else {
@@ -4649,7 +4678,7 @@ app.post('/api/competitors', requireAuth, async (req, res) => {
 
     // Resolve the parsed type to a full channel object (snippet + statistics)
     // Worst case: channels.list (1) + search.list (100) + search.list (100) + search.list (100) = 301 units
-    const addCompQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.channels + YOUTUBE_QUOTA_COSTS.search * 3, null).catch(() => ({ allowed: true }));
+    const addCompQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.channels + YOUTUBE_QUOTA_COSTS.search * 3, null, { pool: 'search', calls: 3 }).catch(() => ({ allowed: true }));
     if (!addCompQC.allowed) {
       console.warn(`[Quota] POST /api/competitors blocked — ${addCompQC.reason}`);
       return res.status(429).json({ error: `YouTube quota insufficient: ${addCompQC.reason}` });
@@ -7645,7 +7674,7 @@ async function pipelineRefreshToken(channel) {
 // options = { thumbPath, userId } — both optional; thumbPath triggers a thumbnails.set call post-upload.
 async function pipelineUploadToYouTube(videoPath, title, description, channel, isShort = true, options = {}) {
   // Quota guard — throws so callers can reschedule rather than silently dropping the upload
-  const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, null).catch(() => ({ allowed: true }));
+  const uploadQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, null, { pool: 'upload' }).catch(() => ({ allowed: true }));
   if (!uploadQC.allowed) throw new Error(`YouTube quota check failed: ${uploadQC.reason}`);
 
   const { google } = require('googleapis');
@@ -7984,7 +8013,7 @@ async function runJITPipelineForSlot(slotDoc, user, slotsCol) {
     }
 
     // Quota pre-flight: if upload quota is already exhausted, skip all paid work now
-    const preflightQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, String(slotDoc.userId)).catch(() => ({ allowed: true }));
+    const preflightQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.upload, String(slotDoc.userId), { pool: 'upload' }).catch(() => ({ allowed: true }));
     if (!preflightQC.allowed) {
       const slotDate  = slotDoc.date || new Date().toISOString().slice(0, 10);
       const tomorrow  = new Date(slotDate + 'T00:00:00Z');
@@ -8956,17 +8985,20 @@ async function runUserGeneration(queueEntry, slotsCol, queueCol) {
     return;
   }
 
-  // Quota calculation — 150 units per video (100 upload + 50 thumbnail)
+  // Quota calculation — each video needs 51 shared units (1 upload + 50 thumbnail)
+  // AND one call from the separate videos.insert pool (Google limit 100/day).
   const quotaPerVideo = YOUTUBE_QUOTA_COSTS.upload + YOUTUBE_QUOTA_COSTS.thumbnails;
   const quotaNeeded   = videosToGenerate * quotaPerVideo;
   const quotaCheck    = await checkYoutubeQuota(0, String(userId)).catch(() => ({ allowed: true, used: 0 }));
   const quotaUsed     = quotaCheck.used || 0;
   const quotaAvail    = Math.max(0, YOUTUBE_DAILY_LIMIT - quotaUsed);
-  const canGenerate   = Math.floor(quotaAvail / quotaPerVideo);
+  const uploadsToday  = await youtubeCallsToday('upload').catch(() => 0);
+  const uploadsAvail  = Math.max(0, YOUTUBE_CALL_LIMITS.upload - uploadsToday);
+  const canGenerate   = Math.min(Math.floor(quotaAvail / quotaPerVideo), uploadsAvail);
   const skipping      = Math.max(0, videosToGenerate - canGenerate);
   const actualCount   = Math.min(videosToGenerate, canGenerate);
 
-  console.log(`[QUOTA] user=${userId} needed=${quotaNeeded} available=${quotaAvail} generating=${actualCount} skipping=${skipping}`);
+  console.log(`[QUOTA] user=${userId} needed=${quotaNeeded} available=${quotaAvail} uploadsAvail=${uploadsAvail} generating=${actualCount} skipping=${skipping}`);
 
   // Mark quota-skipped slots
   if (skipping > 0) {
@@ -9385,7 +9417,7 @@ async function scoutTrendingTopics(nicheName) {
     console.log('[TopicScout] Skipping — YOUTUBE_API_KEY not configured');
     return [];
   }
-  const scoutQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null).catch(() => ({ allowed: true }));
+  const scoutQC = await checkYoutubeQuota(YOUTUBE_QUOTA_COSTS.search, null, { pool: 'search' }).catch(() => ({ allowed: true }));
   if (!scoutQC.allowed) {
     console.warn(`[Quota] scoutTrendingTopics blocked — ${scoutQC.reason}`);
     return [];
@@ -9681,7 +9713,16 @@ app.get('/api/admin/youtube-quota', requireAdmin, async (req, res) => {
     const now = new Date();
     const resetAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
 
-    res.json({ success: true, used, limit, hardLimit, remaining, percentUsed, byAction, resetAt });
+    const [uploadsToday, searchesToday] = await Promise.all([
+      youtubeCallsToday('upload').catch(() => 0),
+      youtubeCallsToday('search').catch(() => 0),
+    ]);
+    const callPools = {
+      upload: { used: uploadsToday,  limit: YOUTUBE_CALL_LIMITS.upload, hardLimit: 100, remaining: Math.max(0, YOUTUBE_CALL_LIMITS.upload - uploadsToday) },
+      search: { used: searchesToday, limit: YOUTUBE_CALL_LIMITS.search, hardLimit: 100, remaining: Math.max(0, YOUTUBE_CALL_LIMITS.search - searchesToday) },
+    };
+
+    res.json({ success: true, used, limit, hardLimit, remaining, percentUsed, byAction, callPools, resetAt });
   } catch (err) {
     console.error('[Admin] YouTube quota error:', err.message);
     res.status(500).json({ error: 'Internal error' });
@@ -9711,9 +9752,13 @@ app.get('/api/admin/quota-audit', requireAdmin, async (req, res) => {
     const activeUsers = await User.countDocuments({ 'youtubeChannels.0': { $exists: true } }).catch(() => 0);
 
     // Projected daily spend: one full pipeline per active user per day
-    // = upload (100) + thumbnails.set+videos.list (51) + analytics (10) + channels.list + videos.list for live analytics (2)
+    // = upload (1) + thumbnails.set+videos.list (51) + analytics (10) + channels.list + videos.list for live analytics (2)
+    // plus one call per user from the separate videos.insert pool.
     const projectedPerUser = YOUTUBE_QUOTA_COSTS.upload + YOUTUBE_QUOTA_COSTS.thumbnails + YOUTUBE_QUOTA_COSTS.default + YOUTUBE_QUOTA_COSTS.analytics + 2;
     const projectedDaily   = projectedPerUser * Math.max(activeUsers, 1);
+    const projectedUploads = Math.max(activeUsers, 1);
+    const uploadsToday     = await youtubeCallsToday('upload').catch(() => 0);
+    const searchesToday    = await youtubeCallsToday('search').catch(() => 0);
 
     res.json({
       success: true,
@@ -9730,14 +9775,19 @@ app.get('/api/admin/quota-audit', requireAdmin, async (req, res) => {
         hardLimit:   10000,
         percentUsed: parseFloat(((usedToday / 10000) * 100).toFixed(2)),
         byAction:    byActionDocs.map(r => ({ action: r._id, units: r.units, calls: r.calls })),
+        callPools: {
+          upload: { used: uploadsToday,  limit: YOUTUBE_CALL_LIMITS.upload, hardLimit: 100 },
+          search: { used: searchesToday, limit: YOUTUBE_CALL_LIMITS.search, hardLimit: 100 },
+        },
         resetsAt:    new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1)).toISOString(),
       },
       projection: {
         activeUsers,
         projectedPerUserPerDay: projectedPerUser,
         projectedDailyTotal:    projectedDaily,
-        safeUserCapacity:       Math.floor(YOUTUBE_DAILY_LIMIT / projectedPerUser),
-        status: projectedDaily <= YOUTUBE_DAILY_LIMIT ? 'ok' : 'over_capacity',
+        projectedDailyUploads:  projectedUploads,
+        safeUserCapacity:       Math.min(Math.floor(YOUTUBE_DAILY_LIMIT / projectedPerUser), YOUTUBE_CALL_LIMITS.upload),
+        status: (projectedDaily <= YOUTUBE_DAILY_LIMIT && projectedUploads <= YOUTUBE_CALL_LIMITS.upload) ? 'ok' : 'over_capacity',
       },
     });
   } catch (err) {
